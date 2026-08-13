@@ -669,7 +669,9 @@ namespace WatchPartyForEmby
                 var result = new
                 {
                     externalServerUrl = config.ExternalServerUrl ?? "",
-                    embyServerUrl = config.EmbyServerUrl ?? ""
+                    embyServerUrl = !string.IsNullOrWhiteSpace(config.ExternalServerUrl)
+                        ? config.ExternalServerUrl
+                        : config.EmbyServerUrl ?? ""
                 };
                 
                 var json = _jsonSerializer.SerializeToString(result);
@@ -836,7 +838,7 @@ namespace WatchPartyForEmby
                 {
                     client.Timeout = TimeSpan.FromSeconds(30);
                     
-                    var embyUrl = $"http://localhost:8096/emby{embyPath}";
+                    var embyUrl = EmbyServerAddress.Build(config.EmbyServerUrl, $"emby{embyPath}");
                     var queryParams = new List<string>();
                     
                     if (request.QueryString.Count > 0)
@@ -899,11 +901,7 @@ namespace WatchPartyForEmby
                 }
                 
                 var config = Plugin.Instance.Configuration;
-                var embyServerUrl = config.ExternalServerUrl;
-                if (string.IsNullOrEmpty(embyServerUrl))
-                {
-                    embyServerUrl = "http://localhost:8096";
-                }
+                var embyServerUrl = EmbyServerAddress.GetBaseUrl(config.EmbyServerUrl);
                 
                 var apiKey = config.EmbyApiKey;
                 
@@ -1025,7 +1023,7 @@ namespace WatchPartyForEmby
                             client.Timeout = TimeSpan.FromSeconds(10);
                             var httpRequest = new System.Net.Http.HttpRequestMessage(
                                 System.Net.Http.HttpMethod.Get, 
-                                "http://localhost:8096/Library/MediaFolders"
+                                EmbyServerAddress.Build(config.EmbyServerUrl, "Library/MediaFolders")
                             );
                             httpRequest.Headers.Add("X-Emby-Token", config.EmbyApiKey);
                             
@@ -1162,38 +1160,8 @@ namespace WatchPartyForEmby
 
                 var partyName = party.ItemName;
 
-                // Delete the STRM file and notify Emby
-                try
-                {
-                    var strmPath = GetStrmFilePathForParty(party);
-                    if (!string.IsNullOrEmpty(strmPath) && System.IO.File.Exists(strmPath))
-                    {
-                        System.IO.File.Delete(strmPath);
-                        _logger.Info($"[ExternalWebServer] Deleted STRM file: {strmPath}");
-
-                        // Refresh the Watch Party library to pick up the deletion
-                        var apiKey = config.EmbyApiKey;
-                        var targetLibraryId = config.StrmTargetLibraryId;
-                        if (!string.IsNullOrEmpty(apiKey) && !string.IsNullOrEmpty(targetLibraryId))
-                        {
-                            using (var client = new System.Net.Http.HttpClient())
-                            {
-                                client.Timeout = TimeSpan.FromSeconds(30);
-                                var req = new System.Net.Http.HttpRequestMessage(
-                                    System.Net.Http.HttpMethod.Post,
-                                    $"http://localhost:8096/emby/Items/{targetLibraryId}/Refresh?Recursive=true");
-                                req.Headers.Add("X-Emby-Token", apiKey);
-                                await client.SendAsync(req);
-                                _logger.Info($"[ExternalWebServer] Refreshed Watch Party library after STRM deletion");
-                            }
-                        }
-                    }
-                }
-                catch (Exception strmEx)
-                {
-                    _logger.ErrorException("[ExternalWebServer] Error deleting STRM file", strmEx);
-                }
-
+                // ServerEntryPoint owns STRM lifecycle and removes the exact cached
+                // path when this configuration update removes the party.
                 config.WatchParties.Remove(party);
                 Plugin.Instance.UpdateConfiguration(config);
 
@@ -1229,70 +1197,6 @@ namespace WatchPartyForEmby
             await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
         }
 
-        private string GetStrmFilePathForParty(WatchPartyItem party)
-        {
-            try
-            {
-                var config = Plugin.Instance.Configuration;
-                var libraryPath = config.WatchPartyStrmPath;
-
-                // If no explicit path, look up from virtual folders via the target library ID
-                if (string.IsNullOrEmpty(libraryPath) && !string.IsNullOrEmpty(config.StrmTargetLibraryId))
-                {
-                    // Use the Emby API to resolve the path
-                    var apiKey = config.EmbyApiKey;
-                    if (!string.IsNullOrEmpty(apiKey))
-                    {
-                        using (var client = new System.Net.Http.HttpClient())
-                        {
-                            client.Timeout = TimeSpan.FromSeconds(5);
-                            var req = new System.Net.Http.HttpRequestMessage(
-                                System.Net.Http.HttpMethod.Get,
-                                $"http://localhost:8096/emby/Library/VirtualFolders?api_key={apiKey}");
-                            var resp = client.SendAsync(req).Result;
-                            if (resp.IsSuccessStatusCode)
-                            {
-                                var body = resp.Content.ReadAsStringAsync().Result;
-                                var folders = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(body);
-                                foreach (var folder in folders.EnumerateArray())
-                                {
-                                    if (folder.TryGetProperty("ItemId", out var idProp) && idProp.GetString() == config.StrmTargetLibraryId)
-                                    {
-                                        if (folder.TryGetProperty("Locations", out var locs) && locs.GetArrayLength() > 0)
-                                        {
-                                            libraryPath = locs[0].GetString();
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (string.IsNullOrEmpty(libraryPath))
-                {
-                    return null;
-                }
-
-                // Find the STRM file by scanning the directory for a match
-                var sanitizedName = string.Join("_", (party.ItemName ?? "").Split(System.IO.Path.GetInvalidFileNameChars()));
-                foreach (var file in System.IO.Directory.GetFiles(libraryPath, "*.strm"))
-                {
-                    var fileName = System.IO.Path.GetFileNameWithoutExtension(file);
-                    if (fileName.Contains(sanitizedName) || sanitizedName.Contains(fileName))
-                    {
-                        return file;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.ErrorException("[ExternalWebServer] Error resolving STRM path for party", ex);
-            }
-
-            return null;
-        }
     }
 
     public class CsrfToken

@@ -623,14 +623,15 @@ namespace WatchPartyForEmby
                 var currentPartyIds = new HashSet<string>(config.WatchParties.Select(p => p.Id));
                 var removedPartyIds = _trackedPartyIds.Except(currentPartyIds).ToList();
                 
-                var librariesToClean = new HashSet<string>(GetPathComparer());
+                var removedStrmPaths = new HashSet<string>(GetPathComparer());
                 foreach (var removedId in removedPartyIds)
                 {
                     _logger.Info($"Party {removedId} was removed, cleaning up...");
                     
-                    if (_partyLibraryPathCache.TryGetValue(removedId, out var libPath))
+                    if (_partyStrmPathCache.TryGetValue(removedId, out var removedStrmPath)
+                        && !string.IsNullOrEmpty(removedStrmPath))
                     {
-                        librariesToClean.Add(NormalizePath(libPath));
+                        removedStrmPaths.Add(removedStrmPath);
                     }
                     
                     _partySyncedSessions.Remove(removedId);
@@ -645,51 +646,22 @@ namespace WatchPartyForEmby
                     _partyStrmPathCache.Remove(removedId);
                 }
 
-                var activePaths = config.WatchParties
-                    .Select(p => GetStrmFilePath(p))
-                    .Where(path => path != null)
-                    .Select(path => NormalizePath(path))
-                    .ToHashSet(GetPathComparer());
-
-                var librariesWithParties = config.WatchParties
-                    .Select(p => GetLibraryPath(p))
-                    .Where(path => !string.IsNullOrEmpty(path))
-                    .Select(path => NormalizePath(path));
-                
-                foreach (var libPath in librariesWithParties)
+                foreach (var strmFile in removedStrmPaths)
                 {
-                    librariesToClean.Add(libPath);
-                }
-
-                foreach (var libraryPath in librariesToClean)
-                {
-                    if (!Directory.Exists(libraryPath))
+                    if (!File.Exists(strmFile))
                     {
-                        _logger.Warn($"Library path does not exist: {libraryPath}");
                         continue;
                     }
 
-                    _logger.Debug($"Checking library for orphaned STRM files: {libraryPath}");
-                    
-                    foreach (var strmFile in Directory.GetFiles(libraryPath, "*.strm"))
+                    try
                     {
-                        var normalizedStrmFile = NormalizePath(strmFile);
-                        if (!activePaths.Contains(normalizedStrmFile))
-                        {
-                            try
-                            {
-                                File.Delete(strmFile);
-                                _logger.Info($"Deleted orphaned STRM file: {strmFile}");
-                                
-                                // Notify Emby about the file system change
-                                _libraryMonitor.ReportFileSystemChanged(strmFile);
-                                _logger.Info($"Notified Emby about STRM file deletion: {strmFile}");
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.ErrorException($"Error deleting STRM file: {strmFile}", ex);
-                            }
-                        }
+                        File.Delete(strmFile);
+                        _logger.Info($"Deleted Watch Party STRM file: {strmFile}");
+                        _libraryMonitor.ReportFileSystemChanged(strmFile);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.ErrorException($"Error deleting Watch Party STRM file: {strmFile}", ex);
                     }
                 }
                 
@@ -746,7 +718,9 @@ namespace WatchPartyForEmby
                         client.Timeout = TimeSpan.FromSeconds(30);
                         var request = new System.Net.Http.HttpRequestMessage(
                             System.Net.Http.HttpMethod.Post,
-                            $"http://localhost:8096/emby/Items/{targetLibraryId}/Refresh?Recursive=true");
+                            EmbyServerAddress.Build(
+                                _plugin.Configuration.EmbyServerUrl,
+                                $"emby/Items/{targetLibraryId}/Refresh?Recursive=true"));
                         request.Headers.Add("X-Emby-Token", apiKey);
 
                         var response = await client.SendAsync(request);
@@ -873,7 +847,14 @@ namespace WatchPartyForEmby
                     return null;
                 }
 
-                await File.WriteAllTextAsync(strmPath, itemPath);
+                var resolvedSource = await StrmSourceResolver.ResolveAsync(itemPath);
+                await File.WriteAllTextAsync(strmPath, resolvedSource + Environment.NewLine);
+
+                if (!string.Equals(itemPath, resolvedSource, StringComparison.Ordinal))
+                {
+                    _logger.Info($"Party {party.Id}: Resolved source STRM before creating watch party entry");
+                }
+
                 _logger.Info($"Created STRM file for party {party.Id}: {strmPath}");
 
                 return strmPath;
