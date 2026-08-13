@@ -36,6 +36,8 @@ namespace WatchPartyForEmby
         private readonly Dictionary<string, string> _strmContentCache = new Dictionary<string, string>();
         private readonly HashSet<string> _partiesTransitioning = new HashSet<string>();
         private readonly object _seriesTransitionLock = new object();
+        private readonly Dictionary<string, DateTime> _lastProgressCheckpoint = new Dictionary<string, DateTime>();
+        private static readonly TimeSpan ProgressCheckpointInterval = TimeSpan.FromSeconds(30);
 
         public ServerEntryPoint(
             ISessionManager sessionManager,
@@ -684,6 +686,7 @@ namespace WatchPartyForEmby
                     _partyHostSessions.Remove(removedId);
                     _partyPauseVotes.Remove(removedId);
                     _partySeriesDirectoryCache.Remove(removedId);
+                    _lastProgressCheckpoint.Remove(removedId);
 
                     var episodeCacheKeys = _partyEpisodeStrmPathCache.Keys
                         .Where(key => key.StartsWith(removedId + ":", StringComparison.Ordinal))
@@ -940,8 +943,7 @@ namespace WatchPartyForEmby
 
             var seriesName = SanitizeFileName(party.SeriesName ?? party.ItemName ?? "Series");
             var compactId = (party.Id ?? Guid.NewGuid().ToString("N")).Replace("-", string.Empty);
-            var shortId = compactId.Substring(0, Math.Min(8, compactId.Length));
-            var directory = Path.Combine(libraryPath, $"{seriesName} [Series Party {shortId}]");
+            var directory = Path.Combine(libraryPath, $"{seriesName} [Series Party {compactId}]");
             _partySeriesDirectoryCache[party.Id] = directory;
             return directory;
         }
@@ -968,7 +970,8 @@ namespace WatchPartyForEmby
             var seasonDirectory = Path.Combine(seriesDirectory, $"Season {episode.SeasonNumber:00}");
             var seriesName = SanitizeFileName(party.SeriesName ?? "Series");
             var episodeName = SanitizeFileName(episode.ItemName ?? $"Episode {episode.EpisodeNumber}");
-            var fileName = $"{seriesName} - S{episode.SeasonNumber:00}E{episode.EpisodeNumber:00} - {episodeName}.strm";
+            var episodeId = SanitizeFileName(episode.ItemId);
+            var fileName = $"{seriesName} - S{episode.SeasonNumber:00}E{episode.EpisodeNumber:00} - {episodeName} [{episodeId}].strm";
             var path = Path.Combine(seasonDirectory, fileName);
             _partyEpisodeStrmPathCache[cacheKey] = path;
             return path;
@@ -1457,6 +1460,38 @@ namespace WatchPartyForEmby
             return null;
         }
 
+        private string FindSeriesEpisodeId(WatchPartyItem party, BaseItem item)
+        {
+            if (party?.IsSeriesParty != true || item == null)
+            {
+                return null;
+            }
+
+            var itemPath = NormalizePath(item.Path);
+            foreach (var episode in party.EpisodeQueue ?? new List<WatchPartyEpisode>())
+            {
+                if (string.IsNullOrEmpty(episode?.ItemId))
+                {
+                    continue;
+                }
+
+                var generatedPath = NormalizePath(GetSeriesEpisodeStrmPath(party, episode));
+                if (!string.IsNullOrEmpty(itemPath)
+                    && string.Equals(itemPath, generatedPath, GetPathComparison()))
+                {
+                    return episode.ItemId;
+                }
+
+                var sourceItem = _libraryManager.GetItemById(episode.ItemId);
+                if (sourceItem != null && (sourceItem.Id == item.Id || sourceItem.InternalId == item.InternalId))
+                {
+                    return episode.ItemId;
+                }
+            }
+
+            return null;
+        }
+
         private bool IsSelectedItem(BaseItem item, PluginConfiguration config)
         {
             if (item == null || string.IsNullOrEmpty(config.SelectedItemId))
@@ -1528,6 +1563,7 @@ namespace WatchPartyForEmby
                         }
 
                         _logger.Debug($"[Watch Party] Master user updated party {party.Id} position to {party.CurrentPositionTicks} ticks, Playing: {party.IsPlaying}");
+                        CheckpointPartyProgress(party);
                     }
                 }
             }
@@ -1535,6 +1571,20 @@ namespace WatchPartyForEmby
             {
                 _logger.ErrorException("[Watch Party] Error handling playback progress", ex);
             }
+        }
+
+        private void CheckpointPartyProgress(WatchPartyItem party)
+        {
+            var now = DateTime.UtcNow;
+            if (_lastProgressCheckpoint.TryGetValue(party.Id, out var lastCheckpoint)
+                && now - lastCheckpoint < ProgressCheckpointInterval)
+            {
+                return;
+            }
+
+            _lastProgressCheckpoint[party.Id] = now;
+            _plugin.SaveConfiguration();
+            _logger.Debug($"[Party {party.Id}] Persisted playback progress checkpoint");
         }
 
         private List<SessionInfo> GetSeriesTransitionSessions(WatchPartyItem party, SessionInfo masterSession)
@@ -1569,11 +1619,22 @@ namespace WatchPartyForEmby
             WatchPartyEpisode episode,
             IReadOnlyCollection<SessionInfo> sessions)
         {
-            var episodeItem = episode == null ? null : _libraryManager.GetItemById(episode.ItemId);
+            var generatedPath = episode == null ? null : GetSeriesEpisodeStrmPath(party, episode);
+            var episodeItem = string.IsNullOrEmpty(generatedPath)
+                ? null
+                : _libraryManager.FindByPath(generatedPath, false);
+            episodeItem = episodeItem ?? (episode == null ? null : _libraryManager.GetItemById(episode.ItemId));
             if (episodeItem == null)
             {
                 _logger.Warn($"[Party {party.Id}] Cannot play next episode because item {episode?.ItemId} was not found");
                 return;
+            }
+
+            if (!string.IsNullOrEmpty(generatedPath)
+                && !string.Equals(NormalizePath(episodeItem.Path), NormalizePath(generatedPath), GetPathComparison()))
+            {
+                _logger.Warn(
+                    $"[Party {party.Id}] Generated next-episode item is not indexed yet; falling back to the source library item");
             }
 
             foreach (var session in sessions)
@@ -1631,19 +1692,22 @@ namespace WatchPartyForEmby
                 {
                     var isMaster = !string.IsNullOrEmpty(party.MasterUserId) && e.Session.UserId == party.MasterUserId;
                     var stoppedPosition = GetLastKnownPosition(party, e.Session);
+                    var stoppedEpisodeId = FindSeriesEpisodeId(party, e.Item);
                     var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
                     var sourceItem = currentEpisode == null ? null : _libraryManager.GetItemById(currentEpisode.ItemId);
                     var runtimeTicks = e.Item?.RunTimeTicks ?? sourceItem?.RunTimeTicks ?? 0;
 
                     if (party.IsSeriesParty)
                     {
-                        var completedEpisodeId = party.CurrentEpisodeId;
+                        var completedEpisodeId = stoppedEpisodeId;
                         var completionResult = SeriesPartyAdvanceResult.NotCompleted;
                         List<SessionInfo> transitionSessions = null;
+                        var transitionAlreadyInProgress = false;
 
                         lock (_seriesTransitionLock)
                         {
-                            if (isMaster && !_partiesTransitioning.Contains(party.Id))
+                            transitionAlreadyInProgress = _partiesTransitioning.Contains(party.Id);
+                            if (isMaster && !transitionAlreadyInProgress)
                             {
                                 completionResult = SeriesPartyQueue.TryAdvanceAfterStop(
                                     party,
@@ -1659,6 +1723,12 @@ namespace WatchPartyForEmby
                             }
                         }
 
+                        if (transitionAlreadyInProgress)
+                        {
+                            _logger.Debug($"[Party {party.Id}] Ignoring duplicate stop while the next episode is starting");
+                            return;
+                        }
+
                         if (completionResult == SeriesPartyAdvanceResult.Advanced)
                         {
                             var nextEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
@@ -1666,6 +1736,7 @@ namespace WatchPartyForEmby
                                 $"[Party {party.Id}] Master completed {completedEpisodeId}; advancing to {nextEpisode?.ItemName}");
 
                             _plugin.SaveConfiguration();
+                            _lastProgressCheckpoint[party.Id] = DateTime.UtcNow;
                             if (_partySyncedSessions.TryGetValue(party.Id, out var syncedSessions))
                             {
                                 syncedSessions.Clear();
@@ -1675,6 +1746,15 @@ namespace WatchPartyForEmby
                                 pauseStates.Clear();
                             }
                             _partyPauseVotes.Remove(party.Id);
+                            if (_plugin.PartyParticipants.TryGetValue(party.Id, out var participants))
+                            {
+                                foreach (var participant in participants.Values)
+                                {
+                                    participant.CurrentPositionTicks = 0;
+                                    participant.IsPaused = false;
+                                    participant.IsBuffering = false;
+                                }
+                            }
 
                             try
                             {
@@ -1694,6 +1774,7 @@ namespace WatchPartyForEmby
                         {
                             _logger.Info($"[Party {party.Id}] Series queue completed at {party.CurrentEpisodeId}");
                             _plugin.SaveConfiguration();
+                            _lastProgressCheckpoint[party.Id] = DateTime.UtcNow;
                         }
                         else if (!isMaster && SeriesPartyQueue.IsNaturalCompletion(stoppedPosition, runtimeTicks))
                         {
@@ -1773,6 +1854,16 @@ namespace WatchPartyForEmby
             _plugin.ConfigurationUpdated -= OnConfigurationUpdated;
             
             _syncTimer?.Dispose();
+
+            try
+            {
+                _plugin.SaveConfiguration();
+                _logger.Info("Persisted Watch Party state during shutdown");
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorException("Error persisting Watch Party state during shutdown", ex);
+            }
             
             _logger.Info("Watch Party plugin stopped");
         }

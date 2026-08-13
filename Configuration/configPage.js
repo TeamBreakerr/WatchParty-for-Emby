@@ -715,6 +715,12 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             }
         }
 
+        escapeHtml(value) {
+            const element = document.createElement('div');
+            element.textContent = value == null ? '' : String(value);
+            return element.innerHTML;
+        }
+
         renderPartyList(view, config) {
             const container = view.querySelector('#activePartiesList');
             
@@ -742,16 +748,28 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     const currentEpisode = episodeCount > currentIndex ? party.EpisodeQueue[currentIndex] : null;
                     features.push(`Series Queue: ${Math.min(currentIndex + 1, episodeCount)}/${episodeCount}`);
                     if (currentEpisode && currentEpisode.ItemName) {
-                        features.push(`Current: ${currentEpisode.ItemName}`);
+                        features.push(`Current: ${this.escapeHtml(currentEpisode.ItemName)}`);
                     }
                 }
                 const featuresText = features.length > 0 ? `<br>Features: ${features.join(', ')}` : '';
+                const queueDetails = party.IsSeriesParty && (party.EpisodeQueue || []).length > 0
+                    ? `<details style="margin-top: 0.75em;">
+                           <summary style="cursor: pointer;">Episode Queue</summary>
+                           <ol style="max-height: 18em; overflow-y: auto; margin: 0.5em 0 0; padding-left: 2em;">
+                               ${party.EpisodeQueue.map((episode, index) => {
+                                   const marker = index === party.CurrentEpisodeIndex ? ' ← Current' : '';
+                                   const label = `S${String(episode.SeasonNumber).padStart(2, '0')}E${String(episode.EpisodeNumber).padStart(2, '0')} — ${episode.ItemName || ''}${marker}`;
+                                   return `<li${index === party.CurrentEpisodeIndex ? ' style="color: #4CAF50; font-weight: 600;"' : ''}>${this.escapeHtml(label)}</li>`;
+                               }).join('')}
+                           </ol>
+                       </details>`
+                    : '';
                 
                 html += `
                     <div class="paper-card" style="padding: 1em; display: flex; justify-content: space-between; align-items: center;">
                         <div style="flex: 1;">
                             <div style="font-weight: 500; margin-bottom: 0.5em;">
-                                ${(party.IsSeriesParty && party.SeriesName) || party.ItemName || 'Unnamed Party'}
+                                ${this.escapeHtml((party.IsSeriesParty && party.SeriesName) || party.ItemName || 'Unnamed Party')}
                                 <span style="color: ${statusColor}; font-size: 0.9em; margin-left: 0.5em;">● ${statusText}</span>
                             </div>
                             <div style="font-size: 0.85em; color: #999;">
@@ -760,6 +778,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                                 Max: ${party.MaxParticipants || 50} viewers | 
                                 Created: ${created}${featuresText}
                             </div>
+                            ${queueDetails}
                         </div>
                         <div style="display: flex; gap: 0.5em;">
                             <button is="emby-button" class="button-flat btnToggleParty" data-partyid="${party.Id}" style="padding: 0.5em 1em;">

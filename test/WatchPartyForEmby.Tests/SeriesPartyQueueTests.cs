@@ -7,18 +7,24 @@ namespace WatchPartyForEmby.Tests
     public sealed class SeriesPartyQueueTests
     {
         [Fact]
-        public void InitializeOrdersEpisodesAndStartsAtSelectedEpisode()
+        public void RepairOrdersEpisodesAndKeepsTheSelectedStartingEpisode()
         {
-            var party = new WatchPartyItem();
-            var episodes = new List<WatchPartyEpisode>
+            var party = new WatchPartyItem
             {
-                Episode("s2e1", 2, 1),
-                Episode("s1e2", 1, 2),
-                Episode("s1e1", 1, 1)
+                IsSeriesParty = true,
+                SeriesName = "Example Series",
+                CurrentEpisodeId = "s1e2",
+                EpisodeQueue = new List<WatchPartyEpisode>
+                {
+                    Episode("s2e1", 2, 1),
+                    Episode("s1e2", 1, 2),
+                    Episode("s1e1", 1, 1)
+                }
             };
 
-            SeriesPartyQueue.Initialize(party, episodes, "s1e2", "Example Series");
+            var changed = SeriesPartyQueue.Repair(party);
 
+            Assert.True(changed);
             Assert.True(party.IsSeriesParty);
             Assert.Equal(new[] { "s1e1", "s1e2", "s2e1" }, party.EpisodeQueue.ConvertAll(e => e.ItemId));
             Assert.Equal(1, party.CurrentEpisodeIndex);
@@ -128,12 +134,18 @@ namespace WatchPartyForEmby.Tests
 
         private static WatchPartyItem CreatePartyAtFirstEpisode()
         {
-            var party = new WatchPartyItem();
-            SeriesPartyQueue.Initialize(
-                party,
-                new[] { Episode("s1e1", 1, 1), Episode("s1e2", 1, 2) },
-                "s1e1",
-                "Example Series");
+            var party = new WatchPartyItem
+            {
+                IsSeriesParty = true,
+                SeriesName = "Example Series",
+                CurrentEpisodeId = "s1e1",
+                EpisodeQueue = new List<WatchPartyEpisode>
+                {
+                    Episode("s1e1", 1, 1),
+                    Episode("s1e2", 1, 2)
+                }
+            };
+            SeriesPartyQueue.Repair(party);
             return party;
         }
 
