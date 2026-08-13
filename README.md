@@ -50,6 +50,8 @@ In the Emby plugin settings:
 | Emby API Key | Required for the dashboard to access Emby libraries and users |
 | STRM Target Library | The Emby library where watch party STRM files are created |
 
+The server URL is also used for plugin-to-Emby API calls, so configure the actual internal port when Emby does not listen on the default `8096` (for example, `http://localhost:6908`).
+
 ## Building from Source
 
 ```bash

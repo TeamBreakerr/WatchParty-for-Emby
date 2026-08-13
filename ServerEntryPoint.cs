@@ -746,7 +746,9 @@ namespace WatchPartyForEmby
                         client.Timeout = TimeSpan.FromSeconds(30);
                         var request = new System.Net.Http.HttpRequestMessage(
                             System.Net.Http.HttpMethod.Post,
-                            $"http://localhost:8096/emby/Items/{targetLibraryId}/Refresh?Recursive=true");
+                            EmbyServerAddress.Build(
+                                _plugin.Configuration.EmbyServerUrl,
+                                $"emby/Items/{targetLibraryId}/Refresh?Recursive=true"));
                         request.Headers.Add("X-Emby-Token", apiKey);
 
                         var response = await client.SendAsync(request);
