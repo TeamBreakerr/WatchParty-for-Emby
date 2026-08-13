@@ -52,6 +52,8 @@ In the Emby plugin settings:
 
 The server URL is also used for plugin-to-Emby API calls, so configure the actual internal port when Emby does not listen on the default `8096` (for example, `http://localhost:6908`).
 
+The external dashboard is disabled on first install. Enable it only after configuring authentication and an HTTPS reverse proxy.
+
 ## Building from Source
 
 ```bash

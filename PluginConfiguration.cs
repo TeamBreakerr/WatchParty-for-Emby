@@ -204,7 +204,7 @@ namespace WatchPartyForEmby
         public bool EnableDebugLogging { get; set; }
         public string WatchPartyStrmPath { get; set; }
 
-        public bool EnableExternalWebServer { get; set; } = true;
+        public bool EnableExternalWebServer { get; set; } = false;
         public int ExternalWebServerPort { get; set; } = 8097;
         public string ListenAddress { get; set; } = "0.0.0.0";
         public string AllowedCorsOrigins { get; set; } = "";
@@ -261,7 +261,7 @@ namespace WatchPartyForEmby
             SyncIntervalSeconds = 5;
             SyncOffsetMilliseconds = 1000;
             WatchPartyStrmPath = string.Empty;
-            EnableExternalWebServer = true;
+            EnableExternalWebServer = false;
             ExternalWebServerPort = 8097;
             ListenAddress = "0.0.0.0";
             AllowedCorsOrigins = "";
