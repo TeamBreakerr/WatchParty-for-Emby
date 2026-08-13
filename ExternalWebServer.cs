@@ -957,6 +957,10 @@ namespace WatchPartyForEmby
                         ItemId = party.ItemId,
                         ItemName = party.ItemName,
                         ItemType = party.ItemType,
+                        SeriesName = party.SeriesName,
+                        IsSeriesParty = party.IsSeriesParty,
+                        EpisodeCount = party.EpisodeQueue?.Count ?? 0,
+                        CurrentEpisodeIndex = party.CurrentEpisodeIndex,
                         IsActive = party.IsActive,
                         IsWaitingRoom = party.IsWaitingRoom,
                         ParticipantCount = 0,
@@ -1056,6 +1060,62 @@ namespace WatchPartyForEmby
                     }
                 }
 
+                var isSeriesParty = request.ContainsKey("isSeriesParty") && Convert.ToBoolean(request["isSeriesParty"]);
+                var episodeQueue = new List<WatchPartyEpisode>();
+                var currentEpisodeIndex = -1;
+                string currentEpisodeId = null;
+
+                if (isSeriesParty)
+                {
+                    try
+                    {
+                        if (!request.ContainsKey("episodeQueue") || request["episodeQueue"] == null)
+                        {
+                            throw new InvalidOperationException("Episode queue is required");
+                        }
+
+                        var episodeQueueJson = _jsonSerializer.SerializeToString(request["episodeQueue"]);
+                        episodeQueue = _jsonSerializer.DeserializeFromString<List<WatchPartyEpisode>>(episodeQueueJson)
+                            ?? new List<WatchPartyEpisode>();
+                        currentEpisodeIndex = request.ContainsKey("currentEpisodeIndex")
+                            ? Convert.ToInt32(request["currentEpisodeIndex"])
+                            : -1;
+                        currentEpisodeId = request.ContainsKey("currentEpisodeId")
+                            ? request["currentEpisodeId"]?.ToString()
+                            : null;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warn($"[ExternalWebServer] Invalid Series Party queue payload: {ex.Message}");
+                        response.StatusCode = (int)HttpStatusCode.BadRequest;
+                        await WriteResponse(response, "{\"error\":\"Invalid Series Party episode queue\"}");
+                        return;
+                    }
+
+                    var distinctItemIds = new HashSet<string>(StringComparer.Ordinal);
+                    var queueIsValid = episodeQueue.Count > 0
+                        && episodeQueue.Count <= 10000
+                        && currentEpisodeIndex >= 0
+                        && currentEpisodeIndex < episodeQueue.Count
+                        && episodeQueue.All(episode => episode != null
+                            && ValidateInput(episode.ItemId, 100)
+                            && ValidateInput(episode.ItemName, 200)
+                            && ValidateInput(episode.SeasonId, 100)
+                            && episode.SeasonNumber > 0
+                            && episode.EpisodeNumber >= 0
+                            && distinctItemIds.Add(episode.ItemId));
+
+                    if (!queueIsValid
+                        || !string.Equals(currentEpisodeId, episodeQueue[currentEpisodeIndex].ItemId, StringComparison.Ordinal)
+                        || !request.ContainsKey("itemId")
+                        || !string.Equals(request["itemId"]?.ToString(), currentEpisodeId, StringComparison.Ordinal))
+                    {
+                        response.StatusCode = (int)HttpStatusCode.BadRequest;
+                        await WriteResponse(response, "{\"error\":\"Invalid Series Party starting point\"}");
+                        return;
+                    }
+                }
+
                 var newParty = new WatchPartyItem
                 {
                     Id = Guid.NewGuid().ToString(),
@@ -1066,10 +1126,16 @@ namespace WatchPartyForEmby
                     ItemName = itemName,
                     ItemType = request.ContainsKey("itemType") && ValidateInput(request["itemType"]?.ToString(), 50) 
                         ? request["itemType"]?.ToString() : "Movie",
-                    SeriesId = request.ContainsKey("seriesId") && ValidateInput(request["seriesId"]?.ToString(), 100) 
+                    SeriesId = request.ContainsKey("seriesId") && ValidateInput(request["seriesId"]?.ToString(), 100)
                         ? request["seriesId"]?.ToString() : null,
-                    SeasonId = request.ContainsKey("seasonId") && ValidateInput(request["seasonId"]?.ToString(), 100) 
+                    SeriesName = request.ContainsKey("seriesName") && ValidateInput(request["seriesName"]?.ToString(), 200)
+                        ? request["seriesName"]?.ToString() : null,
+                    SeasonId = request.ContainsKey("seasonId") && ValidateInput(request["seasonId"]?.ToString(), 100)
                         ? request["seasonId"]?.ToString() : null,
+                    IsSeriesParty = isSeriesParty,
+                    EpisodeQueue = episodeQueue,
+                    CurrentEpisodeIndex = currentEpisodeIndex,
+                    CurrentEpisodeId = currentEpisodeId,
                     CollectionName = request.ContainsKey("collectionName") && ValidateInput(request["collectionName"]?.ToString(), 100) 
                         ? request["collectionName"]?.ToString() : "Watch Party",
                     TargetLibraryId = targetLibraryId,

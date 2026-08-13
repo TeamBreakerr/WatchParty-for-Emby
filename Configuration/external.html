@@ -311,6 +311,15 @@
                 </div>
             </div>
             <div id="seriesControls" style="display: none;">
+                <div id="newSeriesPartyContainer" style="margin: 15px 0; padding: 12px; border: 1px solid #4CAF50; border-radius: 4px;">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="checkbox" id="newIsSeriesParty" style="margin-right: 8px; width: 20px; height: 20px;">
+                        <span>Create a Series Party</span>
+                    </label>
+                    <div id="newSeriesPartyModeHint" style="color: #aaa; margin-top: 6px; font-size: 0.9rem;">
+                        Off: select one season and episode. On: create the full ordered series queue; season and episode become optional starting-point selectors.
+                    </div>
+                </div>
                 <div style="margin: 15px 0;">
                     <label style="display: block; margin-bottom: 5px;">Season:</label>
                     <div style="position: relative;">
@@ -320,7 +329,7 @@
                     </div>
                 </div>
                 <div style="margin: 15px 0;">
-                    <label style="display: block; margin-bottom: 5px;">Episode:</label>
+                    <label id="newEpisodeLabel" style="display: block; margin-bottom: 5px;">Episode:</label>
                     <div style="position: relative;">
                         <input type="text" id="searchEpisode" placeholder="Search episodes..." autocomplete="off" style="width: 100%; padding: 8px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
                         <div id="searchEpisodeDropdown" class="autocomplete-dropdown"></div>
@@ -536,6 +545,7 @@
             const itemId = party.ItemId || '';
             const hostUserName = await lookupUserName(party.HostUserName);
             const safeName = escapeHtml(party.ItemName || 'Unnamed Party');
+            const safePartyTitle = escapeHtml((party.IsSeriesParty && party.SeriesName) || party.ItemName || 'Unnamed Party');
             const safeNameForAttr = safeName.replace(/'/g, "\\'");
             const safeType = escapeHtml(party.ItemType || 'Unknown');
             const safeHost = escapeHtml(hostUserName);
@@ -544,13 +554,13 @@
             return `
                 <div class="party-card ${statusClass}">
                     <div class="party-header">
-                        <div class="party-title">${lockIcon}${safeName}</div>
+                        <div class="party-title">${lockIcon}${safePartyTitle}</div>
                         <span class="status-badge ${statusClass}">${statusText}</span>
                     </div>
                     <div class="party-info" onclick="joinParty('${party.Id}', ${party.RequiresPassword}, '${safeNameForAttr}')" style="cursor: pointer;">
                         <div class="info-row">
                             <span class="info-label">Type:</span>
-                            <span class="info-value">${safeType}</span>
+                            <span class="info-value">${party.IsSeriesParty ? `Series Party · Episode ${(party.CurrentEpisodeIndex || 0) + 1}/${party.EpisodeCount || 0}` : safeType}</span>
                         </div>
                         <div class="info-row">
                             <span class="info-label">Master:</span>
@@ -894,6 +904,9 @@
             
             document.getElementById('cancelCreateButton').addEventListener('click', hideCreatePartyModal);
             document.getElementById('confirmCreateButton').addEventListener('click', createParty);
+            document.getElementById('newIsSeriesParty').addEventListener('change', function(e) {
+                updateExternalSeriesPartyMode(e.target.checked);
+            });
             
             document.getElementById('newSourceLibrary').addEventListener('change', function(e) {
                 const libraryId = e.target.value;
@@ -919,9 +932,12 @@
                     document.getElementById('searchEpisode').value = '';
                     document.getElementById('newEpisode').value = '';
                     document.getElementById('seriesControls').style.display = 'block';
+                    updateExternalSeriesPartyMode(document.getElementById('newIsSeriesParty').checked);
                     loadSeasonsForCreate(itemData.id);
                 } else {
                     document.getElementById('seriesControls').style.display = 'none';
+                    document.getElementById('newIsSeriesParty').checked = false;
+                    updateExternalSeriesPartyMode(false);
                 }
             }, function() {
                 loadMoreContent();
@@ -1190,6 +1206,8 @@
             document.getElementById('newAutoKick').checked = true;
             document.getElementById('newInactiveTimeout').value = 15;
             document.getElementById('seriesControls').style.display = 'none';
+            document.getElementById('newIsSeriesParty').checked = false;
+            updateExternalSeriesPartyMode(false);
             
             document.getElementById('searchContent').value = '';
             document.getElementById('newContentItem').value = '';
@@ -1201,6 +1219,19 @@
             document.getElementById('searchContentDropdown').classList.remove('show');
             document.getElementById('searchSeasonDropdown').classList.remove('show');
             document.getElementById('searchEpisodeDropdown').classList.remove('show');
+        }
+
+        function updateExternalSeriesPartyMode(isSeriesParty) {
+            const hint = document.getElementById('newSeriesPartyModeHint');
+            const episodeLabel = document.getElementById('newEpisodeLabel');
+
+            if (isSeriesParty) {
+                episodeLabel.textContent = 'Starting Episode (Optional):';
+                hint.textContent = 'Series Party mode: every regular episode is queued across all seasons. Choose a season or episode only when you want a different starting point.';
+            } else {
+                episodeLabel.textContent = 'Episode:';
+                hint.textContent = 'Single-episode mode: select a season and episode, or enable Series Party for the full ordered series queue.';
+            }
         }
         
         async function loadLibrariesForCreate(serverUrl) {
@@ -1496,7 +1527,34 @@
                 console.error('Error loading more episodes:', err);
             }
         }
-        
+
+        async function loadAllSeriesEpisodesForCreate(seriesId) {
+            const webServerUrl = window.location.origin;
+            const response = await fetch(`${webServerUrl}/api/emby/Shows/${seriesId}/Episodes?Fields=Id,Name,IndexNumber,ParentIndexNumber,SeasonId&StartIndex=0&Limit=10000`, {
+                headers: {}
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to load the TV show episode queue.');
+            }
+
+            const data = await response.json();
+            return (data.Items || [])
+                .filter(episode => Number.isFinite(episode.ParentIndexNumber)
+                    && episode.ParentIndexNumber > 0
+                    && Number.isFinite(episode.IndexNumber))
+                .sort((left, right) => (left.ParentIndexNumber - right.ParentIndexNumber)
+                    || (left.IndexNumber - right.IndexNumber)
+                    || (left.Name || '').localeCompare(right.Name || ''))
+                .map(episode => ({
+                    ItemId: episode.Id,
+                    ItemName: episode.Name,
+                    SeasonId: episode.SeasonId || '',
+                    SeasonNumber: episode.ParentIndexNumber,
+                    EpisodeNumber: episode.IndexNumber
+                }));
+        }
+
         async function createParty() {
             const embyServerUrl = document.getElementById('serverUrl').value.trim();
             const webServerUrl = window.location.origin;
@@ -1552,21 +1610,62 @@
             let finalItemType = contentType;
             let seriesId = null;
             let seasonId = null;
-            
+            let seriesName = null;
+            let isSeriesParty = false;
+            let episodeQueue = [];
+            let currentEpisodeIndex = -1;
+            let currentEpisodeId = null;
+
             if (contentType === 'Series') {
                 const episodeInput = document.getElementById('newEpisode');
-                const episodeId = episodeInput.value;
-                
-                if (!episodeId) {
+                const selectedEpisodeId = episodeInput.value || null;
+                const selectedSeasonId = document.getElementById('newSeason').value || null;
+                isSeriesParty = document.getElementById('newIsSeriesParty').checked;
+                seriesId = contentId;
+                seriesName = contentName;
+                seasonId = selectedSeasonId;
+                finalItemType = 'Episode';
+
+                if (!selectedEpisodeId && !isSeriesParty) {
                     alert('Please select an episode for TV shows');
                     return;
                 }
-                
-                finalItemId = episodeId;
-                finalItemType = 'Episode';
-                finalItemName = episodeInput.dataset.name || '';
-                seriesId = contentId;
-                seasonId = document.getElementById('newSeason').value;
+
+                if (isSeriesParty) {
+                    try {
+                        episodeQueue = await loadAllSeriesEpisodesForCreate(seriesId);
+                    } catch (error) {
+                        alert(error.message || 'Failed to load the TV show episode queue.');
+                        return;
+                    }
+
+                    if (episodeQueue.length === 0) {
+                        alert('No regular episodes were found for this TV show.');
+                        return;
+                    }
+
+                    if (selectedEpisodeId) {
+                        currentEpisodeIndex = episodeQueue.findIndex(episode => episode.ItemId === selectedEpisodeId);
+                    } else if (selectedSeasonId) {
+                        currentEpisodeIndex = episodeQueue.findIndex(episode => episode.SeasonId === selectedSeasonId);
+                    } else {
+                        currentEpisodeIndex = 0;
+                    }
+
+                    if (currentEpisodeIndex < 0) {
+                        alert('The selected Series Party starting point was not found in the regular episode queue.');
+                        return;
+                    }
+
+                    const startingEpisode = episodeQueue[currentEpisodeIndex];
+                    finalItemId = startingEpisode.ItemId;
+                    finalItemName = startingEpisode.ItemName;
+                    seasonId = startingEpisode.SeasonId;
+                    currentEpisodeId = startingEpisode.ItemId;
+                } else {
+                    finalItemId = selectedEpisodeId;
+                    finalItemName = episodeInput.dataset.name || '';
+                }
             }
             
             const allowedUsersSelect = document.getElementById('newAllowedUsers');
@@ -1579,7 +1678,12 @@
                     itemName: finalItemName,
                     itemType: finalItemType,
                     seriesId: seriesId,
+                    seriesName: seriesName,
                     seasonId: seasonId,
+                    isSeriesParty: isSeriesParty,
+                    episodeQueue: episodeQueue,
+                    currentEpisodeIndex: currentEpisodeIndex,
+                    currentEpisodeId: currentEpisodeId,
                     collectionName: targetLibraryName,
                     targetLibraryId: targetLibraryId,
                     isActive: document.getElementById('newIsActive').checked,

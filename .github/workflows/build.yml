@@ -13,12 +13,17 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 6.0.x
-      - name: Test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test plugin logic
         run: dotnet test test/WatchPartyForEmby.Tests/WatchPartyForEmby.Tests.csproj --configuration Release
+      - name: Test control pages
+        run: node --test test/configPagePartyModeRegression.test.js test/externalPartyModeRegression.test.js
       - name: Build plugin
         run: dotnet build WatchPartyForEmby.csproj --configuration Release --no-restore
       - uses: actions/upload-artifact@v4
         with:
-          name: WatchPartyForEmby-1.6.0-series-party
+          name: WatchPartyForEmby-1.6.1-series-party-mode-fix
           path: bin/Release/net6.0/WatchPartyForEmby.dll
           if-no-files-found: error

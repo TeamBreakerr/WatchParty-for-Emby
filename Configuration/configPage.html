@@ -113,6 +113,16 @@
                             </div>
                         </div>
 
+                        <div class="checkboxContainer" id="seriesPartyContainer" style="margin-top: 1em; display: none; padding: 1em; border: 1px solid #4CAF50; border-radius: 4px;">
+                            <label>
+                                <input is="emby-checkbox" type="checkbox" id="isSeriesParty" />
+                                <span>Create a Series Party</span>
+                            </label>
+                            <div class="fieldDescription" id="seriesPartyModeHint">
+                                Off: select one season and episode. On: create the full ordered series queue; season and episode become optional starting-point selectors.
+                            </div>
+                        </div>
+
                         <div class="selectContainer" id="seriesContainer" style="margin-top: 1em; display: none;">
                             <label class="selectLabel" for="selectedSeasonId">Select Season</label>
                             <div class="autocomplete-container">
@@ -120,30 +130,20 @@
                                 <div id="searchSeasonDropdown" class="autocomplete-dropdown"></div>
                                 <input type="hidden" id="selectedSeasonId" />
                             </div>
-                            <div class="fieldDescription">
+                            <div class="fieldDescription" id="seasonFieldDescription">
                                 Choose which season
                             </div>
                         </div>
 
                         <div class="selectContainer" id="episodeContainer" style="margin-top: 1em; display: none;">
-                            <label class="selectLabel" for="selectedEpisodeId">Select Episode</label>
+                            <label class="selectLabel" id="episodeFieldLabel" for="selectedEpisodeId">Select Episode</label>
                             <div class="autocomplete-container">
                                 <input is="emby-input" type="text" id="searchEpisode" placeholder="Search episodes..." autocomplete="off" style="width: 100%;" />
                                 <div id="searchEpisodeDropdown" class="autocomplete-dropdown"></div>
                                 <input type="hidden" id="selectedEpisodeId" />
                             </div>
-                            <div class="fieldDescription">
+                            <div class="fieldDescription" id="episodeFieldDescription">
                                 Choose which episode to watch
-                            </div>
-                        </div>
-
-                        <div class="checkboxContainer" id="seriesPartyContainer" style="margin-top: 1em; display: none;">
-                            <label>
-                                <input is="emby-checkbox" type="checkbox" id="isSeriesParty" />
-                                <span>Create a Series Party</span>
-                            </label>
-                            <div class="fieldDescription">
-                                Add every regular episode in the series to one ordered queue. The selected episode is the starting episode.
                             </div>
                         </div>
 

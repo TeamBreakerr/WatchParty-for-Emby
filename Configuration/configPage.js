@@ -152,6 +152,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 () => this.loadMoreEpisodes(view)
             );
 
+            view.querySelector('#isSeriesParty').addEventListener('change', (e) => {
+                this.updateSeriesPartyMode(view, e.target.checked);
+            });
+
             view.querySelector('#autoStartWhenReady').addEventListener('change', (e) => {
                 view.querySelector('#minReadyCount').disabled = !e.target.checked;
             });
@@ -667,16 +671,18 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         }
 
         showSeriesControls(view) {
+            view.querySelector('#seriesPartyContainer').style.display = 'block';
             view.querySelector('#seriesContainer').style.display = 'block';
             view.querySelector('#episodeContainer').style.display = 'block';
-            view.querySelector('#seriesPartyContainer').style.display = 'block';
+            this.updateSeriesPartyMode(view, view.querySelector('#isSeriesParty').checked);
         }
 
         hideSeriesControls(view) {
+            view.querySelector('#seriesPartyContainer').style.display = 'none';
             view.querySelector('#seriesContainer').style.display = 'none';
             view.querySelector('#episodeContainer').style.display = 'none';
-            view.querySelector('#seriesPartyContainer').style.display = 'none';
             view.querySelector('#isSeriesParty').checked = false;
+            this.updateSeriesPartyMode(view, false);
             
             this.searchSeason_items = [];
             this.searchEpisode_items = [];
@@ -688,6 +694,25 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             
             view.querySelector('#searchSeasonDropdown').classList.remove('show');
             view.querySelector('#searchEpisodeDropdown').classList.remove('show');
+        }
+
+        updateSeriesPartyMode(view, isSeriesParty) {
+            const seasonDescription = view.querySelector('#seasonFieldDescription');
+            const episodeLabel = view.querySelector('#episodeFieldLabel');
+            const episodeDescription = view.querySelector('#episodeFieldDescription');
+            const modeHint = view.querySelector('#seriesPartyModeHint');
+
+            if (isSeriesParty) {
+                seasonDescription.textContent = 'Optional: choose a season to start from its first regular episode.';
+                episodeLabel.textContent = 'Starting Episode (Optional)';
+                episodeDescription.textContent = 'Optional: choose an exact starting episode. Leave both fields empty to start at the first regular episode.';
+                modeHint.textContent = 'Series Party mode: every regular episode is queued across all seasons. Season and episode only select the starting point.';
+            } else {
+                seasonDescription.textContent = 'Required for a single-episode TV Party.';
+                episodeLabel.textContent = 'Select Episode';
+                episodeDescription.textContent = 'Required: choose the single episode for this Party.';
+                modeHint.textContent = 'Single-episode mode: select a season and episode, or enable Series Party for the full ordered series queue.';
+            }
         }
 
         toggleReverseProxySettings(view, useReverseProxy) {
@@ -1082,24 +1107,28 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             let seasonId = null;
             let seriesName = null;
             let isSeriesParty = false;
+            let selectedEpisodeId = null;
 
             if (itemType === 'Series') {
                 const episodeInput = view.querySelector('#selectedEpisodeId');
                 const episodeId = episodeInput.value;
-                
-                if (!episodeId) {
+                isSeriesParty = view.querySelector('#isSeriesParty').checked;
+                selectedEpisodeId = episodeId || null;
+                seasonId = view.querySelector('#selectedSeasonId').value || null;
+                seriesId = itemId;
+                seriesName = itemInput.dataset.name || view.querySelector('#searchContent').value;
+                finalItemType = 'Episode';
+
+                if (!selectedEpisodeId && !isSeriesParty) {
                     loading.hide();
                     toast({ type: 'error', text: 'Please select an episode for TV shows.' });
                     return;
                 }
 
-                finalItemId = episodeId;
-                finalItemType = 'Episode';
-                seriesId = itemId;
-                seasonId = view.querySelector('#selectedSeasonId').value;
-                finalItemName = view.querySelector('#searchEpisode').value;
-                seriesName = itemInput.dataset.name || view.querySelector('#searchContent').value;
-                isSeriesParty = view.querySelector('#isSeriesParty').checked;
+                if (selectedEpisodeId) {
+                    finalItemId = selectedEpisodeId;
+                    finalItemName = view.querySelector('#searchEpisode').value;
+                }
             }
             
             const libraryNameSelect = view.querySelector('#libraryName');
@@ -1162,10 +1191,26 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                             EpisodeNumber: episode.IndexNumber
                         }));
 
-                    currentEpisodeIndex = episodeQueue.findIndex(episode => episode.ItemId === finalItemId);
-                    if (episodeQueue.length === 0 || currentEpisodeIndex < 0) {
-                        throw new Error('Unable to build the series queue or find the selected starting episode.');
+                    if (episodeQueue.length === 0) {
+                        throw new Error('No regular episodes were found for this TV show.');
                     }
+
+                    if (selectedEpisodeId) {
+                        currentEpisodeIndex = episodeQueue.findIndex(episode => episode.ItemId === selectedEpisodeId);
+                    } else if (seasonId) {
+                        currentEpisodeIndex = episodeQueue.findIndex(episode => episode.SeasonId === seasonId);
+                    } else {
+                        currentEpisodeIndex = 0;
+                    }
+
+                    if (currentEpisodeIndex < 0) {
+                        throw new Error('The selected Series Party starting point was not found in the regular episode queue.');
+                    }
+
+                    const startingEpisode = episodeQueue[currentEpisodeIndex];
+                    finalItemId = startingEpisode.ItemId;
+                    finalItemName = startingEpisode.ItemName;
+                    seasonId = startingEpisode.SeasonId;
                 }
 
                 const newParty = {
