@@ -1569,6 +1569,13 @@ namespace WatchPartyForEmby
             WatchPartyEpisode episode,
             IReadOnlyCollection<SessionInfo> sessions)
         {
+            var episodeItem = episode == null ? null : _libraryManager.GetItemById(episode.ItemId);
+            if (episodeItem == null)
+            {
+                _logger.Warn($"[Party {party.Id}] Cannot play next episode because item {episode?.ItemId} was not found");
+                return;
+            }
+
             foreach (var session in sessions)
             {
                 try
@@ -1578,7 +1585,7 @@ namespace WatchPartyForEmby
                         session.Id,
                         new PlayRequest
                         {
-                            ItemIds = new[] { episode.ItemId },
+                            ItemIds = new[] { episodeItem.InternalId },
                             PlayCommand = PlayCommand.PlayNow,
                             StartPositionTicks = 0
                         },
