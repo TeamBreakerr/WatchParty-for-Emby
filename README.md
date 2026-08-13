@@ -12,6 +12,7 @@ A synchronized watch party plugin for Emby Media Server. Create watch parties th
 - **SSO Support** — Authentik forward auth integration for the dashboard
 - **Chat** — Built-in chat for each watch party
 - **STRM Library Integration** — Creates STRM files in a dedicated Emby library so users can join parties by browsing and playing from the Watch Parties library
+- **Nested STRM Resolution** — Resolves local STRM sources (including Xiaoya/115 libraries) so generated party entries point to the actual stream instead of another STRM file
 - **Auto-Kick** — Optionally remove inactive participants after a configurable timeout
 - **Network Latency Compensation** — Automatic latency measurement and adjustment for remote viewers
 

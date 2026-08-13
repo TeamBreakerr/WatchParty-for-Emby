@@ -1,0 +1,24 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 6.0.x
+      - name: Test
+        run: dotnet test test/WatchPartyForEmby.Tests/WatchPartyForEmby.Tests.csproj --configuration Release
+      - name: Build plugin
+        run: dotnet build WatchPartyForEmby.csproj --configuration Release --no-restore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WatchPartyForEmby-1.5.0-xiaoya
+          path: bin/Release/net6.0/WatchPartyForEmby.dll
+          if-no-files-found: error

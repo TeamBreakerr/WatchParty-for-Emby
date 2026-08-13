@@ -873,7 +873,14 @@ namespace WatchPartyForEmby
                     return null;
                 }
 
-                await File.WriteAllTextAsync(strmPath, itemPath);
+                var resolvedSource = await StrmSourceResolver.ResolveAsync(itemPath);
+                await File.WriteAllTextAsync(strmPath, resolvedSource + Environment.NewLine);
+
+                if (!string.Equals(itemPath, resolvedSource, StringComparison.Ordinal))
+                {
+                    _logger.Info($"Party {party.Id}: Resolved source STRM before creating watch party entry");
+                }
+
                 _logger.Info($"Created STRM file for party {party.Id}: {strmPath}");
 
                 return strmPath;
