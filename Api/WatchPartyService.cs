@@ -72,6 +72,12 @@ namespace WatchPartyForEmby.Api
         public long CurrentPositionTicks { get; set; }
         public bool IsPlaying { get; set; }
         public bool RequiresPassword { get; set; }
+        public bool IsSeriesParty { get; set; }
+        public string SeriesName { get; set; }
+        public string CurrentEpisodeId { get; set; }
+        public string CurrentEpisodeName { get; set; }
+        public int CurrentEpisodeIndex { get; set; }
+        public int EpisodeCount { get; set; }
     }
 
     [Route("/WatchParty/{Id}/Participants", "GET", Summary = "Get party participants")]
@@ -217,6 +223,11 @@ namespace WatchPartyForEmby.Api
                         hostUserName = hostUser.Name;
                     }
                 }
+
+                var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+                var participantCount = Plugin.Instance.PartyParticipants.TryGetValue(party.Id, out var participants)
+                    ? participants.Count
+                    : 0;
                 
                 parties.Add(new WatchPartyInfo
                 {
@@ -226,12 +237,18 @@ namespace WatchPartyForEmby.Api
                     ItemType = party.ItemType,
                     IsActive = party.IsActive,
                     IsWaitingRoom = party.IsWaitingRoom,
-                    ParticipantCount = 0,
+                    ParticipantCount = participantCount,
                     MaxParticipants = party.MaxParticipants,
                     HostUserName = hostUserName,
                     CurrentPositionTicks = party.CurrentPositionTicks,
                     IsPlaying = party.IsPlaying,
-                    RequiresPassword = !string.IsNullOrEmpty(party.PasswordHash)
+                    RequiresPassword = !string.IsNullOrEmpty(party.PasswordHash),
+                    IsSeriesParty = party.IsSeriesParty,
+                    SeriesName = party.SeriesName,
+                    CurrentEpisodeId = party.CurrentEpisodeId,
+                    CurrentEpisodeName = currentEpisode?.ItemName,
+                    CurrentEpisodeIndex = party.CurrentEpisodeIndex,
+                    EpisodeCount = party.EpisodeQueue?.Count ?? 0
                 });
             }
 

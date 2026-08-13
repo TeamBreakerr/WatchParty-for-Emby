@@ -137,6 +137,16 @@
                             </div>
                         </div>
 
+                        <div class="checkboxContainer" id="seriesPartyContainer" style="margin-top: 1em; display: none;">
+                            <label>
+                                <input is="emby-checkbox" type="checkbox" id="isSeriesParty" />
+                                <span>Create a Series Party</span>
+                            </label>
+                            <div class="fieldDescription">
+                                Add every regular episode in the series to one ordered queue. The selected episode is the starting episode.
+                            </div>
+                        </div>
+
                         <div class="selectContainer" style="margin-top: 1em;">
                             <label class="selectLabel" for="libraryName">Library Name</label>
                             <select is="emby-select" id="libraryName" class="emby-select-withcolor emby-select">
@@ -673,7 +683,7 @@
                             <li><strong>Admin:</strong> Select a library from the "Library Name" dropdown</li>
                             <li><strong>Admin:</strong> Select content from the dropdowns above</li>
                             <li><strong>Admin:</strong> Activate party and click "Create Watch Party"</li>
-                            <li><strong>Automatic:</strong> .strm files are created directly in the selected library with original filenames</li>
+                            <li><strong>Automatic:</strong> Single-item parties create one .strm; Series Parties create an ordered series folder</li>
                             <li><strong>Everyone:</strong> Browse to the library and play the content</li>
                             <li><strong>Synced:</strong> The plugin keeps everyone at the same position and automatically rescans the library</li>
                         </ol>
@@ -681,8 +691,8 @@
                         <h3>STRM File System:</h3>
                         <p>
                             When you create a watch party, the plugin creates a .strm file pointing to your selected content.
-                            Files use the original media filenames so Emby recognizes them properly (e.g., "Dredd (2012).strm").
-                            Files are placed directly in the library you select, and the library is automatically rescanned.
+                            Single-item files use the original media filename. Series Parties use their own collision-safe folder,
+                            with season folders and ordered episode filenames. The selected library is automatically rescanned.
                         </p>
 
                         <h3>Works on All Platforms:</h3>
@@ -691,7 +701,7 @@
                             <li>Emby for Android</li>
                             <li>Emby for iOS</li>
                             <li>Emby for Smart TVs</li>
-                            <li>Any Emby client that can browse libraries!</li>
+                            <li>Third-party clients only when they implement Emby remote play-state and play commands</li>
                         </ul>
 
                         <h3>How Syncing Works:</h3>

@@ -31,7 +31,11 @@ namespace WatchPartyForEmby
         private readonly Dictionary<string, Dictionary<string, int>> _partyPauseVotes = new Dictionary<string, Dictionary<string, int>>();
         private readonly Dictionary<string, string> _partyLibraryPathCache = new Dictionary<string, string>();
         private readonly Dictionary<string, string> _partyStrmPathCache = new Dictionary<string, string>();
+        private readonly Dictionary<string, string> _partyEpisodeStrmPathCache = new Dictionary<string, string>();
+        private readonly Dictionary<string, string> _partySeriesDirectoryCache = new Dictionary<string, string>();
         private readonly Dictionary<string, string> _strmContentCache = new Dictionary<string, string>();
+        private readonly HashSet<string> _partiesTransitioning = new HashSet<string>();
+        private readonly object _seriesTransitionLock = new object();
 
         public ServerEntryPoint(
             ISessionManager sessionManager,
@@ -99,6 +103,7 @@ namespace WatchPartyForEmby
             _plugin.ConfigurationUpdated += OnConfigurationUpdated;
             
             MigrateLegacyConfiguration();
+            RepairSeriesPartyConfiguration();
             
             var config = _plugin.Configuration;
             foreach (var party in config.WatchParties)
@@ -142,10 +147,36 @@ namespace WatchPartyForEmby
             }
         }
 
+        private void RepairSeriesPartyConfiguration()
+        {
+            var changed = false;
+            foreach (var party in _plugin.Configuration.WatchParties)
+            {
+                if (party.AllowedUserIds == null)
+                {
+                    party.AllowedUserIds = new List<string>();
+                    changed = true;
+                }
+                if (party.EpisodeQueue == null)
+                {
+                    party.EpisodeQueue = new List<WatchPartyEpisode>();
+                    changed = true;
+                }
+                changed |= SeriesPartyQueue.Repair(party);
+            }
+
+            if (changed)
+            {
+                _plugin.SaveConfiguration();
+                _logger.Info("Repaired persisted Series Party queue state");
+            }
+        }
+
         private void OnConfigurationUpdated(object sender, EventArgs e)
         {
             _logger.Info("Configuration updated, refreshing collections and timer");
             
+            RepairSeriesPartyConfiguration();
             var config = _plugin.Configuration;
             var intervalMs = Math.Max(1, config.SyncIntervalSeconds) * 1000;
             _syncTimer?.Change(intervalMs, intervalMs);
@@ -173,6 +204,8 @@ namespace WatchPartyForEmby
                 };
                 _logger.Info($"[Party {partyId}] New participant: {user} ({session.UserId})");
             }
+
+            _plugin.PartyParticipants[partyId][session.UserId].SessionId = session.Id;
 
             return _plugin.PartyParticipants[partyId][session.UserId];
         }
@@ -207,6 +240,12 @@ namespace WatchPartyForEmby
                     _logger.Warn($"[Party {party.Id}] User {userId} not in allowed list");
                     return false;
                 }
+            }
+
+            if (_plugin.PartyParticipants.ContainsKey(party.Id)
+                && _plugin.PartyParticipants[party.Id].ContainsKey(userId))
+            {
+                return true;
             }
 
             if (_plugin.PartyParticipants.ContainsKey(party.Id))
@@ -624,6 +663,7 @@ namespace WatchPartyForEmby
                 var removedPartyIds = _trackedPartyIds.Except(currentPartyIds).ToList();
                 
                 var removedStrmPaths = new HashSet<string>(GetPathComparer());
+                var removedSeriesDirectories = new HashSet<string>(GetPathComparer());
                 foreach (var removedId in removedPartyIds)
                 {
                     _logger.Info($"Party {removedId} was removed, cleaning up...");
@@ -633,10 +673,25 @@ namespace WatchPartyForEmby
                     {
                         removedStrmPaths.Add(removedStrmPath);
                     }
+                    if (_partySeriesDirectoryCache.TryGetValue(removedId, out var removedSeriesDirectory)
+                        && !string.IsNullOrEmpty(removedSeriesDirectory))
+                    {
+                        removedSeriesDirectories.Add(removedSeriesDirectory);
+                    }
                     
                     _partySyncedSessions.Remove(removedId);
                     _partySessionPauseState.Remove(removedId);
                     _partyHostSessions.Remove(removedId);
+                    _partyPauseVotes.Remove(removedId);
+                    _partySeriesDirectoryCache.Remove(removedId);
+
+                    var episodeCacheKeys = _partyEpisodeStrmPathCache.Keys
+                        .Where(key => key.StartsWith(removedId + ":", StringComparison.Ordinal))
+                        .ToList();
+                    foreach (var cacheKey in episodeCacheKeys)
+                    {
+                        _partyEpisodeStrmPathCache.Remove(cacheKey);
+                    }
                 }
                 
                 var removedCacheIds = _partyLibraryPathCache.Keys.Except(currentPartyIds).ToList();
@@ -664,6 +719,11 @@ namespace WatchPartyForEmby
                         _logger.ErrorException($"Error deleting Watch Party STRM file: {strmFile}", ex);
                     }
                 }
+
+                foreach (var seriesDirectory in removedSeriesDirectories)
+                {
+                    DeleteSeriesPartyDirectory(seriesDirectory);
+                }
                 
                 _trackedPartyIds.Clear();
                 _trackedPartyIds.UnionWith(currentPartyIds);
@@ -681,11 +741,7 @@ namespace WatchPartyForEmby
 
             foreach (var party in config.WatchParties)
             {
-                var path = await CreateWatchPartyStrmFile(party);
-                if (!string.IsNullOrEmpty(path))
-                {
-                    createdPaths.Add(path);
-                }
+                createdPaths.AddRange(await CreateWatchPartyStrmFiles(party));
             }
 
             // Notify Emby about each new STRM file via the REST API (same approach as Radarr/Sonarr)
@@ -696,6 +752,61 @@ namespace WatchPartyForEmby
             }
 
             _logger.Info("Finished creating STRM files for all watch parties");
+        }
+
+        private async Task<List<string>> CreateWatchPartyStrmFiles(WatchPartyItem party)
+        {
+            if (!party.IsSeriesParty)
+            {
+                var path = await CreateWatchPartyStrmFile(party);
+                return string.IsNullOrEmpty(path) ? new List<string>() : new List<string> { path };
+            }
+
+            var createdPaths = new List<string>();
+            var seriesDirectory = GetSeriesPartyDirectory(party);
+            if (string.IsNullOrEmpty(seriesDirectory))
+            {
+                return createdPaths;
+            }
+
+            Directory.CreateDirectory(seriesDirectory);
+            var expectedPaths = new HashSet<string>(GetPathComparer());
+            foreach (var episode in party.EpisodeQueue ?? new List<WatchPartyEpisode>())
+            {
+                var item = _libraryManager.GetItemById(episode.ItemId);
+                if (item == null || string.IsNullOrEmpty(item.Path))
+                {
+                    _logger.Warn($"Party {party.Id}: Queue item {episode.ItemId} was not found or has no path");
+                    continue;
+                }
+
+                var path = GetSeriesEpisodeStrmPath(party, episode);
+                if (string.IsNullOrEmpty(path))
+                {
+                    continue;
+                }
+
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                var resolvedSource = await StrmSourceResolver.ResolveAsync(item.Path);
+                await File.WriteAllTextAsync(path, resolvedSource + Environment.NewLine);
+                _strmContentCache[path] = resolvedSource;
+                expectedPaths.Add(NormalizePath(path));
+                createdPaths.Add(path);
+            }
+
+            foreach (var existingPath in Directory.EnumerateFiles(seriesDirectory, "*.strm", SearchOption.AllDirectories))
+            {
+                if (!expectedPaths.Contains(NormalizePath(existingPath)))
+                {
+                    File.Delete(existingPath);
+                    _strmContentCache.Remove(existingPath);
+                    _libraryMonitor.ReportFileSystemChanged(existingPath);
+                    _logger.Info($"Deleted stale Series Party STRM file: {existingPath}");
+                }
+            }
+
+            _logger.Info($"Created {createdPaths.Count} STRM files for Series Party {party.Id}");
+            return createdPaths;
         }
 
         private async Task NotifyEmbyLibraryUpdated(List<string> paths)
@@ -814,6 +925,99 @@ namespace WatchPartyForEmby
             return null;
         }
 
+        private string GetSeriesPartyDirectory(WatchPartyItem party)
+        {
+            if (_partySeriesDirectoryCache.TryGetValue(party.Id, out var cachedDirectory))
+            {
+                return cachedDirectory;
+            }
+
+            var libraryPath = GetLibraryPath(party);
+            if (string.IsNullOrEmpty(libraryPath))
+            {
+                return null;
+            }
+
+            var seriesName = SanitizeFileName(party.SeriesName ?? party.ItemName ?? "Series");
+            var compactId = (party.Id ?? Guid.NewGuid().ToString("N")).Replace("-", string.Empty);
+            var shortId = compactId.Substring(0, Math.Min(8, compactId.Length));
+            var directory = Path.Combine(libraryPath, $"{seriesName} [Series Party {shortId}]");
+            _partySeriesDirectoryCache[party.Id] = directory;
+            return directory;
+        }
+
+        private string GetSeriesEpisodeStrmPath(WatchPartyItem party, WatchPartyEpisode episode)
+        {
+            if (episode == null || string.IsNullOrEmpty(episode.ItemId))
+            {
+                return null;
+            }
+
+            var cacheKey = $"{party.Id}:{episode.ItemId}";
+            if (_partyEpisodeStrmPathCache.TryGetValue(cacheKey, out var cachedPath))
+            {
+                return cachedPath;
+            }
+
+            var seriesDirectory = GetSeriesPartyDirectory(party);
+            if (string.IsNullOrEmpty(seriesDirectory))
+            {
+                return null;
+            }
+
+            var seasonDirectory = Path.Combine(seriesDirectory, $"Season {episode.SeasonNumber:00}");
+            var seriesName = SanitizeFileName(party.SeriesName ?? "Series");
+            var episodeName = SanitizeFileName(episode.ItemName ?? $"Episode {episode.EpisodeNumber}");
+            var fileName = $"{seriesName} - S{episode.SeasonNumber:00}E{episode.EpisodeNumber:00} - {episodeName}.strm";
+            var path = Path.Combine(seasonDirectory, fileName);
+            _partyEpisodeStrmPathCache[cacheKey] = path;
+            return path;
+        }
+
+        private string SanitizeFileName(string value)
+        {
+            var sanitized = string.Join("_", (value ?? string.Empty).Split(Path.GetInvalidFileNameChars()));
+            return string.IsNullOrWhiteSpace(sanitized) ? "Watch Party" : sanitized.Trim();
+        }
+
+        private void DeleteSeriesPartyDirectory(string seriesDirectory)
+        {
+            try
+            {
+                if (!Directory.Exists(seriesDirectory))
+                {
+                    return;
+                }
+
+                foreach (var strmFile in Directory.EnumerateFiles(seriesDirectory, "*.strm", SearchOption.AllDirectories))
+                {
+                    File.Delete(strmFile);
+                    _strmContentCache.Remove(strmFile);
+                    _libraryMonitor.ReportFileSystemChanged(strmFile);
+                }
+
+                foreach (var directory in Directory.EnumerateDirectories(seriesDirectory, "*", SearchOption.AllDirectories)
+                    .OrderByDescending(path => path.Length))
+                {
+                    if (!Directory.EnumerateFileSystemEntries(directory).Any())
+                    {
+                        Directory.Delete(directory);
+                    }
+                }
+
+                if (!Directory.EnumerateFileSystemEntries(seriesDirectory).Any())
+                {
+                    Directory.Delete(seriesDirectory);
+                }
+
+                _logger.Info($"Deleted Series Party directory: {seriesDirectory}");
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorException($"Error deleting Series Party directory {seriesDirectory}", ex);
+            }
+        }
+
         private async Task<string> CreateWatchPartyStrmFile(WatchPartyItem party)
         {
             try
@@ -868,6 +1072,11 @@ namespace WatchPartyForEmby
 
         private string GetStrmFilePath(WatchPartyItem party)
         {
+            if (party.IsSeriesParty)
+            {
+                return GetSeriesEpisodeStrmPath(party, SeriesPartyQueue.GetCurrentEpisode(party));
+            }
+
             if (_partyStrmPathCache.TryGetValue(party.Id, out var cachedStrmPath))
             {
                 return cachedStrmPath;
@@ -1328,21 +1537,166 @@ namespace WatchPartyForEmby
             }
         }
 
-        private void OnPlaybackStopped(object sender, PlaybackStopEventArgs e)
+        private List<SessionInfo> GetSeriesTransitionSessions(WatchPartyItem party, SessionInfo masterSession)
+        {
+            var sessionIds = new HashSet<string>(StringComparer.Ordinal);
+            if (masterSession != null)
+            {
+                sessionIds.Add(masterSession.Id);
+            }
+
+            if (_partySyncedSessions.TryGetValue(party.Id, out var syncedSessions))
+            {
+                sessionIds.UnionWith(syncedSessions);
+            }
+
+            if (_plugin.PartyParticipants.TryGetValue(party.Id, out var participants))
+            {
+                foreach (var participant in participants.Values)
+                {
+                    if (!string.IsNullOrEmpty(participant.SessionId))
+                    {
+                        sessionIds.Add(participant.SessionId);
+                    }
+                }
+            }
+
+            return _sessionManager.Sessions.Where(session => sessionIds.Contains(session.Id)).ToList();
+        }
+
+        private async Task PlaySeriesEpisodeForSessions(
+            WatchPartyItem party,
+            WatchPartyEpisode episode,
+            IReadOnlyCollection<SessionInfo> sessions)
+        {
+            foreach (var session in sessions)
+            {
+                try
+                {
+                    await _sessionManager.SendPlayCommand(
+                        session.Id,
+                        session.Id,
+                        new PlayRequest
+                        {
+                            ItemIds = new[] { episode.ItemId },
+                            PlayCommand = PlayCommand.PlayNow,
+                            StartPositionTicks = 0
+                        },
+                        CancellationToken.None);
+                    _logger.Info($"[Party {party.Id}] Sent next episode {episode.ItemName} to {session.UserName}");
+                }
+                catch (Exception ex)
+                {
+                    _logger.ErrorException(
+                        $"[Party {party.Id}] Client {session.Client} did not accept next episode {episode.ItemName}",
+                        ex);
+                }
+            }
+        }
+
+        private long GetLastKnownPosition(WatchPartyItem party, SessionInfo session)
+        {
+            if (session?.PlayState?.PositionTicks is long sessionPosition && sessionPosition > 0)
+            {
+                return sessionPosition;
+            }
+
+            if (session != null
+                && _plugin.PartyParticipants.TryGetValue(party.Id, out var participants)
+                && participants.TryGetValue(session.UserId, out var participant)
+                && participant.CurrentPositionTicks > 0)
+            {
+                return participant.CurrentPositionTicks;
+            }
+
+            return party.CurrentPositionTicks;
+        }
+
+        private async void OnPlaybackStopped(object sender, PlaybackStopEventArgs e)
         {
             try
             {
                 _logger.Info($"[Watch Party] PlaybackStopped event fired - Item: {e.Item?.Name}, ItemId: {e.Item?.Id}, Session: {e.Session.Id}");
                 
-                var config = _plugin.Configuration;
-                
                 var party = FindPartyForItem(e.Item);
                 
                 if (party != null && party.IsActive)
                 {
-                    RemoveParticipant(party.Id, e.Session.UserId);
-                    
                     var isMaster = !string.IsNullOrEmpty(party.MasterUserId) && e.Session.UserId == party.MasterUserId;
+                    var stoppedPosition = GetLastKnownPosition(party, e.Session);
+                    var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+                    var sourceItem = currentEpisode == null ? null : _libraryManager.GetItemById(currentEpisode.ItemId);
+                    var runtimeTicks = e.Item?.RunTimeTicks ?? sourceItem?.RunTimeTicks ?? 0;
+
+                    if (party.IsSeriesParty)
+                    {
+                        var completedEpisodeId = party.CurrentEpisodeId;
+                        var completionResult = SeriesPartyAdvanceResult.NotCompleted;
+                        List<SessionInfo> transitionSessions = null;
+
+                        lock (_seriesTransitionLock)
+                        {
+                            if (isMaster && !_partiesTransitioning.Contains(party.Id))
+                            {
+                                completionResult = SeriesPartyQueue.TryAdvanceAfterStop(
+                                    party,
+                                    completedEpisodeId,
+                                    stoppedPosition,
+                                    runtimeTicks);
+
+                                if (completionResult == SeriesPartyAdvanceResult.Advanced)
+                                {
+                                    _partiesTransitioning.Add(party.Id);
+                                    transitionSessions = GetSeriesTransitionSessions(party, e.Session);
+                                }
+                            }
+                        }
+
+                        if (completionResult == SeriesPartyAdvanceResult.Advanced)
+                        {
+                            var nextEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+                            _logger.Info(
+                                $"[Party {party.Id}] Master completed {completedEpisodeId}; advancing to {nextEpisode?.ItemName}");
+
+                            _plugin.SaveConfiguration();
+                            if (_partySyncedSessions.TryGetValue(party.Id, out var syncedSessions))
+                            {
+                                syncedSessions.Clear();
+                            }
+                            if (_partySessionPauseState.TryGetValue(party.Id, out var pauseStates))
+                            {
+                                pauseStates.Clear();
+                            }
+                            _partyPauseVotes.Remove(party.Id);
+
+                            try
+                            {
+                                await PlaySeriesEpisodeForSessions(party, nextEpisode, transitionSessions);
+                            }
+                            finally
+                            {
+                                lock (_seriesTransitionLock)
+                                {
+                                    _partiesTransitioning.Remove(party.Id);
+                                }
+                            }
+                            return;
+                        }
+
+                        if (completionResult == SeriesPartyAdvanceResult.EndOfQueue)
+                        {
+                            _logger.Info($"[Party {party.Id}] Series queue completed at {party.CurrentEpisodeId}");
+                            _plugin.SaveConfiguration();
+                        }
+                        else if (!isMaster && SeriesPartyQueue.IsNaturalCompletion(stoppedPosition, runtimeTicks))
+                        {
+                            _logger.Info(
+                                $"[Party {party.Id}] Participant {e.Session.UserId} reached the episode end; retaining membership for transition");
+                            return;
+                        }
+                    }
+
+                    RemoveParticipant(party.Id, e.Session.UserId);
                     
                     if (isMaster)
                     {

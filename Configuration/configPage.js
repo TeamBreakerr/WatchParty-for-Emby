@@ -83,6 +83,15 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         return ApiClient.getEpisodes(seriesId, params);
     }
 
+    function loadAllSeriesEpisodes(seriesId) {
+        return ApiClient.getEpisodes(seriesId, {
+            userId: ApiClient.getCurrentUserId(),
+            Fields: 'Id,Name,IndexNumber,ParentIndexNumber,SeasonId',
+            StartIndex: 0,
+            Limit: 10000
+        });
+    }
+
     function loadUsers() {
         return ApiClient.getUsers();
     }
@@ -495,7 +504,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             const seriesId = view.querySelector('#selectedItemId').value;
             this.currentSeasonId = itemData.id;
             this.episodesOffset = 0;
-            this.searchEpisode_searchMode = falseitemData.id;
+            this.searchEpisode_searchMode = false;
             this.episodesOffset = 0;
             
             const searchEpisode = view.querySelector('#searchEpisode');
@@ -660,11 +669,14 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         showSeriesControls(view) {
             view.querySelector('#seriesContainer').style.display = 'block';
             view.querySelector('#episodeContainer').style.display = 'block';
+            view.querySelector('#seriesPartyContainer').style.display = 'block';
         }
 
         hideSeriesControls(view) {
             view.querySelector('#seriesContainer').style.display = 'none';
             view.querySelector('#episodeContainer').style.display = 'none';
+            view.querySelector('#seriesPartyContainer').style.display = 'none';
+            view.querySelector('#isSeriesParty').checked = false;
             
             this.searchSeason_items = [];
             this.searchEpisode_items = [];
@@ -724,13 +736,22 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 if (party.HostOnlySeek) features.push('Host-Only Seek');
                 if (party.LockSeekAhead) features.push('Lock Seek Ahead');
                 if (party.AutoKickInactive) features.push('Auto-Kick Inactive');
+                if (party.IsSeriesParty) {
+                    const episodeCount = (party.EpisodeQueue || []).length;
+                    const currentIndex = Math.max(0, party.CurrentEpisodeIndex || 0);
+                    const currentEpisode = episodeCount > currentIndex ? party.EpisodeQueue[currentIndex] : null;
+                    features.push(`Series Queue: ${Math.min(currentIndex + 1, episodeCount)}/${episodeCount}`);
+                    if (currentEpisode && currentEpisode.ItemName) {
+                        features.push(`Current: ${currentEpisode.ItemName}`);
+                    }
+                }
                 const featuresText = features.length > 0 ? `<br>Features: ${features.join(', ')}` : '';
                 
                 html += `
                     <div class="paper-card" style="padding: 1em; display: flex; justify-content: space-between; align-items: center;">
                         <div style="flex: 1;">
                             <div style="font-weight: 500; margin-bottom: 0.5em;">
-                                ${party.ItemName || 'Unnamed Party'}
+                                ${(party.IsSeriesParty && party.SeriesName) || party.ItemName || 'Unnamed Party'}
                                 <span style="color: ${statusColor}; font-size: 0.9em; margin-left: 0.5em;">● ${statusText}</span>
                             </div>
                             <div style="font-size: 0.85em; color: #999;">
@@ -1040,6 +1061,8 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             let finalItemType = itemType;
             let seriesId = null;
             let seasonId = null;
+            let seriesName = null;
+            let isSeriesParty = false;
 
             if (itemType === 'Series') {
                 const episodeInput = view.querySelector('#selectedEpisodeId');
@@ -1056,6 +1079,8 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 seriesId = itemId;
                 seasonId = view.querySelector('#selectedSeasonId').value;
                 finalItemName = view.querySelector('#searchEpisode').value;
+                seriesName = itemInput.dataset.name || view.querySelector('#searchContent').value;
+                isSeriesParty = view.querySelector('#isSeriesParty').checked;
             }
             
             const libraryNameSelect = view.querySelector('#libraryName');
@@ -1098,7 +1123,32 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
             getPluginConfiguration().then(async config => {
                 const partyPasswordHash = partyPassword ? await this.hashPassword(partyPassword) : '';
-                
+                let episodeQueue = [];
+                let currentEpisodeIndex = -1;
+
+                if (isSeriesParty) {
+                    const episodeResult = await loadAllSeriesEpisodes(seriesId);
+                    episodeQueue = (episodeResult.Items || [])
+                        .filter(episode => Number.isFinite(episode.ParentIndexNumber)
+                            && episode.ParentIndexNumber > 0
+                            && Number.isFinite(episode.IndexNumber))
+                        .sort((left, right) => (left.ParentIndexNumber - right.ParentIndexNumber)
+                            || (left.IndexNumber - right.IndexNumber)
+                            || (left.Name || '').localeCompare(right.Name || ''))
+                        .map(episode => ({
+                            ItemId: episode.Id,
+                            ItemName: episode.Name,
+                            SeasonId: episode.SeasonId || '',
+                            SeasonNumber: episode.ParentIndexNumber,
+                            EpisodeNumber: episode.IndexNumber
+                        }));
+
+                    currentEpisodeIndex = episodeQueue.findIndex(episode => episode.ItemId === finalItemId);
+                    if (episodeQueue.length === 0 || currentEpisodeIndex < 0) {
+                        throw new Error('Unable to build the series queue or find the selected starting episode.');
+                    }
+                }
+
                 const newParty = {
                     Id: this.generateGuid(),
                     LibraryId: libraryId,
@@ -1106,7 +1156,12 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     ItemName: finalItemName,
                     ItemType: finalItemType,
                     SeriesId: seriesId,
+                    SeriesName: seriesName,
                     SeasonId: seasonId,
+                    IsSeriesParty: isSeriesParty,
+                    EpisodeQueue: episodeQueue,
+                    CurrentEpisodeIndex: currentEpisodeIndex,
+                    CurrentEpisodeId: isSeriesParty ? finalItemId : null,
                     CollectionName: selectedLibraryName,
                     TargetLibraryId: selectedLibraryId,
                     TargetLibraryPath: selectedLibraryPath,
@@ -1149,6 +1204,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     itemSelect.innerHTML = '<option value="">Select a library first...</option>';
                     delete itemSelect._allOptions;
                     view.querySelector('#isPartyActive').checked = false;
+                    view.querySelector('#isSeriesParty').checked = false;
                     view.querySelector('#maxParticipants').value = 50;
                     view.querySelector('#libraryName').value = '';
                     view.querySelector('#allowedUsers').selectedIndex = -1;
@@ -1172,10 +1228,13 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     this.hideSeriesControls(view);
                     
                     this.renderPartyList(view, this.config);
-                }).catch(() => {
+                }).catch((error) => {
                     loading.hide();
-                    toast({ type: 'error', text: 'Error creating watch party.' });
+                    toast({ type: 'error', text: `Error creating watch party: ${error.message || error}` });
                 });
+            }).catch((error) => {
+                loading.hide();
+                toast({ type: 'error', text: `Error preparing watch party: ${error.message || error}` });
             });
         }
 

@@ -12,6 +12,7 @@ A synchronized watch party plugin for Emby Media Server. Create watch parties th
 - **SSO Support** — Authentik forward auth integration for the dashboard
 - **Chat** — Built-in chat for each watch party
 - **STRM Library Integration** — Creates STRM files in a dedicated Emby library so users can join parties by browsing and playing from the Watch Parties library
+- **Series Parties** — Keeps an ordered multi-season episode queue in one room and advances everyone when the master naturally completes an episode
 - **Nested STRM Resolution** — Resolves local STRM sources (including Xiaoya/115 libraries) so generated party entries point to the actual stream instead of another STRM file
 - **Auto-Kick** — Optionally remove inactive participants after a configurable timeout
 - **Network Latency Compensation** — Automatic latency measurement and adjustment for remote viewers
@@ -23,6 +24,10 @@ A synchronized watch party plugin for Emby Media Server. Create watch parties th
 3. Users browse the Watch Parties library and play the item to join
 4. If the waiting room is enabled, playback is paused until enough participants are ready
 5. The host controls playback — pause, play, and seek are synced to all participants
+
+For a Series Party, select the episode where the room should start and enable **Create a Series Party**. The plugin queues all regular episodes in season/episode order, keeps the same participants and permissions between episodes, and stores the current episode and position across server restarts.
+
+Client support depends on the Emby remote-control commands that the client implements. A client that can browse and play Emby media but ignores remote pause, seek, or play commands cannot reliably act as a synchronized follower.
 
 ## Requirements
 

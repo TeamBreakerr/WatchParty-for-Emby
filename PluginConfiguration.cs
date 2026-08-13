@@ -120,6 +120,15 @@ namespace WatchPartyForEmby
         }
     }
 
+    public class WatchPartyEpisode
+    {
+        public string ItemId { get; set; }
+        public string ItemName { get; set; }
+        public string SeasonId { get; set; }
+        public int SeasonNumber { get; set; }
+        public int EpisodeNumber { get; set; }
+    }
+
     public class WatchPartyItem
     {
         public string Id { get; set; }
@@ -128,7 +137,12 @@ namespace WatchPartyForEmby
         public string ItemName { get; set; }
         public string ItemType { get; set; }
         public string SeriesId { get; set; }
+        public string SeriesName { get; set; }
         public string SeasonId { get; set; }
+        public bool IsSeriesParty { get; set; }
+        public List<WatchPartyEpisode> EpisodeQueue { get; set; }
+        public int CurrentEpisodeIndex { get; set; }
+        public string CurrentEpisodeId { get; set; }
         public string CollectionName { get; set; }
         public string TargetLibraryId { get; set; }
         public string TargetLibraryPath { get; set; }
@@ -166,6 +180,8 @@ namespace WatchPartyForEmby
             MaxParticipants = 50;
             CreatedDate = DateTime.UtcNow;
             AllowedUserIds = new List<string>();
+            EpisodeQueue = new List<WatchPartyEpisode>();
+            CurrentEpisodeIndex = -1;
             IsWaitingRoom = true;
             AutoStartWhenReady = true;
             MinReadyCount = 1;
