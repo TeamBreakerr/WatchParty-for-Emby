@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -36,7 +37,7 @@ namespace WatchPartyForEmby
         private readonly Dictionary<string, string> _strmContentCache = new Dictionary<string, string>();
         private readonly HashSet<string> _partiesTransitioning = new HashSet<string>();
         private readonly object _seriesTransitionLock = new object();
-        private readonly Dictionary<string, DateTime> _lastProgressCheckpoint = new Dictionary<string, DateTime>();
+        private readonly ConcurrentDictionary<string, DateTime> _lastProgressCheckpoint = new ConcurrentDictionary<string, DateTime>();
         private static readonly TimeSpan ProgressCheckpointInterval = TimeSpan.FromSeconds(30);
 
         public ServerEntryPoint(
@@ -686,7 +687,7 @@ namespace WatchPartyForEmby
                     _partyHostSessions.Remove(removedId);
                     _partyPauseVotes.Remove(removedId);
                     _partySeriesDirectoryCache.Remove(removedId);
-                    _lastProgressCheckpoint.Remove(removedId);
+                    _lastProgressCheckpoint.TryRemove(removedId, out _);
 
                     var episodeCacheKeys = _partyEpisodeStrmPathCache.Keys
                         .Where(key => key.StartsWith(removedId + ":", StringComparison.Ordinal))
@@ -1775,6 +1776,12 @@ namespace WatchPartyForEmby
                             _logger.Info($"[Party {party.Id}] Series queue completed at {party.CurrentEpisodeId}");
                             _plugin.SaveConfiguration();
                             _lastProgressCheckpoint[party.Id] = DateTime.UtcNow;
+                        }
+                        else if (isMaster && completionResult == SeriesPartyAdvanceResult.ItemMismatch)
+                        {
+                            _logger.Debug(
+                                $"[Party {party.Id}] Ignoring delayed stop for previous episode {stoppedEpisodeId}");
+                            return;
                         }
                         else if (!isMaster && SeriesPartyQueue.IsNaturalCompletion(stoppedPosition, runtimeTicks))
                         {
