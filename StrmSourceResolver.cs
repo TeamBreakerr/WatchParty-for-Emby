@@ -43,7 +43,7 @@ namespace WatchPartyForEmby
                     throw new InvalidDataException($"STRM file '{fullPath}' does not contain a playable source.");
                 }
 
-                currentPath = resolvedSource;
+                currentPath = ResolveRelativeSource(fullPath, resolvedSource);
             }
 
             throw new InvalidDataException($"STRM nesting exceeds the supported depth of {MaxNestedStrmDepth}.");
@@ -53,6 +53,20 @@ namespace WatchPartyForEmby
         {
             return string.Equals(Path.GetExtension(path), ".strm", StringComparison.OrdinalIgnoreCase)
                 && File.Exists(path);
+        }
+
+        private static string ResolveRelativeSource(string containingStrmPath, string resolvedSource)
+        {
+            if (Path.IsPathRooted(resolvedSource)
+                || Uri.TryCreate(resolvedSource, UriKind.Absolute, out _))
+            {
+                return resolvedSource;
+            }
+
+            var containingDirectory = Path.GetDirectoryName(containingStrmPath);
+            return string.IsNullOrEmpty(containingDirectory)
+                ? resolvedSource
+                : Path.GetFullPath(Path.Combine(containingDirectory, resolvedSource));
         }
 
         private static StringComparer GetPathComparer()

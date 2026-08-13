@@ -13,12 +13,16 @@ namespace WatchPartyForEmby
                 : configuredUrl.Trim();
 
             if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
-                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+                || !string.IsNullOrEmpty(uri.Query)
+                || !string.IsNullOrEmpty(uri.Fragment))
             {
-                throw new ArgumentException("The Emby server URL must be an absolute HTTP or HTTPS URL.", nameof(configuredUrl));
+                throw new ArgumentException(
+                    "The Emby server URL must be an absolute HTTP or HTTPS URL without a query or fragment.",
+                    nameof(configuredUrl));
             }
 
-            return baseUrl.TrimEnd('/');
+            return uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
         }
 
         public static string Build(string configuredUrl, string relativePath)
@@ -28,7 +32,8 @@ namespace WatchPartyForEmby
                 return GetBaseUrl(configuredUrl);
             }
 
-            return GetBaseUrl(configuredUrl) + "/" + relativePath.TrimStart('/');
+            var baseUri = new Uri(GetBaseUrl(configuredUrl) + "/", UriKind.Absolute);
+            return new Uri(baseUri, relativePath.TrimStart('/')).ToString();
         }
     }
 }

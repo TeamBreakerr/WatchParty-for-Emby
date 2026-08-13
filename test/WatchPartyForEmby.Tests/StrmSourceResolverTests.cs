@@ -47,6 +47,27 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public async Task ResolvesRelativeNestedStrmFromContainingDirectory()
+        {
+            CreateStrm("https://example.test/relative-video.mkv\n", "inner.strm");
+            var outerPath = CreateStrm("inner.strm\n", "outer.strm");
+
+            var result = await StrmSourceResolver.ResolveAsync(outerPath);
+
+            Assert.Equal("https://example.test/relative-video.mkv", result);
+        }
+
+        [Fact]
+        public async Task MakesRelativeMediaPathAbsoluteToContainingStrm()
+        {
+            var strmPath = CreateStrm("../media/movie.mkv\n");
+
+            var result = await StrmSourceResolver.ResolveAsync(strmPath);
+
+            Assert.Equal(Path.GetFullPath(Path.Combine(_testDirectory, "../media/movie.mkv")), result);
+        }
+
+        [Fact]
         public async Task RejectsEmptyStrm()
         {
             var strmPath = CreateStrm("\n# only a comment\n");

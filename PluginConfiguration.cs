@@ -261,7 +261,6 @@ namespace WatchPartyForEmby
             SyncIntervalSeconds = 5;
             SyncOffsetMilliseconds = 1000;
             WatchPartyStrmPath = string.Empty;
-            EnableExternalWebServer = false;
             ExternalWebServerPort = 8097;
             ListenAddress = "0.0.0.0";
             AllowedCorsOrigins = "";
