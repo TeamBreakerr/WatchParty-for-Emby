@@ -1082,24 +1082,28 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             let seasonId = null;
             let seriesName = null;
             let isSeriesParty = false;
+            let selectedEpisodeId = null;
 
             if (itemType === 'Series') {
                 const episodeInput = view.querySelector('#selectedEpisodeId');
                 const episodeId = episodeInput.value;
-                
-                if (!episodeId) {
+                selectedEpisodeId = episodeId || null;
+                isSeriesParty = view.querySelector('#isSeriesParty').checked;
+
+                if (!episodeId && !isSeriesParty) {
                     loading.hide();
                     toast({ type: 'error', text: 'Please select an episode for TV shows.' });
                     return;
                 }
 
-                finalItemId = episodeId;
                 finalItemType = 'Episode';
                 seriesId = itemId;
-                seasonId = view.querySelector('#selectedSeasonId').value;
-                finalItemName = view.querySelector('#searchEpisode').value;
                 seriesName = itemInput.dataset.name || view.querySelector('#searchContent').value;
-                isSeriesParty = view.querySelector('#isSeriesParty').checked;
+                if (episodeId) {
+                    finalItemId = episodeId;
+                    seasonId = view.querySelector('#selectedSeasonId').value;
+                    finalItemName = view.querySelector('#searchEpisode').value;
+                }
             }
             
             const libraryNameSelect = view.querySelector('#libraryName');
@@ -1162,10 +1166,17 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                             EpisodeNumber: episode.IndexNumber
                         }));
 
-                    currentEpisodeIndex = episodeQueue.findIndex(episode => episode.ItemId === finalItemId);
+                    currentEpisodeIndex = selectedEpisodeId
+                        ? episodeQueue.findIndex(episode => episode.ItemId === selectedEpisodeId)
+                        : 0;
                     if (episodeQueue.length === 0 || currentEpisodeIndex < 0) {
                         throw new Error('Unable to build the series queue or find the selected starting episode.');
                     }
+
+                    const startingEpisode = episodeQueue[currentEpisodeIndex];
+                    finalItemId = startingEpisode.ItemId;
+                    finalItemName = startingEpisode.ItemName;
+                    seasonId = startingEpisode.SeasonId;
                 }
 
                 const newParty = {
