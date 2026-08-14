@@ -1112,19 +1112,10 @@ namespace WatchPartyForEmby
                             (_, currentVersion) => currentVersion + 1);
                     }
 
-                    var shouldQueueCurrentMasterSelection = false;
-                    if (masterSelectionVersion.HasValue)
-                    {
-                        lock (_seriesTransitionLock)
-                        {
-                            shouldQueueCurrentMasterSelection = _partiesTransitioning.Contains(party.Id);
-                        }
-                    }
-
                     if (party.IsSeriesParty
                         && !string.IsNullOrEmpty(startedEpisodeId)
                         && currentEpisode != null
-                        && (shouldQueueCurrentMasterSelection
+                        && (masterSelectionVersion.HasValue
                             || !string.Equals(startedEpisodeId, currentEpisode.ItemId, StringComparison.OrdinalIgnoreCase)))
                     {
                         if (!isMaster || isExpectedSeriesStart)
