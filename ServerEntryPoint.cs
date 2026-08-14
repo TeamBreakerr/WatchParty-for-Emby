@@ -753,10 +753,15 @@ namespace WatchPartyForEmby
 
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
                 var resolvedSource = await StrmSourceResolver.ResolveAsync(item.Path);
-                await File.WriteAllTextAsync(path, resolvedSource + Environment.NewLine);
+                var changed = await StrmFileSynchronizer.WriteIfChangedAsync(
+                    path,
+                    resolvedSource + Environment.NewLine);
                 _strmContentCache[path] = resolvedSource;
                 expectedPaths.Add(NormalizePath(path));
-                createdPaths.Add(path);
+                if (changed)
+                {
+                    createdPaths.Add(path);
+                }
             }
 
             foreach (var existingPath in Directory.EnumerateFiles(seriesDirectory, "*.strm", SearchOption.AllDirectories))
@@ -1017,7 +1022,15 @@ namespace WatchPartyForEmby
                 }
 
                 var resolvedSource = await StrmSourceResolver.ResolveAsync(itemPath);
-                await File.WriteAllTextAsync(strmPath, resolvedSource + Environment.NewLine);
+                var changed = await StrmFileSynchronizer.WriteIfChangedAsync(
+                    strmPath,
+                    resolvedSource + Environment.NewLine);
+
+                if (!changed)
+                {
+                    _logger.Debug($"Party {party.Id}: STRM source is unchanged");
+                    return null;
+                }
 
                 if (!string.Equals(itemPath, resolvedSource, StringComparison.Ordinal))
                 {
