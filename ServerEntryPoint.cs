@@ -37,6 +37,7 @@ namespace WatchPartyForEmby
         private readonly Dictionary<string, string> _strmContentCache = new Dictionary<string, string>();
         private readonly HashSet<string> _partiesTransitioning = new HashSet<string>();
         private readonly ConcurrentDictionary<string, long> _seriesSelectionVersions = new ConcurrentDictionary<string, long>();
+        private readonly ConcurrentDictionary<string, DateTime> _expectedSeriesEpisodeStarts = new ConcurrentDictionary<string, DateTime>();
         private readonly object _seriesTransitionLock = new object();
         private readonly ConcurrentDictionary<string, DateTime> _lastProgressCheckpoint = new ConcurrentDictionary<string, DateTime>();
         private readonly PlaybackSyncCoordinator _playbackSyncCoordinator = new PlaybackSyncCoordinator();
@@ -1095,20 +1096,35 @@ namespace WatchPartyForEmby
                     var isMaster = !string.IsNullOrEmpty(party.MasterUserId) && e.Session.UserId == party.MasterUserId;
                     var startedEpisodeId = FindSeriesEpisodeId(party, e.Item);
                     var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+                    var isExpectedSeriesStart = ConsumeExpectedSeriesEpisodeStart(
+                        e.Session.Id,
+                        startedEpisodeId,
+                        nowUtc);
+                    long? masterSelectionVersion = null;
+                    if (party.IsSeriesParty
+                        && isMaster
+                        && !isExpectedSeriesStart
+                        && !string.IsNullOrEmpty(startedEpisodeId))
+                    {
+                        masterSelectionVersion = _seriesSelectionVersions.AddOrUpdate(
+                            party.Id,
+                            1,
+                            (_, currentVersion) => currentVersion + 1);
+                    }
 
                     if (party.IsSeriesParty
                         && !string.IsNullOrEmpty(startedEpisodeId)
                         && currentEpisode != null
                         && !string.Equals(startedEpisodeId, currentEpisode.ItemId, StringComparison.OrdinalIgnoreCase))
                     {
-                        if (!isMaster)
+                        if (!isMaster || isExpectedSeriesStart)
                         {
                             var currentPosition = _playbackSyncCoordinator.GetEstimatedPartyPosition(
                                 party.Id,
                                 party.CurrentPositionTicks,
                                 nowUtc);
                             _logger.Info(
-                                $"[Party {party.Id}] Participant {e.Session.UserId} opened queued episode {startedEpisodeId}; " +
+                                $"[Party {party.Id}] Session {e.Session.UserId} opened non-current queued episode {startedEpisodeId}; " +
                                 $"redirecting to current episode {currentEpisode.ItemId}");
                             await PlaySeriesEpisodeForSessions(
                                 party,
@@ -1118,15 +1134,11 @@ namespace WatchPartyForEmby
                             return;
                         }
 
-                        var selectionVersion = _seriesSelectionVersions.AddOrUpdate(
-                            party.Id,
-                            1,
-                            (_, currentVersion) => currentVersion + 1);
-                        await EnterSeriesTransitionAsync(party.Id);
+                        var transitionWasQueued = await EnterSeriesTransitionAsync(party.Id);
                         try
                         {
                             if (!_seriesSelectionVersions.TryGetValue(party.Id, out var latestSelectionVersion)
-                                || latestSelectionVersion != selectionVersion)
+                                || latestSelectionVersion != masterSelectionVersion.Value)
                             {
                                 _logger.Debug(
                                     $"[Party {party.Id}] Skipping superseded episode selection {startedEpisodeId}");
@@ -1138,8 +1150,9 @@ namespace WatchPartyForEmby
                                 && !string.Equals(startedEpisodeId, currentEpisode.ItemId, StringComparison.OrdinalIgnoreCase))
                             {
                                 var transitionSessions = GetSeriesTransitionSessions(party, e.Session)
-                                    .Where(session => session.Id != e.Session.Id
-                                        && (string.IsNullOrEmpty(party.MasterUserId) || session.UserId != party.MasterUserId))
+                                    .Where(session => transitionWasQueued
+                                        || (session.Id != e.Session.Id
+                                            && (string.IsNullOrEmpty(party.MasterUserId) || session.UserId != party.MasterUserId)))
                                     .ToList();
                                 if (!SeriesPartyQueue.TrySelectEpisode(party, startedEpisodeId))
                                 {
@@ -1739,18 +1752,20 @@ namespace WatchPartyForEmby
             return _sessionManager.Sessions.Where(session => sessionIds.Contains(session.Id)).ToList();
         }
 
-        private async Task EnterSeriesTransitionAsync(string partyId)
+        private async Task<bool> EnterSeriesTransitionAsync(string partyId)
         {
+            var waited = false;
             while (true)
             {
                 lock (_seriesTransitionLock)
                 {
                     if (_partiesTransitioning.Add(partyId))
                     {
-                        return;
+                        return waited;
                     }
                 }
 
+                waited = true;
                 await Task.Delay(25).ConfigureAwait(false);
             }
         }
@@ -1780,6 +1795,13 @@ namespace WatchPartyForEmby
                 return;
             }
 
+            var nowUtc = DateTime.UtcNow;
+            foreach (var expectedStart in _expectedSeriesEpisodeStarts.Where(entry => entry.Value < nowUtc))
+            {
+                _expectedSeriesEpisodeStarts.TryRemove(expectedStart.Key, out _);
+            }
+            var expectedStartExpiration = nowUtc.AddSeconds(30);
+
             if (!string.IsNullOrEmpty(generatedPath)
                 && !string.Equals(NormalizePath(episodeItem.Path), NormalizePath(generatedPath), GetPathComparison()))
             {
@@ -1789,8 +1811,10 @@ namespace WatchPartyForEmby
 
             foreach (var session in sessions)
             {
+                var expectedStartKey = GetExpectedSeriesEpisodeStartKey(session.Id, episode.ItemId);
                 try
                 {
+                    _expectedSeriesEpisodeStarts[expectedStartKey] = expectedStartExpiration;
                     await _sessionManager.SendPlayCommand(
                         session.Id,
                         session.Id,
@@ -1805,11 +1829,32 @@ namespace WatchPartyForEmby
                 }
                 catch (Exception ex)
                 {
+                    _expectedSeriesEpisodeStarts.TryRemove(expectedStartKey, out _);
                     _logger.ErrorException(
                         $"[Party {party.Id}] Client {session.Client} did not accept episode {episode.ItemName}",
                         ex);
                 }
             }
+        }
+
+        private static string GetExpectedSeriesEpisodeStartKey(string sessionId, string episodeItemId)
+        {
+            return sessionId + ":" + episodeItemId;
+        }
+
+        private bool ConsumeExpectedSeriesEpisodeStart(
+            string sessionId,
+            string episodeItemId,
+            DateTime nowUtc)
+        {
+            if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(episodeItemId))
+            {
+                return false;
+            }
+
+            var key = GetExpectedSeriesEpisodeStartKey(sessionId, episodeItemId);
+            return _expectedSeriesEpisodeStarts.TryRemove(key, out var expiresAtUtc)
+                && expiresAtUtc >= nowUtc;
         }
 
         private void ResetSeriesEpisodeSyncState(WatchPartyItem party)
