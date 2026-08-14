@@ -36,6 +36,7 @@ namespace WatchPartyForEmby
         private readonly Dictionary<string, string> _partySeriesDirectoryCache = new Dictionary<string, string>();
         private readonly Dictionary<string, string> _strmContentCache = new Dictionary<string, string>();
         private readonly HashSet<string> _partiesTransitioning = new HashSet<string>();
+        private readonly ConcurrentDictionary<string, long> _seriesSelectionVersions = new ConcurrentDictionary<string, long>();
         private readonly object _seriesTransitionLock = new object();
         private readonly ConcurrentDictionary<string, DateTime> _lastProgressCheckpoint = new ConcurrentDictionary<string, DateTime>();
         private readonly PlaybackSyncCoordinator _playbackSyncCoordinator = new PlaybackSyncCoordinator();
@@ -646,6 +647,7 @@ namespace WatchPartyForEmby
                     _partyPauseVotes.TryRemove(removedId, out _);
                     _partySeriesDirectoryCache.Remove(removedId);
                     _lastProgressCheckpoint.TryRemove(removedId, out _);
+                    _seriesSelectionVersions.TryRemove(removedId, out _);
 
                     var episodeCacheKeys = _partyEpisodeStrmPathCache.Keys
                         .Where(key => key.StartsWith(removedId + ":", StringComparison.Ordinal))
@@ -1116,9 +1118,21 @@ namespace WatchPartyForEmby
                             return;
                         }
 
+                        var selectionVersion = _seriesSelectionVersions.AddOrUpdate(
+                            party.Id,
+                            1,
+                            (_, currentVersion) => currentVersion + 1);
                         await EnterSeriesTransitionAsync(party.Id);
                         try
                         {
+                            if (!_seriesSelectionVersions.TryGetValue(party.Id, out var latestSelectionVersion)
+                                || latestSelectionVersion != selectionVersion)
+                            {
+                                _logger.Debug(
+                                    $"[Party {party.Id}] Skipping superseded episode selection {startedEpisodeId}");
+                                return;
+                            }
+
                             currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
                             if (currentEpisode != null
                                 && !string.Equals(startedEpisodeId, currentEpisode.ItemId, StringComparison.OrdinalIgnoreCase))
@@ -1861,7 +1875,6 @@ namespace WatchPartyForEmby
                     {
                         var completedEpisodeId = stoppedEpisodeId;
                         var completionResult = SeriesPartyAdvanceResult.NotCompleted;
-                        List<SessionInfo> transitionSessions = null;
                         var transitionAlreadyInProgress = false;
 
                         lock (_seriesTransitionLock)
@@ -1878,7 +1891,6 @@ namespace WatchPartyForEmby
                                 if (completionResult == SeriesPartyAdvanceResult.Advanced)
                                 {
                                     _partiesTransitioning.Add(party.Id);
-                                    transitionSessions = GetSeriesTransitionSessions(party, e.Session);
                                 }
                             }
                         }
@@ -1891,16 +1903,16 @@ namespace WatchPartyForEmby
 
                         if (completionResult == SeriesPartyAdvanceResult.Advanced)
                         {
-                            var nextEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
-                            _logger.Info(
-                                $"[Party {party.Id}] Master completed {completedEpisodeId}; advancing to {nextEpisode?.ItemName}");
-
-                            _plugin.SaveConfiguration();
-                            _lastProgressCheckpoint[party.Id] = DateTime.UtcNow;
-                            ResetSeriesEpisodeSyncState(party);
-
                             try
                             {
+                                var transitionSessions = GetSeriesTransitionSessions(party, e.Session);
+                                var nextEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+                                _logger.Info(
+                                    $"[Party {party.Id}] Master completed {completedEpisodeId}; advancing to {nextEpisode?.ItemName}");
+
+                                _plugin.SaveConfiguration();
+                                _lastProgressCheckpoint[party.Id] = DateTime.UtcNow;
+                                ResetSeriesEpisodeSyncState(party);
                                 await PlaySeriesEpisodeForSessions(party, nextEpisode, transitionSessions);
                             }
                             finally

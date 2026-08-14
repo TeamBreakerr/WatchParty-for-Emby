@@ -37,9 +37,9 @@ namespace WatchPartyForEmby
             ConfigurationUpdated += OnConfigurationUpdated;
         }
 
-        public override string Name => "Watch Party";
+        public override string Name => "一起看";
 
-        public override string Description => "Create synchronized watch parties";
+        public override string Description => "创建并管理同步播放的一起看房间";
 
         public override Guid Id => Guid.Parse("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d");
 
@@ -70,7 +70,7 @@ namespace WatchPartyForEmby
                     EnableInMainMenu = true,
                     MenuSection = "server",
                     MenuIcon = "live_tv",
-                    DisplayName = "Watch Party"
+                    DisplayName = "一起看"
                 },
                 new PluginPageInfo
                 {
