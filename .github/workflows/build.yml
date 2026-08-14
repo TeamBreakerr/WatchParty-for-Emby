@@ -24,6 +24,6 @@ jobs:
         run: dotnet build WatchPartyForEmby.csproj --configuration Release --no-restore
       - uses: actions/upload-artifact@v4
         with:
-          name: WatchPartyForEmby-1.6.1-series-party-mode-fix
+          name: WatchPartyForEmby-1.6.2-sync-stability
           path: bin/Release/net6.0/WatchPartyForEmby.dll
           if-no-files-found: error
