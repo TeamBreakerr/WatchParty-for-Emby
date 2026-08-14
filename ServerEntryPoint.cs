@@ -1074,7 +1074,7 @@ namespace WatchPartyForEmby
             {
                 _logger.Info($"[Watch Party] PlaybackStart event fired - Item: {e.Item?.Name}, ItemId: {e.Item?.Id}, UserId: {e.Session?.UserId}");
                 
-                var party = FindPartyForItem(e.Item);
+                var party = FindPartyForItem(e.Item, includeQueuedSeriesEpisodes: true);
                 
                 if (party != null && party.IsActive)
                 {
@@ -1086,6 +1086,88 @@ namespace WatchPartyForEmby
                             Command = PlaystateCommand.Stop
                         }, CancellationToken.None);
                         return;
+                    }
+
+                    var nowUtc = DateTime.UtcNow;
+                    var userStartPosition = e.PlaybackPositionTicks ?? 0;
+                    var isMaster = !string.IsNullOrEmpty(party.MasterUserId) && e.Session.UserId == party.MasterUserId;
+                    var startedEpisodeId = FindSeriesEpisodeId(party, e.Item);
+                    var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+
+                    if (party.IsSeriesParty
+                        && !string.IsNullOrEmpty(startedEpisodeId)
+                        && currentEpisode != null
+                        && !string.Equals(startedEpisodeId, currentEpisode.ItemId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!isMaster)
+                        {
+                            var currentPosition = _playbackSyncCoordinator.GetEstimatedPartyPosition(
+                                party.Id,
+                                party.CurrentPositionTicks,
+                                nowUtc);
+                            _logger.Info(
+                                $"[Party {party.Id}] Participant {e.Session.UserId} opened queued episode {startedEpisodeId}; " +
+                                $"redirecting to current episode {currentEpisode.ItemId}");
+                            await PlaySeriesEpisodeForSessions(
+                                party,
+                                currentEpisode,
+                                new[] { e.Session },
+                                currentPosition);
+                            return;
+                        }
+
+                        List<SessionInfo> transitionSessions;
+                        lock (_seriesTransitionLock)
+                        {
+                            if (_partiesTransitioning.Contains(party.Id))
+                            {
+                                _logger.Debug($"[Party {party.Id}] Ignoring episode selection while another transition is active");
+                                return;
+                            }
+
+                            transitionSessions = GetSeriesTransitionSessions(party, e.Session)
+                                .Where(session => session.Id != e.Session.Id
+                                    && (string.IsNullOrEmpty(party.MasterUserId) || session.UserId != party.MasterUserId))
+                                .ToList();
+                            if (!SeriesPartyQueue.TrySelectEpisode(party, startedEpisodeId))
+                            {
+                                _logger.Warn($"[Party {party.Id}] Master selected episode {startedEpisodeId}, but it is not in the queue");
+                                return;
+                            }
+
+                            _partiesTransitioning.Add(party.Id);
+                        }
+
+                        try
+                        {
+                            ResetSeriesEpisodeSyncState(party);
+                            party.CurrentPositionTicks = userStartPosition;
+                            party.IsPlaying = !party.IsWaitingRoom && !e.IsPaused;
+                            _playbackSyncCoordinator.UpdateMasterPosition(
+                                party.Id,
+                                userStartPosition,
+                                party.IsPlaying,
+                                nowUtc,
+                                TimeSpan.FromSeconds(party.SyncToleranceSeconds).Ticks);
+                            _plugin.SaveConfiguration();
+                            _lastProgressCheckpoint[party.Id] = nowUtc;
+
+                            _logger.Info(
+                                $"[Party {party.Id}] Master selected queued episode {startedEpisodeId}; " +
+                                $"switching {transitionSessions.Count} participant session(s)");
+                            await PlaySeriesEpisodeForSessions(
+                                party,
+                                SeriesPartyQueue.GetCurrentEpisode(party),
+                                transitionSessions,
+                                userStartPosition);
+                        }
+                        finally
+                        {
+                            lock (_seriesTransitionLock)
+                            {
+                                _partiesTransitioning.Remove(party.Id);
+                            }
+                        }
                     }
 
                     _logger.Info($"[Watch Party] User {e.Session.UserId} started watching party content: {party.ItemName}");
@@ -1101,11 +1183,8 @@ namespace WatchPartyForEmby
                     
                     var syncedSessions = _partySyncedSessions[party.Id];
                     var pauseState = _partySessionPauseState[party.Id];
-                    var nowUtc = DateTime.UtcNow;
-                    var userStartPosition = e.PlaybackPositionTicks ?? 0;
                     var isInSyncedSet = syncedSessions.Contains(e.Session.Id);
                     var wasPaused = pauseState.TryGetValue(e.Session.Id, out var isPaused) && isPaused;
-                    var isMaster = !string.IsNullOrEmpty(party.MasterUserId) && e.Session.UserId == party.MasterUserId;
 
                     GetOrCreateParticipant(party.Id, e.Session);
                     UpdateParticipantActivity(party.Id, e.Session.UserId, userStartPosition, e.IsPaused);
@@ -1333,11 +1412,22 @@ namespace WatchPartyForEmby
             }
         }
 
-        private WatchPartyItem FindPartyForItem(BaseItem item)
+        private WatchPartyItem FindPartyForItem(BaseItem item, bool includeQueuedSeriesEpisodes = false)
         {
             if (item == null) return null;
             
             var config = _plugin.Configuration;
+
+            if (includeQueuedSeriesEpisodes)
+            {
+                foreach (var party in config.WatchParties.Where(candidate => candidate.IsSeriesParty))
+                {
+                    if (!string.IsNullOrEmpty(FindSeriesEpisodeId(party, item)))
+                    {
+                        return party;
+                    }
+                }
+            }
             
             // First, check if this is a STRM file
             var isStrmFile = !string.IsNullOrEmpty(item.Path) && item.Path.EndsWith(".strm", StringComparison.OrdinalIgnoreCase);
@@ -1647,7 +1737,8 @@ namespace WatchPartyForEmby
         private async Task PlaySeriesEpisodeForSessions(
             WatchPartyItem party,
             WatchPartyEpisode episode,
-            IReadOnlyCollection<SessionInfo> sessions)
+            IReadOnlyCollection<SessionInfo> sessions,
+            long startPositionTicks = 0)
         {
             var generatedPath = episode == null ? null : GetSeriesEpisodeStrmPath(party, episode);
             var episodeItem = string.IsNullOrEmpty(generatedPath)
@@ -1678,16 +1769,40 @@ namespace WatchPartyForEmby
                         {
                             ItemIds = new[] { episodeItem.InternalId },
                             PlayCommand = PlayCommand.PlayNow,
-                            StartPositionTicks = 0
+                            StartPositionTicks = Math.Max(0, startPositionTicks)
                         },
                         CancellationToken.None);
-                    _logger.Info($"[Party {party.Id}] Sent next episode {episode.ItemName} to {session.UserName}");
+                    _logger.Info($"[Party {party.Id}] Sent episode {episode.ItemName} to {session.UserName}");
                 }
                 catch (Exception ex)
                 {
                     _logger.ErrorException(
-                        $"[Party {party.Id}] Client {session.Client} did not accept next episode {episode.ItemName}",
+                        $"[Party {party.Id}] Client {session.Client} did not accept episode {episode.ItemName}",
                         ex);
+                }
+            }
+        }
+
+        private void ResetSeriesEpisodeSyncState(WatchPartyItem party)
+        {
+            if (_partySyncedSessions.TryGetValue(party.Id, out var syncedSessions))
+            {
+                syncedSessions.Clear();
+            }
+            if (_partySessionPauseState.TryGetValue(party.Id, out var pauseStates))
+            {
+                pauseStates.Clear();
+            }
+
+            _partyPauseVotes.Remove(party.Id);
+            _playbackSyncCoordinator.ClearParty(party.Id);
+            if (_plugin.PartyParticipants.TryGetValue(party.Id, out var participants))
+            {
+                foreach (var participant in participants.Values)
+                {
+                    participant.CurrentPositionTicks = 0;
+                    participant.IsPaused = false;
+                    participant.IsBuffering = false;
                 }
             }
         }
@@ -1767,25 +1882,7 @@ namespace WatchPartyForEmby
 
                             _plugin.SaveConfiguration();
                             _lastProgressCheckpoint[party.Id] = DateTime.UtcNow;
-                            if (_partySyncedSessions.TryGetValue(party.Id, out var syncedSessions))
-                            {
-                                syncedSessions.Clear();
-                            }
-                            if (_partySessionPauseState.TryGetValue(party.Id, out var pauseStates))
-                            {
-                                pauseStates.Clear();
-                            }
-                            _partyPauseVotes.Remove(party.Id);
-                            _playbackSyncCoordinator.ClearParty(party.Id);
-                            if (_plugin.PartyParticipants.TryGetValue(party.Id, out var participants))
-                            {
-                                foreach (var participant in participants.Values)
-                                {
-                                    participant.CurrentPositionTicks = 0;
-                                    participant.IsPaused = false;
-                                    participant.IsBuffering = false;
-                                }
-                            }
+                            ResetSeriesEpisodeSyncState(party);
 
                             try
                             {

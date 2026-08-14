@@ -71,6 +71,36 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void SelectingQueuedEpisodeMovesTheRoomAndResetsProgress()
+        {
+            var party = CreatePartyAtFirstEpisode();
+            party.CurrentPositionTicks = TimeSpan.FromMinutes(5).Ticks;
+            party.IsPlaying = true;
+
+            var selected = SeriesPartyQueue.TrySelectEpisode(party, "s1e2");
+
+            Assert.True(selected);
+            Assert.Equal(1, party.CurrentEpisodeIndex);
+            Assert.Equal("s1e2", party.CurrentEpisodeId);
+            Assert.Equal("s1e2", party.ItemId);
+            Assert.Equal(0, party.CurrentPositionTicks);
+            Assert.False(party.IsPlaying);
+        }
+
+        [Fact]
+        public void SelectingEpisodeOutsideQueueDoesNotChangeTheRoom()
+        {
+            var party = CreatePartyAtFirstEpisode();
+
+            var selected = SeriesPartyQueue.TrySelectEpisode(party, "not-in-party");
+
+            Assert.False(selected);
+            Assert.Equal(0, party.CurrentEpisodeIndex);
+            Assert.Equal("s1e1", party.CurrentEpisodeId);
+            Assert.Equal("s1e1", party.ItemId);
+        }
+
+        [Fact]
         public void StopAtNinetyFivePercentButOutsideCompletionWindowDoesNotAdvance()
         {
             var party = CreatePartyAtFirstEpisode();

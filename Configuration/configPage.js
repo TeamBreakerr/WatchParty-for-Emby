@@ -18,7 +18,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
     function populateLibraryDropdown(view, select) {
         loadLibraries().then(result => {
             const libraries = result.Items || [];
-            select.innerHTML = '<option value="">-- Select library --</option>';
+            select.innerHTML = '<option value="">-- 选择媒体库 --</option>';
             
             libraries.forEach(library => {
                 const option = document.createElement('option');
@@ -29,7 +29,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 select.appendChild(option);
             });
         }).catch(() => {
-            select.innerHTML = '<option value="">Error loading libraries</option>';
+            select.innerHTML = '<option value="">媒体库加载失败</option>';
         });
     }
 
@@ -109,8 +109,8 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 select.appendChild(option);
             });
         }).catch(error => {
-            console.error('Error loading users:', error);
-            select.innerHTML = '<option value="">Error loading users</option>';
+            console.error('加载用户失败：', error);
+            select.innerHTML = '<option value="">用户加载失败</option>';
         });
     }
 
@@ -253,7 +253,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             if (filteredItems.length === 0 && !metadata.hasMore) {
                 const noResults = document.createElement('div');
                 noResults.className = 'autocomplete-item';
-                noResults.textContent = 'No results found';
+                noResults.textContent = '没有找到结果';
                 noResults.style.textAlign = 'center';
                 noResults.style.color = '#999';
                 dropdown.appendChild(noResults);
@@ -289,7 +289,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             if (metadata.hasMore && !lowerQuery) {
                 const loadMore = document.createElement('div');
                 loadMore.className = 'autocomplete-item load-more';
-                loadMore.textContent = `--- Load More (${metadata.currentCount} of ${metadata.totalCount}) ---`;
+                loadMore.textContent = `--- 加载更多（已加载 ${metadata.currentCount}/${metadata.totalCount}）---`;
                 loadMore.addEventListener('click', () => {
                     if (onLoadMoreCallback) {
                         onLoadMoreCallback();
@@ -311,7 +311,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     
                     this[`${searchInputId}_items`] = items.map(item => {
                         const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
-                        const type = item.Type === 'Series' ? ' [TV Show]' : ' [Movie]';
+                        const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
                         return {
                             id: item.Id,
                             text: `${item.Name}${year}${type}`,
@@ -331,7 +331,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     loading.hide();
                 }).catch(() => {
                     loading.hide();
-                    toast({ type: 'error', text: 'Error searching content.' });
+                    toast({ type: 'error', text: '搜索内容失败。' });
                 });
             } else if (searchInputId === 'searchSeason' && this.currentSeriesId) {
                 this[`${searchInputId}_searchMode`] = true;
@@ -344,8 +344,8 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         const seasonNum = season.IndexNumber ? ` ${season.IndexNumber}` : '';
                         return {
                             id: season.Id,
-                            text: `${season.Name || 'Season' + seasonNum}`,
-                            name: season.Name || 'Season' + seasonNum
+                            text: `${season.Name || '第' + seasonNum + '季'}`,
+                            name: season.Name || '第' + seasonNum + '季'
                         };
                     });
                     
@@ -360,7 +360,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     loading.hide();
                 }).catch(() => {
                     loading.hide();
-                    toast({ type: 'error', text: 'Error searching seasons.' });
+                    toast({ type: 'error', text: '搜索季失败。' });
                 });
             } else if (searchInputId === 'searchEpisode' && this.currentSeasonId) {
                 const seriesId = view.querySelector('#selectedItemId').value;
@@ -391,7 +391,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     loading.hide();
                 }).catch(() => {
                     loading.hide();
-                    toast({ type: 'error', text: 'Error searching episodes.' });
+                    toast({ type: 'error', text: '搜索剧集失败。' });
                 });
             }
         }
@@ -421,7 +421,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 
                 this.searchContent_items = items.map(item => {
                     const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
-                    const type = item.Type === 'Series' ? ' [TV Show]' : ' [Movie]';
+                    const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
                     return {
                         id: item.Id,
                         text: `${item.Name}${year}${type}`,
@@ -442,7 +442,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 this.hideSeriesControls(view);
             }).catch(() => {
                 loading.hide();
-                toast({ type: 'error', text: 'Error loading content.' });
+                toast({ type: 'error', text: '加载内容失败。' });
             });
         }
 
@@ -474,8 +474,8 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         const seasonNum = season.IndexNumber ? ` ${season.IndexNumber}` : '';
                         return {
                             id: season.Id,
-                            text: `${season.Name || 'Season' + seasonNum}`,
-                            name: season.Name || 'Season' + seasonNum
+                            text: `${season.Name || '第' + seasonNum + '季'}`,
+                            name: season.Name || '第' + seasonNum + '季'
                         };
                     });
                     
@@ -490,7 +490,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     loading.hide();
                 }).catch(() => {
                     loading.hide();
-                    toast({ type: 'error', text: 'Error loading seasons.' });
+                    toast({ type: 'error', text: '加载季失败。' });
                 });
             } else {
                 this.hideSeriesControls(view);
@@ -541,7 +541,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 loading.hide();
             }).catch(() => {
                 loading.hide();
-                toast({ type: 'error', text: 'Error loading episodes.' });
+                toast({ type: 'error', text: '加载剧集失败。' });
             });
         }
 
@@ -558,7 +558,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 
                 const newItems = items.map(item => {
                     const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
-                    const type = item.Type === 'Series' ? ' [TV Show]' : ' [Movie]';
+                    const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
                     return {
                         id: item.Id,
                         text: `${item.Name}${year}${type}`,
@@ -585,7 +585,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 loading.hide();
             }).catch(() => {
                 loading.hide();
-                toast({ type: 'error', text: 'Error loading more content.' });
+                toast({ type: 'error', text: '加载更多内容失败。' });
             });
         }
 
@@ -601,8 +601,8 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     const seasonNum = season.IndexNumber ? ` ${season.IndexNumber}` : '';
                     return {
                         id: season.Id,
-                        text: `${season.Name || 'Season' + seasonNum}`,
-                        name: season.Name || 'Season' + seasonNum
+                        text: `${season.Name || '第' + seasonNum + '季'}`,
+                        name: season.Name || '第' + seasonNum + '季'
                     };
                 });
                 
@@ -624,7 +624,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 loading.hide();
             }).catch(() => {
                 loading.hide();
-                toast({ type: 'error', text: 'Error loading more seasons.' });
+                toast({ type: 'error', text: '加载更多季失败。' });
             });
         }
 
@@ -666,7 +666,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 loading.hide();
             }).catch(() => {
                 loading.hide();
-                toast({ type: 'error', text: 'Error loading more episodes.' });
+                toast({ type: 'error', text: '加载更多剧集失败。' });
             });
         }
 
@@ -703,15 +703,15 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             const modeHint = view.querySelector('#seriesPartyModeHint');
 
             if (isSeriesParty) {
-                seasonDescription.textContent = 'Optional: choose a season to start from its first regular episode.';
-                episodeLabel.textContent = 'Starting Episode (Optional)';
-                episodeDescription.textContent = 'Optional: choose an exact starting episode. Leave both fields empty to start at the first regular episode.';
-                modeHint.textContent = 'Series Party mode: every regular episode is queued across all seasons. Season and episode only select the starting point.';
+                seasonDescription.textContent = '可选：从所选季的第一集开始。';
+                episodeLabel.textContent = '起播集（可选）';
+                episodeDescription.textContent = '可选：指定准确的起播集；季和集都留空则从整部剧的第一集开始。';
+                modeHint.textContent = '整部剧集模式：所有季的常规剧集都会按顺序加入队列，季和集只用于指定起播位置。';
             } else {
-                seasonDescription.textContent = 'Required for a single-episode TV Party.';
-                episodeLabel.textContent = 'Select Episode';
-                episodeDescription.textContent = 'Required: choose the single episode for this Party.';
-                modeHint.textContent = 'Single-episode mode: select a season and episode, or enable Series Party for the full ordered series queue.';
+                seasonDescription.textContent = '单集房间必须选择季。';
+                episodeLabel.textContent = '选择集';
+                episodeDescription.textContent = '必选：请选择该房间要观看的单集。';
+                modeHint.textContent = '单集模式：请选择季和集；如需完整有序队列，请开启整部剧集房间。';
             }
         }
 
@@ -750,7 +750,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             const container = view.querySelector('#activePartiesList');
             
             if (!config.WatchParties || config.WatchParties.length === 0) {
-                container.innerHTML = '<p style="color: #999;">No active watch parties</p>';
+                container.innerHTML = '<p style="color: #999;">暂无一起看房间</p>';
                 return;
             }
 
@@ -758,31 +758,32 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             
             config.WatchParties.forEach(party => {
                 const statusColor = party.IsActive ? '#4CAF50' : '#999';
-                const statusText = party.IsActive ? 'Active' : 'Inactive';
+                const statusText = party.IsActive ? '已启用' : '已停用';
                 const created = new Date(party.CreatedDate).toLocaleDateString();
                 
                 const features = [];
-                if (party.IsWaitingRoom) features.push('Waiting Room');
-                if (party.PauseControl && party.PauseControl !== 'Anyone') features.push(`Pause: ${party.PauseControl}`);
-                if (party.HostOnlySeek) features.push('Host-Only Seek');
-                if (party.LockSeekAhead) features.push('Lock Seek Ahead');
-                if (party.AutoKickInactive) features.push('Auto-Kick Inactive');
+                if (party.IsWaitingRoom) features.push('等候室');
+                if (party.PauseControl === 'Host') features.push('暂停权限：仅主控用户');
+                if (party.PauseControl === 'Vote') features.push('暂停权限：投票决定');
+                if (party.HostOnlySeek) features.push('仅主控用户可拖动');
+                if (party.LockSeekAhead) features.push('禁止参与者超前播放');
+                if (party.AutoKickInactiveMinutes) features.push('自动移除不活跃用户');
                 if (party.IsSeriesParty) {
                     const episodeCount = (party.EpisodeQueue || []).length;
                     const currentIndex = Math.max(0, party.CurrentEpisodeIndex || 0);
                     const currentEpisode = episodeCount > currentIndex ? party.EpisodeQueue[currentIndex] : null;
-                    features.push(`Series Queue: ${Math.min(currentIndex + 1, episodeCount)}/${episodeCount}`);
+                    features.push(`剧集队列：${Math.min(currentIndex + 1, episodeCount)}/${episodeCount}`);
                     if (currentEpisode && currentEpisode.ItemName) {
-                        features.push(`Current: ${this.escapeHtml(currentEpisode.ItemName)}`);
+                        features.push(`当前集：${this.escapeHtml(currentEpisode.ItemName)}`);
                     }
                 }
-                const featuresText = features.length > 0 ? `<br>Features: ${features.join(', ')}` : '';
+                const featuresText = features.length > 0 ? `<br>功能：${features.join('，')}` : '';
                 const queueDetails = party.IsSeriesParty && (party.EpisodeQueue || []).length > 0
                     ? `<details style="margin-top: 0.75em;">
-                           <summary style="cursor: pointer;">Episode Queue</summary>
+                           <summary style="cursor: pointer;">剧集队列</summary>
                            <ol style="max-height: 18em; overflow-y: auto; margin: 0.5em 0 0; padding-left: 2em;">
                                ${party.EpisodeQueue.map((episode, index) => {
-                                   const marker = index === party.CurrentEpisodeIndex ? ' ← Current' : '';
+                                   const marker = index === party.CurrentEpisodeIndex ? ' ← 当前集' : '';
                                    const label = `S${String(episode.SeasonNumber).padStart(2, '0')}E${String(episode.EpisodeNumber).padStart(2, '0')} — ${episode.ItemName || ''}${marker}`;
                                    return `<li${index === party.CurrentEpisodeIndex ? ' style="color: #4CAF50; font-weight: 600;"' : ''}>${this.escapeHtml(label)}</li>`;
                                }).join('')}
@@ -794,23 +795,23 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     <div class="paper-card" style="padding: 1em; display: flex; justify-content: space-between; align-items: center;">
                         <div style="flex: 1;">
                             <div style="font-weight: 500; margin-bottom: 0.5em;">
-                                ${this.escapeHtml((party.IsSeriesParty && party.SeriesName) || party.ItemName || 'Unnamed Party')}
+                                ${this.escapeHtml((party.IsSeriesParty && party.SeriesName) || party.ItemName || '未命名房间')}
                                 <span style="color: ${statusColor}; font-size: 0.9em; margin-left: 0.5em;">● ${statusText}</span>
                             </div>
                             <div style="font-size: 0.85em; color: #999;">
-                                Library: ${party.CollectionName || 'Watch Party'} | 
-                                Type: ${party.ItemType || 'Unknown'} | 
-                                Max: ${party.MaxParticipants || 50} viewers | 
-                                Created: ${created}${featuresText}
+                                媒体库：${party.CollectionName || '一起看'} |
+                                类型：${party.ItemType === 'Episode' ? '剧集' : party.ItemType === 'Movie' ? '电影' : party.ItemType || '未知'} |
+                                上限：${party.MaxParticipants || 50} 人 |
+                                创建日期：${created}${featuresText}
                             </div>
                             ${queueDetails}
                         </div>
                         <div style="display: flex; gap: 0.5em;">
                             <button is="emby-button" class="button-flat btnToggleParty" data-partyid="${party.Id}" style="padding: 0.5em 1em;">
-                                <span>${party.IsActive ? 'Deactivate' : 'Activate'}</span>
+                                <span>${party.IsActive ? '停用' : '启用'}</span>
                             </button>
                             <button is="emby-button" class="button-flat btnDeleteParty" data-partyid="${party.Id}" style="padding: 0.5em 1em; color: #f44336;">
-                                <span>Delete</span>
+                                <span>删除</span>
                             </button>
                         </div>
                     </div>
@@ -836,7 +837,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         }
 
         deleteParty(view, partyId) {
-            if (!confirm('Are you sure you want to delete this watch party?')) {
+            if (!confirm('确定要删除这个一起看房间吗？')) {
                 return;
             }
 
@@ -850,10 +851,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     this.renderPartyList(view, config);
                 }).catch(() => {
                     loading.hide();
-                    toast({ type: 'error', text: 'Error deleting party.' });
+                    toast({ type: 'error', text: '删除房间失败。' });
                 });            }).catch(() => {
                 loading.hide();
-                toast({ type: 'error', text: 'Error loading configuration.' });            });
+                toast({ type: 'error', text: '加载设置失败。' });            });
         }
 
         toggleParty(view, partyId) {
@@ -869,7 +870,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         this.renderPartyList(view, config);
                     }).catch(() => {
                         loading.hide();
-                        toast({ type: 'error', text: 'Error updating party.' });
+                        toast({ type: 'error', text: '更新房间失败。' });
                     });
                 }
             });
@@ -883,7 +884,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 const libraries = librariesResult.Items || [];
                 
                 const librarySelect = view.querySelector('#selectedLibraryId');
-                librarySelect.innerHTML = '<option value="">-- Select a library --</option>';
+                librarySelect.innerHTML = '<option value="">-- 选择媒体库 --</option>';
                 
                 libraries.forEach(library => {
                     const option = document.createElement('option');
@@ -939,9 +940,9 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 
                 const adminPasswordField = view.querySelector('#adminPassword');
                 if (config.AdminPasswordHash) {
-                    adminPasswordField.placeholder = 'Password is set - enter new password to change';
+                    adminPasswordField.placeholder = '已设置密码；输入新密码可修改';
                 } else {
-                    adminPasswordField.placeholder = 'No password set';
+                    adminPasswordField.placeholder = '尚未设置密码';
                 }
                 
                 this.checkWebServerStatus(view, config);
@@ -986,7 +987,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         
                         this.searchContent_items = items.map(item => {
                             const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
-                            const type = item.Type === 'Series' ? ' [TV Show]' : ' [Movie]';
+                            const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
                             return {
                                 id: item.Id,
                                 text: `${item.Name}${year}${type}`,
@@ -1018,8 +1019,8 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                                     const seasonNum = season.IndexNumber ? ` ${season.IndexNumber}` : '';
                                     return {
                                         id: season.Id,
-                                        text: `${season.Name || 'Season' + seasonNum}`,
-                                        name: season.Name || 'Season' + seasonNum
+                                        text: `${season.Name || '第' + seasonNum + '季'}`,
+                                        name: season.Name || '第' + seasonNum + '季'
                                     };
                                 });
                                 
@@ -1081,7 +1082,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 
             }).catch(() => {
                 loading.hide();
-                toast({ type: 'error', text: 'Error loading configuration.' });
+                toast({ type: 'error', text: '加载设置失败。' });
             });
         }
 
@@ -1094,7 +1095,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             
             if (!itemId) {
                 loading.hide();
-                toast({ type: 'error', text: 'Please select content to watch.' });
+                toast({ type: 'error', text: '请选择要观看的内容。' });
                 return;
             }
 
@@ -1121,7 +1122,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
                 if (!selectedEpisodeId && !isSeriesParty) {
                     loading.hide();
-                    toast({ type: 'error', text: 'Please select an episode for TV shows.' });
+                    toast({ type: 'error', text: '单集电视剧房间必须选择一集。' });
                     return;
                 }
 
@@ -1139,21 +1140,21 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
             if (!selectedLibraryId) {
                 loading.hide();
-                toast({ type: 'error', text: 'Please select a library.' });
+                toast({ type: 'error', text: '请选择一起看媒体库。' });
                 return;
             }
 
             const maxParticipants = parseInt(view.querySelector('#maxParticipants').value);
             if (maxParticipants < 2 || maxParticipants > 100) {
                 loading.hide();
-                toast({ type: 'error', text: 'Maximum participants must be between 2 and 100.' });
+                toast({ type: 'error', text: '最多参与人数必须在 2 到 100 之间。' });
                 return;
             }
 
             const syncTolerance = parseInt(view.querySelector('#syncToleranceSeconds').value);
             if (syncTolerance < 1 || syncTolerance > 60) {
                 loading.hide();
-                toast({ type: 'error', text: 'Sync tolerance must be between 1 and 60 seconds.' });
+                toast({ type: 'error', text: '同步容差必须在 1 到 60 秒之间。' });
                 return;
             }
 
@@ -1163,7 +1164,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             const masterUserId = view.querySelector('#masterUser').value;
             if (!masterUserId) {
                 loading.hide();
-                toast({ type: 'error', text: 'Please select a master user who will control playback.' });
+                toast({ type: 'error', text: '请选择负责控制播放的主控用户。' });
                 return;
             }
             
@@ -1192,7 +1193,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         }));
 
                     if (episodeQueue.length === 0) {
-                        throw new Error('No regular episodes were found for this TV show.');
+                        throw new Error('这部电视剧中没有找到可加入队列的常规剧集。');
                     }
 
                     if (selectedEpisodeId) {
@@ -1204,7 +1205,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     }
 
                     if (currentEpisodeIndex < 0) {
-                        throw new Error('The selected Series Party starting point was not found in the regular episode queue.');
+                        throw new Error('在常规剧集队列中找不到所选起播位置。');
                     }
 
                     const startingEpisode = episodeQueue[currentEpisodeIndex];
@@ -1265,7 +1266,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     
                     view.querySelector('#selectedLibraryId').value = '';
                     const itemSelect = view.querySelector('#selectedItemId');
-                    itemSelect.innerHTML = '<option value="">Select a library first...</option>';
+                    itemSelect.innerHTML = '<option value="">请先选择媒体库……</option>';
                     delete itemSelect._allOptions;
                     view.querySelector('#isPartyActive').checked = false;
                     view.querySelector('#isSeriesParty').checked = false;
@@ -1294,11 +1295,11 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     this.renderPartyList(view, this.config);
                 }).catch((error) => {
                     loading.hide();
-                    toast({ type: 'error', text: `Error creating watch party: ${error.message || error}` });
+                    toast({ type: 'error', text: `创建一起看房间失败：${error.message || error}` });
                 });
             }).catch((error) => {
                 loading.hide();
-                toast({ type: 'error', text: `Error preparing watch party: ${error.message || error}` });
+                toast({ type: 'error', text: `准备一起看房间失败：${error.message || error}` });
             });
         }
 
@@ -1346,7 +1347,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 if (adminPassword) {
                     config.AdminPasswordHash = await this.hashPassword(adminPassword);
                     view.querySelector('#adminPassword').value = '';
-                    view.querySelector('#adminPassword').placeholder = 'Password is set - enter new password to change';
+                    view.querySelector('#adminPassword').placeholder = '已设置密码；输入新密码可修改';
                 }
 
                 updatePluginConfiguration(config).then(result => {
@@ -1359,7 +1360,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     }, 2000);
                 }).catch(() => {
                     loading.hide();
-                    toast({ type: 'error', text: 'Error saving settings.' });
+                    toast({ type: 'error', text: '保存设置失败。' });
                 });
             });
         }
@@ -1370,26 +1371,26 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             const enabled = config.EnableExternalWebServer !== false;
             
             if (!enabled) {
-                statusElement.textContent = 'Disabled';
+                statusElement.textContent = '已停用';
                 statusElement.style.color = '#999';
                 return;
             }
             
-            statusElement.textContent = 'Checking...';
+            statusElement.textContent = '正在检查……';
             statusElement.style.color = '#FFA500';
             
             fetch(`http://localhost:${port}/`)
                 .then(response => {
                     if (response.ok) {
-                        statusElement.innerHTML = `✓ Running on port ${port}<br><a href="http://localhost:${port}/" target="_blank" style="color: #4CAF50;">Open Dashboard</a>`;
+                        statusElement.innerHTML = `✓ 正在端口 ${port} 上运行<br><a href="http://localhost:${port}/" target="_blank" style="color: #4CAF50;">打开控制台</a>`;
                         statusElement.style.color = '#4CAF50';
                     } else {
-                        statusElement.textContent = `Error: HTTP ${response.status}`;
+                        statusElement.textContent = `错误：HTTP ${response.status}`;
                         statusElement.style.color = '#F44336';
                     }
                 })
                 .catch(error => {
-                    statusElement.innerHTML = `✗ Not Running<br><small style="color: #999;">May need: <code style="background: #222; padding: 0.2em 0.4em; border-radius: 3px;">netsh http add urlacl url=http://*:${port}/ user="Everyone"</code></small>`;
+                    statusElement.innerHTML = `✗ 未运行<br><small style="color: #999;">Windows 可能需要执行：<code style="background: #222; padding: 0.2em 0.4em; border-radius: 3px;">netsh http add urlacl url=http://*:${port}/ user="Everyone"</code></small>`;
                     statusElement.style.color = '#F44336';
                 });
         }

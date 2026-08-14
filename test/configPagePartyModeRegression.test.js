@@ -125,7 +125,7 @@ async function submit(view) {
 test('Series Party without season or episode starts from the first regular episode', async () => {
     const result = await submit(createView());
 
-    assert.doesNotMatch(result.toasts.join('\n'), /Please select an episode for TV shows/);
+    assert.doesNotMatch(result.toasts.join('\n'), /单集电视剧房间必须选择一集/);
     assert.equal(result.updatedConfigurations.length, 1, result.toasts.join('\n'));
     const party = result.updatedConfigurations[0].WatchParties[0];
     assert.equal(party.IsSeriesParty, true);
@@ -169,7 +169,7 @@ test('single-episode Party still requires an episode', async () => {
 
     const result = await submit(view);
 
-    assert.match(result.toasts.join('\n'), /Please select an episode for TV shows/);
+    assert.match(result.toasts.join('\n'), /单集电视剧房间必须选择一集/);
     assert.equal(result.updatedConfigurations.length, 0);
 });
 
