@@ -45,6 +45,20 @@ namespace WatchPartyForEmby.Tests
             Assert.Equal(contents, await File.ReadAllTextAsync(path));
         }
 
+        [Fact]
+        public async Task ReplacesAnExistingStrmFileWhenItsContentsChange()
+        {
+            var path = Path.Combine(_testDirectory, "changed-episode.strm");
+            const string oldContents = "https://example.test/old-episode.mkv\n";
+            const string newContents = "https://example.test/new-episode.mkv\n";
+            await File.WriteAllTextAsync(path, oldContents);
+
+            var changed = await StrmFileSynchronizer.WriteIfChangedAsync(path, newContents);
+
+            Assert.True(changed);
+            Assert.Equal(newContents, await File.ReadAllTextAsync(path));
+        }
+
         public void Dispose()
         {
             if (Directory.Exists(_testDirectory))

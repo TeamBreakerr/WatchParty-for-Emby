@@ -702,18 +702,18 @@ namespace WatchPartyForEmby
         private async Task CreateAllWatchPartyStrmFiles()
         {
             var config = _plugin.Configuration;
-            var createdPaths = new List<string>();
+            var changedPaths = new List<string>();
 
             foreach (var party in config.WatchParties)
             {
-                createdPaths.AddRange(await CreateWatchPartyStrmFiles(party));
+                changedPaths.AddRange(await CreateWatchPartyStrmFiles(party));
             }
 
-            // Notify Emby about each new STRM file via the REST API (same approach as Radarr/Sonarr)
-            if (createdPaths.Count > 0)
+            // Notify Emby only when STRM content changed (same approach as Radarr/Sonarr)
+            if (changedPaths.Count > 0)
             {
                 await Task.Delay(1000);
-                await NotifyEmbyLibraryUpdated(createdPaths);
+                await NotifyEmbyLibraryUpdated(changedPaths);
             }
 
             _logger.Info("Finished creating STRM files for all watch parties");
@@ -727,11 +727,11 @@ namespace WatchPartyForEmby
                 return string.IsNullOrEmpty(path) ? new List<string>() : new List<string> { path };
             }
 
-            var createdPaths = new List<string>();
+            var changedPaths = new List<string>();
             var seriesDirectory = GetSeriesPartyDirectory(party);
             if (string.IsNullOrEmpty(seriesDirectory))
             {
-                return createdPaths;
+                return changedPaths;
             }
 
             Directory.CreateDirectory(seriesDirectory);
@@ -760,7 +760,7 @@ namespace WatchPartyForEmby
                 expectedPaths.Add(NormalizePath(path));
                 if (changed)
                 {
-                    createdPaths.Add(path);
+                    changedPaths.Add(path);
                 }
             }
 
@@ -775,8 +775,8 @@ namespace WatchPartyForEmby
                 }
             }
 
-            _logger.Info($"Created {createdPaths.Count} STRM files for Series Party {party.Id}");
-            return createdPaths;
+            _logger.Info($"Created or updated {changedPaths.Count} STRM files for Series Party {party.Id}");
+            return changedPaths;
         }
 
         private async Task NotifyEmbyLibraryUpdated(List<string> paths)
