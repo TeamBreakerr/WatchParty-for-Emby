@@ -800,7 +800,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                             </div>
                             <div style="font-size: 0.85em; color: #999;">
                                 媒体库：${party.CollectionName || '一起看'} |
-                                类型：${party.ItemType === 'Episode' ? '剧集' : party.ItemType === 'Movie' ? '电影' : party.ItemType || '未知'} |
+                                类型：${party.ItemType === 'Episode' ? '剧集' : party.ItemType === 'Movie' ? '电影' : party.ItemType === 'Series' ? '电视剧' : '其他'} |
                                 上限：${party.MaxParticipants || 50} 人 |
                                 创建日期：${created}${featuresText}
                             </div>
@@ -1135,7 +1135,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             const libraryNameSelect = view.querySelector('#libraryName');
             const selectedLibraryOption = libraryNameSelect.selectedOptions[0];
             const selectedLibraryId = libraryNameSelect.value;
-            const selectedLibraryName = selectedLibraryOption ? selectedLibraryOption.dataset.name : 'Watch Party';
+            const selectedLibraryName = selectedLibraryOption ? selectedLibraryOption.dataset.name : '一起看';
             const selectedLibraryPath = selectedLibraryOption ? selectedLibraryOption.dataset.path : '';
 
             if (!selectedLibraryId) {
