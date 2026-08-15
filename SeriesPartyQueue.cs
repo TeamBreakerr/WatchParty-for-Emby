@@ -102,6 +102,58 @@ namespace WatchPartyForEmby
             return true;
         }
 
+        public static bool RemoveUnavailableEpisodes(
+            WatchPartyItem party,
+            Func<string, bool> isAvailable)
+        {
+            if (party?.IsSeriesParty != true
+                || party.EpisodeQueue == null
+                || isAvailable == null)
+            {
+                return false;
+            }
+
+            var originalCount = party.EpisodeQueue.Count;
+            var originalIndex = party.CurrentEpisodeIndex;
+            var originalCurrentEpisodeId = party.CurrentEpisodeId ?? party.ItemId;
+            party.EpisodeQueue = party.EpisodeQueue
+                .Where(episode => episode != null
+                    && !string.IsNullOrEmpty(episode.ItemId)
+                    && isAvailable(episode.ItemId))
+                .ToList();
+
+            if (party.EpisodeQueue.Count == 0)
+            {
+                party.CurrentEpisodeIndex = -1;
+                party.CurrentEpisodeId = null;
+                party.CurrentPositionTicks = 0;
+                party.IsPlaying = false;
+                return originalCount > 0;
+            }
+
+            var currentEpisodeStillExists = party.EpisodeQueue.Any(episode =>
+                string.Equals(
+                    episode.ItemId,
+                    originalCurrentEpisodeId,
+                    StringComparison.OrdinalIgnoreCase));
+            if (!currentEpisodeStillExists)
+            {
+                var replacementIndex = Math.Min(
+                    Math.Max(0, originalIndex),
+                    party.EpisodeQueue.Count - 1);
+                var replacementEpisode = party.EpisodeQueue[replacementIndex];
+                party.CurrentEpisodeIndex = replacementIndex;
+                party.CurrentEpisodeId = replacementEpisode.ItemId;
+                party.ItemId = replacementEpisode.ItemId;
+                party.CurrentPositionTicks = 0;
+                party.IsPlaying = false;
+            }
+
+            var queueChanged = originalCount != party.EpisodeQueue.Count;
+            var stateChanged = Repair(party);
+            return queueChanged || stateChanged;
+        }
+
         public static SeriesPartyAdvanceResult TryAdvanceAfterStop(
             WatchPartyItem party,
             string completedItemId,

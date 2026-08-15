@@ -799,7 +799,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                                 <span style="color: ${statusColor}; font-size: 0.9em; margin-left: 0.5em;">● ${statusText}</span>
                             </div>
                             <div style="font-size: 0.85em; color: #999;">
-                                媒体库：${party.CollectionName || '一起看'} |
                                 类型：${party.ItemType === 'Episode' ? '剧集' : party.ItemType === 'Movie' ? '电影' : party.ItemType === 'Series' ? '电视剧' : '其他'} |
                                 上限：${party.MaxParticipants || 50} 人 |
                                 创建日期：${created}${featuresText}
@@ -893,7 +892,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     librarySelect.appendChild(option);
                 });
 
-                view.querySelector('#isPartyActive').checked = false;
+                view.querySelector('#isPartyActive').checked = true;
                 view.querySelector('#maxParticipants').value = 50;
                 view.querySelector('#syncIntervalSeconds').value = config.SyncIntervalSeconds || 5;
                 view.querySelector('#syncOffsetMilliseconds').value = config.SyncOffsetMilliseconds || 1000;
@@ -925,14 +924,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 view.querySelector('#maxAuditLogEntries').value = config.MaxAuditLogEntries || 1000;
                 
                 this.toggleReverseProxySettings(view, config.UseReverseProxy || false);
-                
-                const strmLibrarySelect = view.querySelector('#strmTargetLibrary');
-                populateLibraryDropdown(view, strmLibrarySelect);
-                if (config.StrmTargetLibraryId) {
-                    setTimeout(() => {
-                        strmLibrarySelect.value = config.StrmTargetLibraryId;
-                    }, 100);
-                }
                 
                 const port = config.ExternalWebServerPort || 8097;
                 const placeholders = view.querySelectorAll('#portPlaceholder, #portPlaceholderDocker, #portPlaceholderDocker2');
@@ -968,9 +959,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 view.querySelector('#autoAdjustForLatency').disabled = false;
                 view.querySelector('#maxLatencyCompensationMs').disabled = false;
 
-                const libraryNameSelect = view.querySelector('#libraryName');
-                populateLibraryDropdown(view, libraryNameSelect);
-
                 const allowedUsersSelect = view.querySelector('#allowedUsers');
                 populateUsersDropdown(view, allowedUsersSelect);
 
@@ -978,105 +966,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 populateUsersDropdown(view, masterUserSelect);
 
                 this.renderPartyList(view, config);
-
-                if (config.SelectedLibraryId) {
-                    view.querySelector('#selectedLibraryId').value = config.SelectedLibraryId;
-                    
-                    loadLibraryContent(config.SelectedLibraryId).then(result => {
-                        const items = result.Items || [];
-                        
-                        this.searchContent_items = items.map(item => {
-                            const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
-                            const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
-                            return {
-                                id: item.Id,
-                                text: `${item.Name}${year}${type}`,
-                                type: item.Type,
-                                name: item.Name
-                            };
-                        });
-                        
-                        this.searchContent_metadata = {
-                            hasMore: false,
-                            currentCount: items.length,
-                            totalCount: items.length
-                        };
-
-                        if (config.SelectedItemType === 'Episode' && config.SelectedSeriesId) {
-                            const seriesItem = this.searchContent_items.find(item => item.id === config.SelectedSeriesId);
-                            if (seriesItem) {
-                                view.querySelector('#searchContent').value = seriesItem.text;
-                                view.querySelector('#selectedItemId').value = config.SelectedSeriesId;
-                                view.querySelector('#selectedItemId').dataset.type = 'Series';
-                                view.querySelector('#selectedItemId').dataset.name = seriesItem.name;
-                            }
-                            this.showSeriesControls(view);
-                            
-                            loadSeasons(config.SelectedSeriesId).then(seasonsResult => {
-                                const seasons = seasonsResult.Items || [];
-                                
-                                this.searchSeason_items = seasons.map(season => {
-                                    const seasonNum = season.IndexNumber ? ` ${season.IndexNumber}` : '';
-                                    return {
-                                        id: season.Id,
-                                        text: `${season.Name || '第' + seasonNum + '季'}`,
-                                        name: season.Name || '第' + seasonNum + '季'
-                                    };
-                                });
-                                
-                                this.searchSeason_metadata = {
-                                    hasMore: false,
-                                    currentCount: seasons.length,
-                                    totalCount: seasons.length
-                                };
-
-                                if (config.SelectedSeasonId) {
-                                    const seasonItem = this.searchSeason_items.find(item => item.id === config.SelectedSeasonId);
-                                    if (seasonItem) {
-                                        view.querySelector('#searchSeason').value = seasonItem.text;
-                                        view.querySelector('#selectedSeasonId').value = config.SelectedSeasonId;
-                                    }
-                                    
-                                    loadEpisodes(config.SelectedSeriesId, config.SelectedSeasonId).then(episodesResult => {
-                                        const episodes = episodesResult.Items || [];
-                                        
-                                        this.searchEpisode_items = episodes.map(episode => {
-                                            const epNum = episode.IndexNumber ? `E${episode.IndexNumber}` : '';
-                                            const seasonNum = episode.ParentIndexNumber ? `S${episode.ParentIndexNumber}` : '';
-                                            return {
-                                                id: episode.Id,
-                                                text: `${seasonNum}${epNum} - ${episode.Name}`,
-                                                name: episode.Name
-                                            };
-                                        });
-                                        
-                                        this.searchEpisode_metadata = {
-                                            hasMore: false,
-                                            currentCount: episodes.length,
-                                            totalCount: episodes.length
-                                        };
-
-                                        if (config.SelectedItemId) {
-                                            const episodeItem = this.searchEpisode_items.find(item => item.id === config.SelectedItemId);
-                                            if (episodeItem) {
-                                                view.querySelector('#searchEpisode').value = episodeItem.text;
-                                                view.querySelector('#selectedEpisodeId').value = config.SelectedItemId;
-                                            }
-                                        }
-                                    });
-                                }
-                            });
-                        } else if (config.SelectedItemId) {
-                            const selectedItem = this.searchContent_items.find(item => item.id === config.SelectedItemId);
-                            if (selectedItem) {
-                                view.querySelector('#searchContent').value = selectedItem.text;
-                                view.querySelector('#selectedItemId').value = config.SelectedItemId;
-                                view.querySelector('#selectedItemId').dataset.type = selectedItem.type;
-                                view.querySelector('#selectedItemId').dataset.name = selectedItem.name;
-                            }
-                        }
-                    });
-                }
 
                 loading.hide();
                 
@@ -1132,18 +1021,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 }
             }
             
-            const libraryNameSelect = view.querySelector('#libraryName');
-            const selectedLibraryOption = libraryNameSelect.selectedOptions[0];
-            const selectedLibraryId = libraryNameSelect.value;
-            const selectedLibraryName = selectedLibraryOption ? selectedLibraryOption.dataset.name : '一起看';
-            const selectedLibraryPath = selectedLibraryOption ? selectedLibraryOption.dataset.path : '';
-
-            if (!selectedLibraryId) {
-                loading.hide();
-                toast({ type: 'error', text: '请选择一起看媒体库。' });
-                return;
-            }
-
             const maxParticipants = parseInt(view.querySelector('#maxParticipants').value);
             if (maxParticipants < 2 || maxParticipants > 100) {
                 loading.hide();
@@ -1227,9 +1104,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     EpisodeQueue: episodeQueue,
                     CurrentEpisodeIndex: currentEpisodeIndex,
                     CurrentEpisodeId: isSeriesParty ? finalItemId : null,
-                    CollectionName: selectedLibraryName,
-                    TargetLibraryId: selectedLibraryId,
-                    TargetLibraryPath: selectedLibraryPath,
                     IsActive: view.querySelector('#isPartyActive').checked,
                     CurrentPositionTicks: 0,
                     IsPlaying: false,
@@ -1268,10 +1142,9 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     const itemSelect = view.querySelector('#selectedItemId');
                     itemSelect.innerHTML = '<option value="">请先选择媒体库……</option>';
                     delete itemSelect._allOptions;
-                    view.querySelector('#isPartyActive').checked = false;
+                    view.querySelector('#isPartyActive').checked = true;
                     view.querySelector('#isSeriesParty').checked = false;
                     view.querySelector('#maxParticipants').value = 50;
-                    view.querySelector('#libraryName').value = '';
                     view.querySelector('#allowedUsers').selectedIndex = -1;
                     view.querySelector('#isWaitingRoom').checked = false;
                     view.querySelector('#autoStartWhenReady').checked = false;
@@ -1287,8 +1160,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     view.querySelector('#networkLatencyMeasurementIntervalSeconds').value = 30;
                     view.querySelector('#autoAdjustForLatency').checked = true;
                     view.querySelector('#maxLatencyCompensationMs').value = 5000;
-                    view.querySelector('#libraryName').value = '';
-                    view.querySelector('#isPartyActive').checked = false;
+                    view.querySelector('#isPartyActive').checked = true;
                     view.querySelector('#maxParticipants').value = 50;
                     this.hideSeriesControls(view);
                     
@@ -1335,13 +1207,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 config.LockoutWindowMinutes = parseInt(view.querySelector('#lockoutWindowMinutes').value) || 10;
                 config.EnableAuditLogging = view.querySelector('#enableAuditLogging').checked;
                 config.MaxAuditLogEntries = parseInt(view.querySelector('#maxAuditLogEntries').value) || 1000;
-                
-                const strmLibrarySelect = view.querySelector('#strmTargetLibrary');
-                const strmLibraryOption = strmLibrarySelect.selectedOptions[0];
-                if (strmLibraryOption && strmLibraryOption.value) {
-                    config.StrmTargetLibraryId = strmLibraryOption.value;
-                    config.StrmTargetLibraryName = strmLibraryOption.dataset.name || strmLibraryOption.textContent;
-                }
                 
                 const adminPassword = view.querySelector('#adminPassword').value.trim();
                 if (adminPassword) {
@@ -1414,11 +1279,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         onResume(options) {
             super.onResume(options);
             this.loadData(this.view);
-            
-            const libraryNameSelect = this.view.querySelector('#libraryName');
-            if (libraryNameSelect) {
-                populateLibraryDropdown(this.view, libraryNameSelect);
-            }
         }
     }
 });

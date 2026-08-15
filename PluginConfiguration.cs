@@ -143,9 +143,6 @@ namespace WatchPartyForEmby
         public List<WatchPartyEpisode> EpisodeQueue { get; set; }
         public int CurrentEpisodeIndex { get; set; }
         public string CurrentEpisodeId { get; set; }
-        public string CollectionName { get; set; }
-        public string TargetLibraryId { get; set; }
-        public string TargetLibraryPath { get; set; }
         public bool IsActive { get; set; }
         public long CurrentPositionTicks { get; set; }
         public bool IsPlaying { get; set; }
@@ -175,7 +172,6 @@ namespace WatchPartyForEmby
         public WatchPartyItem()
         {
             Id = Guid.NewGuid().ToString();
-            CollectionName = "Watch Party";
             IsActive = true;
             MaxParticipants = 50;
             CreatedDate = DateTime.UtcNow;
@@ -201,24 +197,12 @@ namespace WatchPartyForEmby
 
     public class PluginConfiguration : BasePluginConfiguration
     {
-        public string SelectedLibraryId { get; set; }
-        public string SelectedItemId { get; set; }
-        public string SelectedItemName { get; set; }
-        public string SelectedItemType { get; set; }
-        public string SelectedSeriesId { get; set; }
-        public string SelectedSeasonId { get; set; }
-        public string CollectionName { get; set; } = "Watch Party";
-        public bool IsPartyActive { get; set; }
-        public long CurrentPositionTicks { get; set; }
-        public bool IsPlaying { get; set; }
-        public int MaxParticipants { get; set; } = 50;
-
+        public int ConfigurationVersion { get; set; }
         public List<WatchPartyItem> WatchParties { get; set; }
 
         public int SyncIntervalSeconds { get; set; } = 5;
         public int SyncOffsetMilliseconds { get; set; } = 1000;
         public bool EnableDebugLogging { get; set; }
-        public string WatchPartyStrmPath { get; set; }
 
         public bool EnableExternalWebServer { get; set; } = false;
         public int ExternalWebServerPort { get; set; } = 8097;
@@ -226,8 +210,6 @@ namespace WatchPartyForEmby
         public string AllowedCorsOrigins { get; set; } = "";
         public string AdminPasswordHash { get; set; }
         public string EmbyApiKey { get; set; }
-        public string StrmTargetLibraryId { get; set; }
-        public string StrmTargetLibraryName { get; set; }
         public string ExternalServerUrl { get; set; }
         public string EmbyServerUrl { get; set; }
         public int SessionExpirationMinutes { get; set; } = 60;
@@ -262,21 +244,11 @@ namespace WatchPartyForEmby
 
         public PluginConfiguration()
         {
-            SelectedLibraryId = null;
-            SelectedItemId = null;
-            SelectedItemName = "No content selected";
-            SelectedItemType = null;
-            SelectedSeriesId = null;
-            SelectedSeasonId = null;
-            CollectionName = "Watch Party";
-            IsPartyActive = false;
+            ConfigurationVersion = 0;
             EnableDebugLogging = false;
-            CurrentPositionTicks = 0;
-            IsPlaying = false;
             WatchParties = new List<WatchPartyItem>();
             SyncIntervalSeconds = 5;
             SyncOffsetMilliseconds = 1000;
-            WatchPartyStrmPath = string.Empty;
             ExternalWebServerPort = 8097;
             ListenAddress = "0.0.0.0";
             AllowedCorsOrigins = "";

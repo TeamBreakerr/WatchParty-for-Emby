@@ -147,16 +147,6 @@
                             </div>
                         </div>
 
-                        <div class="selectContainer" style="margin-top: 1em;">
-                            <label class="selectLabel" for="libraryName">一起看媒体库</label>
-                            <select is="emby-select" id="libraryName" class="emby-select-withcolor emby-select">
-                                <option value="">正在加载媒体库……</option>
-                            </select>
-                            <div class="fieldDescription">
-                                选择用于保存一起看 STRM 文件的媒体库
-                            </div>
-                        </div>
-
                         <div class="checkboxContainer" style="margin-top: 1.5em;">
                             <label>
                                 <input is="emby-checkbox" type="checkbox" id="isPartyActive" />
@@ -476,16 +466,6 @@
                             </div>
                         </div>
 
-                        <div class="selectContainer" style="margin-top: 1em;">
-                            <label class="selectLabel" for="strmTargetLibrary">STRM 文件目标媒体库</label>
-                            <select is="emby-select" id="strmTargetLibrary" class="emby-select-withcolor emby-select">
-                                <option value="">正在加载媒体库……</option>
-                            </select>
-                            <div class="fieldDescription">
-                                <strong>必选。</strong>通过外部控制台创建的所有 STRM 文件都会放入该媒体库，避免用户将文件添加到错误位置。
-                            </div>
-                        </div>
-
                         <h3 style="margin-top: 2em; margin-bottom: 1em; color: #2196F3;">安全设置</h3>
 
                         <div class="checkboxContainer" style="margin-top: 1em;" id="httpsContainer">
@@ -644,7 +624,7 @@
                                 <span>保存设置</span>
                             </button>
                             <button is="emby-button" type="submit" class="raised button-submit" style="flex: 1;">
-                                <span>创建一起看房间</span>
+                                <span>创建原媒体同步房间</span>
                             </button>
                         </div>
                         
@@ -672,27 +652,23 @@
                             <p style="margin: 0.5em 0;">
                                 1. 管理员选择用于一起看的媒体库<br>
                                 2. 管理员选择内容并创建房间<br>
-                                3. 插件在指定媒体库中自动创建 STRM 文件<br>
-                                4. 用户浏览该媒体库并播放条目，即可加入房间<br>
-                                5. 所有人的播放进度保持同步
+                                3. 用户直接播放原媒体库中的影片或剧集，即可加入房间<br>
+                                4. 所有人的播放进度保持同步，原条目的字幕和媒体信息保持不变
                             </p>
                         </div>
 
                         <h3>使用方法：</h3>
                         <ol>
-                            <li><strong>管理员：</strong>从“一起看媒体库”下拉框选择目标媒体库</li>
                             <li><strong>管理员：</strong>在上方选择要观看的内容</li>
-                            <li><strong>管理员：</strong>启用房间并点击“创建一起看房间”</li>
-                            <li><strong>自动处理：</strong>单个条目会创建一个 STRM；整部剧集房间会创建有序的剧集目录</li>
-                            <li><strong>所有用户：</strong>进入该媒体库并播放内容</li>
-                            <li><strong>同步：</strong>插件会保持所有人的进度一致，并自动扫描媒体库</li>
+                            <li><strong>管理员：</strong>点击“创建原媒体同步房间”</li>
+                            <li><strong>所有用户：</strong>在原媒体库中播放对应影片或房间当前剧集</li>
+                            <li><strong>同步：</strong>插件会保持所有人的剧集、播放进度和暂停状态一致</li>
                         </ol>
 
-                        <h3>STRM 文件结构：</h3>
+                        <h3>原媒体绑定：</h3>
                         <p>
-                            创建房间时，插件会生成指向所选内容的 STRM 文件。单个条目沿用原始媒体文件名；
-                            整部剧集房间使用独立且不会重名的目录，并按季创建子目录、按集数排列文件。
-                            创建完成后会自动重新扫描所选媒体库。
+                            房间直接绑定原始 Emby 条目，不创建副本或 STRM 文件。整部剧集房间保存有序的原始剧集队列，
+                            主控用户切换剧集时，插件会让参与者播放同一个原始剧集条目。
                         </p>
 
                         <h3>客户端支持：</h3>
@@ -706,14 +682,14 @@
 
                         <h3>同步方式：</h3>
                         <p>
-                            房间启用后，插件会监听播放事件。用户播放一起看媒体库中的 STRM 条目时，
+                            房间启用后，插件会监听播放事件。用户播放房间绑定的原始影片或剧集时，
                             会自动跳到房间的当前同步位置。主控用户决定当前集、播放进度、暂停和拖动，其他参与者跟随。
                         </p>
 
                         <h3>故障排查：</h3>
                         <ul>
                             <li><strong>进度不同步？</strong>确认已勾选“立即启用房间”并保存</li>
-                            <li><strong>看不到 STRM 文件？</strong>在 Emby 中扫描媒体库，或检查 STRM 目录路径</li>
+                            <li><strong>无法加入房间？</strong>确认播放的是房间绑定的原始影片或剧集</li>
                             <li><strong>内容选错？</strong>删除房间后用正确内容重新创建</li>
                             <li><strong>需要日志？</strong>启用上方“调试日志”并查看服务器日志</li>
                         </ul>

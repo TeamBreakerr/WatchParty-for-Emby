@@ -69,10 +69,6 @@ function createView() {
     add('#selectedEpisodeId', { value: '' });
     add('#searchEpisode', { value: '' });
     add('#isSeriesParty', { checked: true });
-    add('#libraryName', {
-        value: 'watch-party-library',
-        selectedOptions: [{ dataset: { name: 'Watch Party', path: '/config/watchparty' } }]
-    });
     add('#maxParticipants', { value: '50' });
     add('#syncToleranceSeconds', { value: '10' });
     add('#allowedUsers', { selectedOptions: [] });
@@ -133,6 +129,9 @@ test('Series Party without season or episode starts from the first regular episo
     assert.equal(party.CurrentEpisodeId, 's1e1');
     assert.equal(party.CurrentEpisodeIndex, 0);
     assert.equal(party.ItemId, 's1e1');
+    assert.equal('TargetLibraryId' in party, false);
+    assert.equal('TargetLibraryPath' in party, false);
+    assert.equal('CollectionName' in party, false);
 });
 
 test('Series Party with only a season starts from the first episode in that season', async () => {
@@ -187,4 +186,5 @@ test('Movie Party remains a single-item Party', async () => {
     assert.equal(party.IsSeriesParty, false);
     assert.equal(party.ItemId, 'movie-1');
     assert.deepEqual(party.EpisodeQueue, []);
+    assert.equal('TargetLibraryId' in party, false);
 });

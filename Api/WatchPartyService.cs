@@ -10,39 +10,6 @@ using MediaBrowser.Model.Services;
 
 namespace WatchPartyForEmby.Api
 {
-    [Route("/WatchParty/Sync", "GET", Summary = "Get watch party sync state")]
-    public class WatchPartySyncRequest : IReturn<WatchPartySyncResponse>
-    {
-        [ApiMember(Name = "UserId", Description = "User ID", IsRequired = true)]
-        public string UserId { get; set; }
-    }
-
-    public class WatchPartySyncResponse
-    {
-        public bool IsPartyActive { get; set; }
-        public string ItemId { get; set; }
-        public string ItemName { get; set; }
-        public string ItemType { get; set; }
-        public long CurrentPositionTicks { get; set; }
-        public bool IsPlaying { get; set; }
-        public int MaxParticipants { get; set; }
-    }
-
-    [Route("/WatchParty/Info", "GET", Summary = "Get watch party information")]
-    public class WatchPartyInfoRequest : IReturn<WatchPartyInfoResponse>
-    {
-    }
-
-    public class WatchPartyInfoResponse
-    {
-        public bool IsPartyActive { get; set; }
-        public string ItemId { get; set; }
-        public string ItemName { get; set; }
-        public string ItemType { get; set; }
-        public long CurrentPositionTicks { get; set; }
-        public bool IsPlaying { get; set; }
-    }
-
     [Route("/WatchParty/List", "GET", Summary = "Get all watch parties")]
     public class WatchPartyListRequest : IReturn<WatchPartyListResponse>
     {
@@ -158,37 +125,6 @@ namespace WatchPartyForEmby.Api
         {
             _jsonSerializer = jsonSerializer;
             _userManager = userManager;
-        }
-
-        public object Get(WatchPartySyncRequest request)
-        {
-            var config = Plugin.Instance.Configuration;
-            
-            return new WatchPartySyncResponse
-            {
-                IsPartyActive = config.IsPartyActive,
-                ItemId = config.SelectedItemId ?? "",
-                ItemName = config.SelectedItemName ?? "",
-                ItemType = config.SelectedItemType ?? "",
-                CurrentPositionTicks = config.CurrentPositionTicks,
-                IsPlaying = config.IsPlaying,
-                MaxParticipants = config.MaxParticipants
-            };
-        }
-
-        public object Get(WatchPartyInfoRequest request)
-        {
-            var config = Plugin.Instance.Configuration;
-            
-            return new WatchPartyInfoResponse
-            {
-                IsPartyActive = config.IsPartyActive,
-                ItemId = config.SelectedItemId ?? "",
-                ItemName = config.SelectedItemName ?? "",
-                ItemType = config.SelectedItemType ?? "",
-                CurrentPositionTicks = config.CurrentPositionTicks,
-                IsPlaying = config.IsPlaying
-            };
         }
 
         public object Get(WatchPartyListRequest request)

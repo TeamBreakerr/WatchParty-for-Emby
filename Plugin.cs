@@ -55,6 +55,13 @@ namespace WatchPartyForEmby
 
         public override void UpdateConfiguration(BasePluginConfiguration configuration)
         {
+            if (configuration is PluginConfiguration pluginConfiguration
+                && WatchPartyItemMatcher.HasActiveBindingConflict(pluginConfiguration.WatchParties))
+            {
+                throw new InvalidOperationException(
+                    "An original Emby item cannot belong to more than one active watch party.");
+            }
+
             base.UpdateConfiguration(configuration);
             ConfigurationUpdated?.Invoke(this, EventArgs.Empty);
         }

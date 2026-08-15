@@ -24,9 +24,6 @@ define(['./api', 'loading', 'toast'], function (api, loading, toast) {
                     EpisodeQueue: partyData.episodeQueue || [],
                     CurrentEpisodeIndex: Number.isInteger(partyData.currentEpisodeIndex) ? partyData.currentEpisodeIndex : -1,
                     CurrentEpisodeId: partyData.currentEpisodeId || null,
-                    CollectionName: partyData.collectionName,
-                    TargetLibraryId: partyData.targetLibraryId,
-                    TargetLibraryPath: partyData.targetLibraryPath,
                     IsActive: partyData.isActive || false,
                     MaxParticipants: parseInt(partyData.maxParticipants) || 50,
                     AllowedUserIds: partyData.allowedUserIds || [],
@@ -114,7 +111,6 @@ define(['./api', 'loading', 'toast'], function (api, loading, toast) {
                 config.SyncIntervalSeconds = parseInt(settings.syncIntervalSeconds) || 5;
                 config.SyncOffsetMilliseconds = parseInt(settings.syncOffsetMilliseconds) || 1000;
                 config.EnableDebugLogging = settings.enableDebugLogging || false;
-                config.WatchPartyStrmPath = settings.watchPartyStrmPath || '';
                 
                 const result = await this.api.updatePluginConfiguration(config);
                 loading.hide();
@@ -141,10 +137,6 @@ define(['./api', 'loading', 'toast'], function (api, loading, toast) {
 
             if (!data.itemId) {
                 errors.push('Please select content to watch');
-            }
-
-            if (!data.targetLibraryId) {
-                errors.push('Please select a target library');
             }
 
             if (data.maxParticipants < 2 || data.maxParticipants > 100) {

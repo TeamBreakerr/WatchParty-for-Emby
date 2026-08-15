@@ -32,6 +32,7 @@ namespace WatchPartyForEmby
         private readonly object _csrfLock = new object();
         private readonly object _loginLock = new object();
         private readonly object _auditLock = new object();
+        private readonly object _partyConfigurationLock = new object();
 
         public ExternalWebServer(ILogger logger, IJsonSerializer jsonSerializer, int port, string listenAddress = "0.0.0.0")
         {
@@ -699,21 +700,6 @@ namespace WatchPartyForEmby
                 await HandleEmbyProxy(request, response, requestBody);
                 return;
             }
-            else if (path == "/api/config/strm-library" && requestBody == null)
-            {
-
-                var config = Plugin.Instance.Configuration;
-                var result = new
-                {
-                    targetLibraryId = config.StrmTargetLibraryId ?? "",
-                    targetLibraryName = config.StrmTargetLibraryName ?? ""
-                };
-                
-                var json = _jsonSerializer.SerializeToString(result);
-                response.StatusCode = (int)HttpStatusCode.OK;
-                response.ContentType = "application/json";
-                await WriteResponse(response, json);
-            }
             else if (path == "/api/parties" && requestBody == null)
             {
                 // Party password moved to header
@@ -1015,51 +1001,6 @@ namespace WatchPartyForEmby
                     }
                 }
                 
-                // Get target library path from Emby API
-                string targetLibraryPath = "";
-                var targetLibraryId = request.ContainsKey("targetLibraryId") ? request["targetLibraryId"]?.ToString() : "";
-                if (!string.IsNullOrEmpty(targetLibraryId) && ValidateInput(targetLibraryId, 100) && !string.IsNullOrEmpty(config.EmbyApiKey))
-                {
-                    try
-                    {
-                        using (var client = new System.Net.Http.HttpClient())
-                        {
-                            client.Timeout = TimeSpan.FromSeconds(10);
-                            var httpRequest = new System.Net.Http.HttpRequestMessage(
-                                System.Net.Http.HttpMethod.Get, 
-                                EmbyServerAddress.Build(config.EmbyServerUrl, "Library/MediaFolders")
-                            );
-                            httpRequest.Headers.Add("X-Emby-Token", config.EmbyApiKey);
-                            
-                            var libraryResponse = await client.SendAsync(httpRequest);
-                            if (libraryResponse.IsSuccessStatusCode)
-                            {
-                                var libraryContent = await libraryResponse.Content.ReadAsStringAsync();
-                                var libraryData = _jsonSerializer.DeserializeFromString<Dictionary<string, object>>(libraryContent);
-                                if (libraryData.ContainsKey("Items") && libraryData["Items"] is object[] items)
-                                {
-                                    foreach (var item in items)
-                                    {
-                                        var lib = item as Dictionary<string, object>;
-                                        if (lib != null && lib.ContainsKey("Id") && lib["Id"]?.ToString() == targetLibraryId)
-                                        {
-                                            if (lib.ContainsKey("Locations") && lib["Locations"] is object[] locations && locations.Length > 0)
-                                            {
-                                                targetLibraryPath = locations[0]?.ToString() ?? "";
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.ErrorException("[ExternalWebServer] Error getting library path", ex);
-                    }
-                }
-
                 var isSeriesParty = request.ContainsKey("isSeriesParty") && Convert.ToBoolean(request["isSeriesParty"]);
                 var episodeQueue = new List<WatchPartyEpisode>();
                 var currentEpisodeIndex = -1;
@@ -1136,10 +1077,6 @@ namespace WatchPartyForEmby
                     EpisodeQueue = episodeQueue,
                     CurrentEpisodeIndex = currentEpisodeIndex,
                     CurrentEpisodeId = currentEpisodeId,
-                    CollectionName = request.ContainsKey("collectionName") && ValidateInput(request["collectionName"]?.ToString(), 100) 
-                        ? request["collectionName"]?.ToString() : "Watch Party",
-                    TargetLibraryId = targetLibraryId,
-                    TargetLibraryPath = targetLibraryPath,
                     IsActive = request.ContainsKey("isActive") ? Convert.ToBoolean(request["isActive"]) : false,
                     CurrentPositionTicks = 0,
                     IsPlaying = false,
@@ -1172,8 +1109,35 @@ namespace WatchPartyForEmby
                     newParty.PasswordHash = PasswordHelper.HashPassword(partyPassword);
                 }
 
-                config.WatchParties.Add(newParty);
-                Plugin.Instance.UpdateConfiguration(config);
+                var hasBindingConflict = false;
+                lock (_partyConfigurationLock)
+                {
+                    hasBindingConflict = WatchPartyItemMatcher.HasActiveBindingConflict(
+                        config.WatchParties.Concat(new[] { newParty }));
+                    if (!hasBindingConflict)
+                    {
+                        config.WatchParties.Add(newParty);
+                        try
+                        {
+                            Plugin.Instance.UpdateConfiguration(config);
+                        }
+                        catch
+                        {
+                            config.WatchParties.Remove(newParty);
+                            throw;
+                        }
+                    }
+                }
+
+                if (hasBindingConflict)
+                {
+                    response.StatusCode = (int)HttpStatusCode.Conflict;
+                    await WriteResponse(
+                        response,
+                        "{\"error\":\"This item already belongs to another active watch party\"}");
+                    LogAudit(ipAddress, "create_party", newParty.MasterUserId, false, "Item binding conflict");
+                    return;
+                }
 
                 LogAudit(ipAddress, "create_party", newParty.MasterUserId, true, $"Party: {newParty.ItemName}");
 
@@ -1226,8 +1190,6 @@ namespace WatchPartyForEmby
 
                 var partyName = party.ItemName;
 
-                // ServerEntryPoint owns STRM lifecycle and removes the exact cached
-                // path when this configuration update removes the party.
                 config.WatchParties.Remove(party);
                 Plugin.Instance.UpdateConfiguration(config);
 

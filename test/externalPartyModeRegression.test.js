@@ -72,9 +72,6 @@ function createHarness({ isSeriesParty, seasonId = '', episodeId = '' }) {
     };
 
     const fetch = async url => {
-        if (url.endsWith('/api/config/strm-library')) {
-            return { ok: true, json: async () => ({ targetLibraryId: 'target-library', targetLibraryName: 'Watch Party' }) };
-        }
         if (url.includes('/api/emby/Shows/series-1/Episodes?')) {
             return { ok: true, json: async () => ({ Items: allEpisodes }) };
         }
@@ -133,6 +130,8 @@ test('external Dashboard Series Party skips single-episode validation and builds
     assert.equal(party.currentEpisodeId, 's1e1');
     assert.equal(party.currentEpisodeIndex, 0);
     assert.deepEqual(Array.from(party.episodeQueue, episode => episode.ItemId), ['s1e1', 's1e2', 's2e1']);
+    assert.equal('targetLibraryId' in party, false);
+    assert.equal('collectionName' in party, false);
     assert.doesNotMatch(harness.alerts.join('\n'), /Please select an episode for TV shows/);
 });
 

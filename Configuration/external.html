@@ -1585,26 +1585,6 @@
                 return;
             }
             
-            // Get configured STRM target library from server
-            let targetLibraryId, targetLibraryName;
-            try {
-                const configResponse = await fetch(`${webServerUrl}/api/config/strm-library`, {
-                    headers: {}
-                });
-                const configData = await configResponse.json();
-                targetLibraryId = configData.targetLibraryId;
-                targetLibraryName = configData.targetLibraryName;
-                
-                if (!targetLibraryId || !targetLibraryName) {
-                    alert('STRM target library not configured in plugin settings. Please configure it first.');
-                    return;
-                }
-            } catch (err) {
-                console.error('Error getting STRM library config:', err);
-                alert('Failed to get STRM library configuration from server');
-                return;
-            }
-            
             let finalItemId = contentId;
             let finalItemName = contentName;
             let finalItemType = contentType;
@@ -1684,8 +1664,6 @@
                     episodeQueue: episodeQueue,
                     currentEpisodeIndex: currentEpisodeIndex,
                     currentEpisodeId: currentEpisodeId,
-                    collectionName: targetLibraryName,
-                    targetLibraryId: targetLibraryId,
                     isActive: document.getElementById('newIsActive').checked,
                     maxParticipants: maxParticipants,
                     allowedUserIds: allowedUserIds,

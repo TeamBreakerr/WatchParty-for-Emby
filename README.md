@@ -11,19 +11,18 @@ A synchronized watch party plugin for Emby Media Server. Create watch parties th
 - **Web Dashboard** — External web UI for creating, managing, and joining watch parties
 - **SSO Support** — Authentik forward auth integration for the dashboard
 - **Chat** — Built-in chat for each watch party
-- **STRM Library Integration** — Creates STRM files in a dedicated Emby library so users can join parties by browsing and playing from the Watch Parties library
-- **Series Parties** — Keeps an ordered multi-season episode queue in one room and advances everyone when the master naturally completes an episode
-- **Nested STRM Resolution** — Resolves local STRM sources (including Xiaoya/115 libraries) so generated party entries point to the actual stream instead of another STRM file
+- **Original Item Binding** — Controls the existing Emby item directly, preserving its subtitles, media streams, artwork, and metadata
+- **Series Parties** — Matches every original episode in an ordered multi-season queue, follows manual episode changes by the master, and advances everyone after natural completion
 - **Auto-Kick** — Optionally remove inactive participants after a configurable timeout
 - **Network Latency Compensation** — Automatic latency measurement and adjustment for remote viewers
 
 ## How It Works
 
 1. An admin creates a watch party from the dashboard, selecting content from any Emby library
-2. The plugin creates a STRM file in a dedicated "Watch Parties" library in Emby
-3. Users browse the Watch Parties library and play the item to join
+2. The room stores the original Emby item ID; no media file, directory, or STRM entry is created
+3. Users play the original movie or episode from its existing library to join
 4. If the waiting room is enabled, playback is paused until enough participants are ready
-5. The host controls playback — pause, play, and seek are synced to all participants
+5. The host controls playback — episode changes, pause, play, and seek are synced to all participants
 
 For a Series Party, select the episode where the room should start and enable **Create a Series Party**. The plugin queues all regular episodes in season/episode order, keeps the same participants and permissions between episodes, and stores the current episode and position across server restarts.
 
@@ -33,7 +32,6 @@ Client support depends on the Emby remote-control commands that the client imple
 
 - Emby Server 4.8+
 - .NET 6.0 runtime
-- A dedicated Emby library folder for Watch Party STRM files (e.g., `/mnt/Movies/WatchParty`)
 
 ## Installation
 
@@ -53,7 +51,6 @@ In the Emby plugin settings:
 | External Server URL | Public URL for the dashboard (e.g., `https://watchparty.example.com`) |
 | Emby Server URL | URL of your Emby server for dashboard integration |
 | Emby API Key | Required for the dashboard to access Emby libraries and users |
-| STRM Target Library | The Emby library where watch party STRM files are created |
 
 The server URL is also used for plugin-to-Emby API calls, so configure the actual internal port when Emby does not listen on the default `8096` (for example, `http://localhost:6908`).
 

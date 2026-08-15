@@ -1,16 +1,13 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Plugins;
-using MediaBrowser.Controller.Providers;
 using MediaBrowser.Controller.Session;
-using MediaBrowser.Model.IO;
 using MediaBrowser.Model.Logging;
 using MediaBrowser.Model.Session;
 
@@ -20,8 +17,6 @@ namespace WatchPartyForEmby
     {
         private readonly ISessionManager _sessionManager;
         private readonly ILibraryManager _libraryManager;
-        private readonly ILibraryMonitor _libraryMonitor;
-        private readonly IFileSystem _fileSystem;
         private readonly ILogger _logger;
         private readonly Plugin _plugin;
         private Timer _syncTimer;
@@ -30,11 +25,6 @@ namespace WatchPartyForEmby
         private readonly Dictionary<string, string> _partyHostSessions = new Dictionary<string, string>();
         private readonly HashSet<string> _trackedPartyIds = new HashSet<string>();
         private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, int>> _partyPauseVotes = new ConcurrentDictionary<string, ConcurrentDictionary<string, int>>();
-        private readonly Dictionary<string, string> _partyLibraryPathCache = new Dictionary<string, string>();
-        private readonly Dictionary<string, string> _partyStrmPathCache = new Dictionary<string, string>();
-        private readonly Dictionary<string, string> _partyEpisodeStrmPathCache = new Dictionary<string, string>();
-        private readonly Dictionary<string, string> _partySeriesDirectoryCache = new Dictionary<string, string>();
-        private readonly Dictionary<string, string> _strmContentCache = new Dictionary<string, string>();
         private readonly HashSet<string> _partiesTransitioning = new HashSet<string>();
         private readonly ConcurrentDictionary<string, long> _seriesSelectionVersions = new ConcurrentDictionary<string, long>();
         private readonly ConcurrentDictionary<string, DateTime> _expectedSeriesEpisodeStarts = new ConcurrentDictionary<string, DateTime>();
@@ -42,60 +32,18 @@ namespace WatchPartyForEmby
         private readonly ConcurrentDictionary<string, DateTime> _lastProgressCheckpoint = new ConcurrentDictionary<string, DateTime>();
         private readonly PlaybackSyncCoordinator _playbackSyncCoordinator = new PlaybackSyncCoordinator();
         private static readonly TimeSpan ProgressCheckpointInterval = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan PartyValidationInterval = TimeSpan.FromMinutes(5);
+        private DateTime _lastPartyValidationUtc = DateTime.MinValue;
 
         public ServerEntryPoint(
             ISessionManager sessionManager,
             ILibraryManager libraryManager,
-            ILibraryMonitor libraryMonitor,
-            IFileSystem fileSystem,
             ILogManager logManager)
         {
             _sessionManager = sessionManager;
             _libraryManager = libraryManager;
-            _libraryMonitor = libraryMonitor;
-            _fileSystem = fileSystem;
             _logger = logManager.GetLogger(GetType().Name);
             _plugin = Plugin.Instance;
-        }
-
-        private string NormalizePath(string path)
-        {
-            if (string.IsNullOrEmpty(path))
-            {
-                return path;
-            }
-
-            try
-            {
-                var fullPath = Path.GetFullPath(path);
-                
-                if (Environment.OSVersion.Platform == PlatformID.Win32NT)
-                {
-                    fullPath = fullPath.ToLowerInvariant();
-                }
-                
-                return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            }
-            catch
-            {
-                return path.Replace('\\', Path.DirectorySeparatorChar)
-                          .Replace('/', Path.DirectorySeparatorChar)
-                          .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            }
-        }
-
-        private StringComparison GetPathComparison()
-        {
-            return Environment.OSVersion.Platform == PlatformID.Win32NT
-                ? StringComparison.OrdinalIgnoreCase
-                : StringComparison.Ordinal;
-        }
-
-        private StringComparer GetPathComparer()
-        {
-            return Environment.OSVersion.Platform == PlatformID.Win32NT
-                ? StringComparer.OrdinalIgnoreCase
-                : StringComparer.Ordinal;
         }
 
         public void Run()
@@ -107,8 +55,17 @@ namespace WatchPartyForEmby
             _sessionManager.PlaybackStopped += OnPlaybackStopped;
             
             _plugin.ConfigurationUpdated += OnConfigurationUpdated;
-            
-            MigrateLegacyConfiguration();
+
+            var requiresDirectItemUpgrade = _plugin.Configuration.ConfigurationVersion
+                < PluginConfigurationMigration.DirectItemBindingVersion;
+            var removedLegacyRoomCount = PluginConfigurationMigration.ResetLegacyRooms(_plugin.Configuration);
+            if (requiresDirectItemUpgrade)
+            {
+                _plugin.SaveConfiguration();
+                _logger.Info(
+                    $"Direct-item configuration upgrade removed {removedLegacyRoomCount} legacy room(s)");
+            }
+
             RepairSeriesPartyConfiguration();
             
             var config = _plugin.Configuration;
@@ -119,38 +76,7 @@ namespace WatchPartyForEmby
             
             var intervalMs = Math.Max(1, config.SyncIntervalSeconds) * 1000;
             _syncTimer = new Timer(CheckAndSyncUsers, null, intervalMs, intervalMs);
-            
-            Task.Run(() => CreateAllWatchPartyStrmFiles());
-        }
-
-        private void MigrateLegacyConfiguration()
-        {
-            var config = _plugin.Configuration;
-            
-            if (!string.IsNullOrEmpty(config.SelectedItemId) && config.WatchParties.Count == 0)
-            {
-                _logger.Info("Migrating legacy single-party configuration");
-                
-                var legacyParty = new WatchPartyItem
-                {
-                    LibraryId = config.SelectedLibraryId,
-                    ItemId = config.SelectedItemId,
-                    ItemName = config.SelectedItemName,
-                    ItemType = config.SelectedItemType,
-                    SeriesId = config.SelectedSeriesId,
-                    SeasonId = config.SelectedSeasonId,
-                    CollectionName = config.CollectionName ?? "Watch Party",
-                    IsActive = config.IsPartyActive,
-                    CurrentPositionTicks = config.CurrentPositionTicks,
-                    IsPlaying = config.IsPlaying,
-                    MaxParticipants = config.MaxParticipants
-                };
-                
-                config.WatchParties.Add(legacyParty);
-                _plugin.SaveConfiguration();
-                
-                _logger.Info($"Migrated legacy party: {legacyParty.ItemName}");
-            }
+            Task.Run(() => ValidateAndCleanWatchParties(force: true));
         }
 
         private void RepairSeriesPartyConfiguration()
@@ -188,8 +114,7 @@ namespace WatchPartyForEmby
             _syncTimer?.Change(intervalMs, intervalMs);
             
             Task.Run(() => CleanupRemovedParties());
-            Task.Run(() => ValidateAndCleanWatchParties());
-            Task.Run(() => CreateAllWatchPartyStrmFiles());
+            Task.Run(() => ValidateAndCleanWatchParties(force: true));
         }
 
         private PartyParticipant GetOrCreateParticipant(string partyId, SessionInfo session)
@@ -569,38 +494,53 @@ namespace WatchPartyForEmby
                 CancellationToken.None);
         }
 
-        private void ValidateAndCleanWatchParties()
+        private void ValidateAndCleanWatchParties(bool force = false)
         {
             try
             {
-                var config = _plugin.Configuration;
-                bool configChanged = false;
-
-                if (string.IsNullOrEmpty(config.WatchPartyStrmPath))
+                var nowUtc = DateTime.UtcNow;
+                if (!force && nowUtc - _lastPartyValidationUtc < PartyValidationInterval)
                 {
                     return;
                 }
+                _lastPartyValidationUtc = nowUtc;
+
+                var config = _plugin.Configuration;
+                bool configChanged = false;
 
                 foreach (var party in config.WatchParties.ToList())
                 {
-                    var partyItem = _libraryManager.GetItemById(party.ItemId);
-                    
-                    if (partyItem == null)
+                    if (party.IsSeriesParty)
+                    {
+                        var originalEpisodeCount = party.EpisodeQueue?.Count ?? 0;
+                        var queueChanged = SeriesPartyQueue.RemoveUnavailableEpisodes(
+                            party,
+                            itemId => _libraryManager.GetItemById(itemId) != null);
+                        if (queueChanged)
+                        {
+                            var remainingEpisodeCount = party.EpisodeQueue?.Count ?? 0;
+                            var removedEpisodeCount = originalEpisodeCount - remainingEpisodeCount;
+                            if (removedEpisodeCount > 0)
+                            {
+                                _logger.Info(
+                                    $"Party {party.Id}: Removed {removedEpisodeCount} unavailable episode(s)");
+                            }
+                            configChanged = true;
+                        }
+
+                        if (party.EpisodeQueue == null || party.EpisodeQueue.Count == 0)
+                        {
+                            _logger.Info(
+                                $"Party {party.Id}: No source episodes remain for {party.SeriesName}, removing room");
+                            config.WatchParties.Remove(party);
+                            configChanged = true;
+                        }
+                    }
+                    else if (_libraryManager.GetItemById(party.ItemId) == null)
                     {
                         _logger.Info($"Party {party.Id}: Item {party.ItemName} no longer exists in library, removing from settings");
                         config.WatchParties.Remove(party);
                         configChanged = true;
-                        
-                        var strmPath = GetStrmFilePath(party);
-                        if (File.Exists(strmPath))
-                        {
-                            File.Delete(strmPath);
-                            _logger.Info($"Deleted STRM file: {strmPath}");
-                            
-                            // Notify Emby about the file system change
-                            _libraryMonitor.ReportFileSystemChanged(strmPath);
-                            _logger.Info($"Notified Emby about STRM file deletion: {strmPath}");
-                        }
                     }
                 }
 
@@ -623,73 +563,20 @@ namespace WatchPartyForEmby
                 var config = _plugin.Configuration;
                 var currentPartyIds = new HashSet<string>(config.WatchParties.Select(p => p.Id));
                 var removedPartyIds = _trackedPartyIds.Except(currentPartyIds).ToList();
-                
-                var removedStrmPaths = new HashSet<string>(GetPathComparer());
-                var removedSeriesDirectories = new HashSet<string>(GetPathComparer());
+
                 foreach (var removedId in removedPartyIds)
                 {
                     _logger.Info($"Party {removedId} was removed, cleaning up...");
                     _playbackSyncCoordinator.ClearParty(removedId);
-                    
-                    if (_partyStrmPathCache.TryGetValue(removedId, out var removedStrmPath)
-                        && !string.IsNullOrEmpty(removedStrmPath))
-                    {
-                        removedStrmPaths.Add(removedStrmPath);
-                    }
-                    if (_partySeriesDirectoryCache.TryGetValue(removedId, out var removedSeriesDirectory)
-                        && !string.IsNullOrEmpty(removedSeriesDirectory))
-                    {
-                        removedSeriesDirectories.Add(removedSeriesDirectory);
-                    }
-                    
+
                     _partySyncedSessions.TryRemove(removedId, out _);
                     _partySessionPauseState.TryRemove(removedId, out _);
                     _partyHostSessions.Remove(removedId);
                     _partyPauseVotes.TryRemove(removedId, out _);
-                    _partySeriesDirectoryCache.Remove(removedId);
                     _lastProgressCheckpoint.TryRemove(removedId, out _);
                     _seriesSelectionVersions.TryRemove(removedId, out _);
-
-                    var episodeCacheKeys = _partyEpisodeStrmPathCache.Keys
-                        .Where(key => key.StartsWith(removedId + ":", StringComparison.Ordinal))
-                        .ToList();
-                    foreach (var cacheKey in episodeCacheKeys)
-                    {
-                        _partyEpisodeStrmPathCache.Remove(cacheKey);
-                    }
-                }
-                
-                var removedCacheIds = _partyLibraryPathCache.Keys.Except(currentPartyIds).ToList();
-                foreach (var removedId in removedCacheIds)
-                {
-                    _partyLibraryPathCache.Remove(removedId);
-                    _partyStrmPathCache.Remove(removedId);
                 }
 
-                foreach (var strmFile in removedStrmPaths)
-                {
-                    if (!File.Exists(strmFile))
-                    {
-                        continue;
-                    }
-
-                    try
-                    {
-                        File.Delete(strmFile);
-                        _logger.Info($"Deleted Watch Party STRM file: {strmFile}");
-                        _libraryMonitor.ReportFileSystemChanged(strmFile);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.ErrorException($"Error deleting Watch Party STRM file: {strmFile}", ex);
-                    }
-                }
-
-                foreach (var seriesDirectory in removedSeriesDirectories)
-                {
-                    DeleteSeriesPartyDirectory(seriesDirectory);
-                }
-                
                 _trackedPartyIds.Clear();
                 _trackedPartyIds.UnionWith(currentPartyIds);
             }
@@ -699,398 +586,13 @@ namespace WatchPartyForEmby
             }
         }
 
-        private async Task CreateAllWatchPartyStrmFiles()
-        {
-            var config = _plugin.Configuration;
-            var changedPaths = new List<string>();
-
-            foreach (var party in config.WatchParties)
-            {
-                changedPaths.AddRange(await CreateWatchPartyStrmFiles(party));
-            }
-
-            // Notify Emby only when STRM content changed (same approach as Radarr/Sonarr)
-            if (changedPaths.Count > 0)
-            {
-                await Task.Delay(1000);
-                await NotifyEmbyLibraryUpdated(changedPaths);
-            }
-
-            _logger.Info("Finished creating STRM files for all watch parties");
-        }
-
-        private async Task<List<string>> CreateWatchPartyStrmFiles(WatchPartyItem party)
-        {
-            if (!party.IsSeriesParty)
-            {
-                var path = await CreateWatchPartyStrmFile(party);
-                return string.IsNullOrEmpty(path) ? new List<string>() : new List<string> { path };
-            }
-
-            var changedPaths = new List<string>();
-            var seriesDirectory = GetSeriesPartyDirectory(party);
-            if (string.IsNullOrEmpty(seriesDirectory))
-            {
-                return changedPaths;
-            }
-
-            Directory.CreateDirectory(seriesDirectory);
-            var expectedPaths = new HashSet<string>(GetPathComparer());
-            foreach (var episode in party.EpisodeQueue ?? new List<WatchPartyEpisode>())
-            {
-                var item = _libraryManager.GetItemById(episode.ItemId);
-                if (item == null || string.IsNullOrEmpty(item.Path))
-                {
-                    _logger.Warn($"Party {party.Id}: Queue item {episode.ItemId} was not found or has no path");
-                    continue;
-                }
-
-                var path = GetSeriesEpisodeStrmPath(party, episode);
-                if (string.IsNullOrEmpty(path))
-                {
-                    continue;
-                }
-
-                Directory.CreateDirectory(Path.GetDirectoryName(path));
-                var resolvedSource = await StrmSourceResolver.ResolveAsync(item.Path);
-                var changed = await StrmFileSynchronizer.WriteIfChangedAsync(
-                    path,
-                    resolvedSource + Environment.NewLine);
-                _strmContentCache[path] = resolvedSource;
-                expectedPaths.Add(NormalizePath(path));
-                if (changed)
-                {
-                    changedPaths.Add(path);
-                }
-            }
-
-            foreach (var existingPath in Directory.EnumerateFiles(seriesDirectory, "*.strm", SearchOption.AllDirectories))
-            {
-                if (!expectedPaths.Contains(NormalizePath(existingPath)))
-                {
-                    File.Delete(existingPath);
-                    _strmContentCache.Remove(existingPath);
-                    _libraryMonitor.ReportFileSystemChanged(existingPath);
-                    _logger.Info($"Deleted stale Series Party STRM file: {existingPath}");
-                }
-            }
-
-            _logger.Info($"Created or updated {changedPaths.Count} STRM files for Series Party {party.Id}");
-            return changedPaths;
-        }
-
-        private async Task NotifyEmbyLibraryUpdated(List<string> paths)
-        {
-            var apiKey = _plugin.Configuration.EmbyApiKey;
-            if (string.IsNullOrEmpty(apiKey))
-            {
-                _logger.Warn("No Emby API key configured, cannot notify library about new STRM files");
-                return;
-            }
-
-            try
-            {
-                // Refresh the Watch Party library folder to pick up new/removed STRM files
-                var targetLibraryId = _plugin.Configuration.StrmTargetLibraryId;
-                if (!string.IsNullOrEmpty(targetLibraryId))
-                {
-                    using (var client = new System.Net.Http.HttpClient())
-                    {
-                        client.Timeout = TimeSpan.FromSeconds(30);
-                        var request = new System.Net.Http.HttpRequestMessage(
-                            System.Net.Http.HttpMethod.Post,
-                            EmbyServerAddress.Build(
-                                _plugin.Configuration.EmbyServerUrl,
-                                $"emby/Items/{targetLibraryId}/Refresh?Recursive=true"));
-                        request.Headers.Add("X-Emby-Token", apiKey);
-
-                        var response = await client.SendAsync(request);
-                        _logger.Info($"Refreshed Watch Party library (ID: {targetLibraryId}) - Status: {response.StatusCode}");
-                    }
-                }
-                else
-                {
-                    _logger.Warn("No StrmTargetLibraryId configured, falling back to LibraryMonitor");
-                    foreach (var path in paths)
-                    {
-                        _libraryMonitor.ReportFileSystemChanged(path);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.ErrorException("Error refreshing Watch Party library", ex);
-                foreach (var path in paths)
-                {
-                    _libraryMonitor.ReportFileSystemChanged(path);
-                }
-            }
-        }
-
-        private string GetLibraryPath(WatchPartyItem party)
-        {
-            if (_partyLibraryPathCache.TryGetValue(party.Id, out var cachedPath))
-            {
-                return cachedPath;
-            }
-
-            _logger.Debug($"GetLibraryPath: Starting lookup for party {party.Id}");
-            _logger.Debug($"  TargetLibraryPath: '{party.TargetLibraryPath}'");
-            _logger.Debug($"  TargetLibraryId: '{party.TargetLibraryId}'");
-            _logger.Debug($"  CollectionName: '{party.CollectionName}'");
-
-            if (!string.IsNullOrEmpty(party.TargetLibraryPath) && Directory.Exists(party.TargetLibraryPath))
-            {
-                _logger.Debug($"GetLibraryPath: Using TargetLibraryPath: {party.TargetLibraryPath}");
-                _partyLibraryPathCache[party.Id] = party.TargetLibraryPath;
-                return party.TargetLibraryPath;
-            }
-
-            try
-            {
-                var virtualFolders = _libraryManager.GetVirtualFolders();
-                _logger.Debug($"GetLibraryPath: Found {virtualFolders.Count} virtual folders");
-
-                if (!string.IsNullOrEmpty(party.TargetLibraryId))
-                {
-                    _logger.Debug($"GetLibraryPath: Looking for library with ID: {party.TargetLibraryId}");
-                    
-                    foreach (var vf in virtualFolders)
-                    {
-                        _logger.Debug($"  Checking virtual folder: Name='{vf.Name}', ItemId='{vf.ItemId}', Locations={vf.Locations?.Length ?? 0}");
-                        
-                        if (vf.ItemId == party.TargetLibraryId && vf.Locations != null && vf.Locations.Length > 0)
-                        {
-                            var path = vf.Locations[0];
-                            _logger.Debug($"GetLibraryPath: Found library path by ID: {path}");
-                            _partyLibraryPathCache[party.Id] = path;
-                            return path;
-                        }
-                    }
-                }
-
-                if (!string.IsNullOrEmpty(party.CollectionName))
-                {
-                    _logger.Debug($"GetLibraryPath: Looking for library with name: {party.CollectionName}");
-                    
-                    foreach (var vf in virtualFolders)
-                    {
-                        if (vf.Name.Equals(party.CollectionName, StringComparison.OrdinalIgnoreCase) 
-                            && vf.Locations != null && vf.Locations.Length > 0)
-                        {
-                            var path = vf.Locations[0];
-                            _logger.Debug($"GetLibraryPath: Found library path by name: {path}");
-                            _partyLibraryPathCache[party.Id] = path;
-                            return path;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.ErrorException("GetLibraryPath: Error getting virtual folders", ex);
-            }
-
-            _logger.Warn($"GetLibraryPath: Could not find library path for party {party.Id}");
-            return null;
-        }
-
-        private string GetSeriesPartyDirectory(WatchPartyItem party)
-        {
-            if (_partySeriesDirectoryCache.TryGetValue(party.Id, out var cachedDirectory))
-            {
-                return cachedDirectory;
-            }
-
-            var libraryPath = GetLibraryPath(party);
-            if (string.IsNullOrEmpty(libraryPath))
-            {
-                return null;
-            }
-
-            var seriesName = SanitizeFileName(party.SeriesName ?? party.ItemName ?? "Series");
-            var compactId = (party.Id ?? Guid.NewGuid().ToString("N")).Replace("-", string.Empty);
-            var directory = Path.Combine(libraryPath, $"{seriesName} [Series Party {compactId}]");
-            _partySeriesDirectoryCache[party.Id] = directory;
-            return directory;
-        }
-
-        private string GetSeriesEpisodeStrmPath(WatchPartyItem party, WatchPartyEpisode episode)
-        {
-            if (episode == null || string.IsNullOrEmpty(episode.ItemId))
-            {
-                return null;
-            }
-
-            var cacheKey = $"{party.Id}:{episode.ItemId}";
-            if (_partyEpisodeStrmPathCache.TryGetValue(cacheKey, out var cachedPath))
-            {
-                return cachedPath;
-            }
-
-            var seriesDirectory = GetSeriesPartyDirectory(party);
-            if (string.IsNullOrEmpty(seriesDirectory))
-            {
-                return null;
-            }
-
-            var seasonDirectory = Path.Combine(seriesDirectory, $"Season {episode.SeasonNumber:00}");
-            var seriesName = SanitizeFileName(party.SeriesName ?? "Series");
-            var episodeName = SanitizeFileName(episode.ItemName ?? $"Episode {episode.EpisodeNumber}");
-            var episodeId = SanitizeFileName(episode.ItemId);
-            var fileName = $"{seriesName} - S{episode.SeasonNumber:00}E{episode.EpisodeNumber:00} - {episodeName} [{episodeId}].strm";
-            var path = Path.Combine(seasonDirectory, fileName);
-            _partyEpisodeStrmPathCache[cacheKey] = path;
-            return path;
-        }
-
-        private string SanitizeFileName(string value)
-        {
-            var sanitized = string.Join("_", (value ?? string.Empty).Split(Path.GetInvalidFileNameChars()));
-            return string.IsNullOrWhiteSpace(sanitized) ? "Watch Party" : sanitized.Trim();
-        }
-
-        private void DeleteSeriesPartyDirectory(string seriesDirectory)
-        {
-            try
-            {
-                if (!Directory.Exists(seriesDirectory))
-                {
-                    return;
-                }
-
-                foreach (var strmFile in Directory.EnumerateFiles(seriesDirectory, "*.strm", SearchOption.AllDirectories))
-                {
-                    File.Delete(strmFile);
-                    _strmContentCache.Remove(strmFile);
-                    _libraryMonitor.ReportFileSystemChanged(strmFile);
-                }
-
-                foreach (var directory in Directory.EnumerateDirectories(seriesDirectory, "*", SearchOption.AllDirectories)
-                    .OrderByDescending(path => path.Length))
-                {
-                    if (!Directory.EnumerateFileSystemEntries(directory).Any())
-                    {
-                        Directory.Delete(directory);
-                    }
-                }
-
-                if (!Directory.EnumerateFileSystemEntries(seriesDirectory).Any())
-                {
-                    Directory.Delete(seriesDirectory);
-                }
-
-                _logger.Info($"Deleted Series Party directory: {seriesDirectory}");
-            }
-            catch (Exception ex)
-            {
-                _logger.ErrorException($"Error deleting Series Party directory {seriesDirectory}", ex);
-            }
-        }
-
-        private async Task<string> CreateWatchPartyStrmFile(WatchPartyItem party)
-        {
-            try
-            {
-                var libraryPath = GetLibraryPath(party);
-                if (string.IsNullOrEmpty(libraryPath))
-                {
-                    _logger.Warn($"Party {party.Id}: Could not determine library path, skipping STRM file creation");
-                    return null;
-                }
-
-                if (string.IsNullOrEmpty(party.ItemId))
-                {
-                    _logger.Info($"Party {party.Id}: No content selected, skipping STRM file creation");
-                    return null;
-                }
-
-                var item = _libraryManager.GetItemById(party.ItemId);
-                if (item == null)
-                {
-                    _logger.Warn($"Party {party.Id}: Selected item ID {party.ItemId} not found");
-                    return null;
-                }
-
-                var strmPath = GetStrmFilePath(party);
-                var itemPath = item.Path;
-
-                if (string.IsNullOrEmpty(itemPath))
-                {
-                    _logger.Warn($"Party {party.Id}: Item {item.Name} has no path");
-                    return null;
-                }
-
-                var resolvedSource = await StrmSourceResolver.ResolveAsync(itemPath);
-                var changed = await StrmFileSynchronizer.WriteIfChangedAsync(
-                    strmPath,
-                    resolvedSource + Environment.NewLine);
-
-                if (!changed)
-                {
-                    _logger.Debug($"Party {party.Id}: STRM source is unchanged");
-                    return null;
-                }
-
-                if (!string.Equals(itemPath, resolvedSource, StringComparison.Ordinal))
-                {
-                    _logger.Info($"Party {party.Id}: Resolved source STRM before creating watch party entry");
-                }
-
-                _logger.Info($"Created STRM file for party {party.Id}: {strmPath}");
-
-                return strmPath;
-            }
-            catch (Exception ex)
-            {
-                _logger.ErrorException($"Error creating STRM file for party {party.Id}", ex);
-                return null;
-            }
-        }
-
-        private string GetStrmFilePath(WatchPartyItem party)
-        {
-            if (party.IsSeriesParty)
-            {
-                return GetSeriesEpisodeStrmPath(party, SeriesPartyQueue.GetCurrentEpisode(party));
-            }
-
-            if (_partyStrmPathCache.TryGetValue(party.Id, out var cachedStrmPath))
-            {
-                return cachedStrmPath;
-            }
-
-            var libraryPath = GetLibraryPath(party);
-            if (string.IsNullOrEmpty(libraryPath))
-            {
-                return null;
-            }
-
-            var item = _libraryManager.GetItemById(party.ItemId);
-            
-            string strmPath;
-            if (item != null && !string.IsNullOrEmpty(item.Path))
-            {
-                var originalFileName = Path.GetFileNameWithoutExtension(item.Path);
-                strmPath = Path.Combine(libraryPath, $"{originalFileName}.strm");
-            }
-            else
-            {
-                var sanitizedName = string.Join("_", party.ItemName.Split(Path.GetInvalidFileNameChars()));
-                strmPath = Path.Combine(libraryPath, $"{sanitizedName}.strm");
-            }
-
-            _partyStrmPathCache[party.Id] = strmPath;
-            return strmPath;
-        }
-
         private async void OnPlaybackStart(object sender, PlaybackProgressEventArgs e)
         {
             try
             {
                 _logger.Info($"[Watch Party] PlaybackStart event fired - Item: {e.Item?.Name}, ItemId: {e.Item?.Id}, UserId: {e.Session?.UserId}");
                 
-                var party = FindPartyForItem(e.Item, includeQueuedSeriesEpisodes: true);
+                var party = FindPartyForItem(e.Item);
                 
                 if (party != null && party.IsActive)
                 {
@@ -1109,6 +611,7 @@ namespace WatchPartyForEmby
                     var isMaster = !string.IsNullOrEmpty(party.MasterUserId) && e.Session.UserId == party.MasterUserId;
                     var startedEpisodeId = FindSeriesEpisodeId(party, e.Item);
                     var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+                    var episodeSwitchTarget = GetSeriesEpisodeSwitchTarget(party, e.Item);
                     var isExpectedSeriesStart = ConsumeExpectedSeriesEpisodeStart(
                         e.Session.Id,
                         startedEpisodeId,
@@ -1129,7 +632,7 @@ namespace WatchPartyForEmby
                         && !string.IsNullOrEmpty(startedEpisodeId)
                         && currentEpisode != null
                         && (masterSelectionVersion.HasValue
-                            || !string.Equals(startedEpisodeId, currentEpisode.ItemId, StringComparison.OrdinalIgnoreCase)))
+                            || episodeSwitchTarget != null))
                     {
                         if (!isMaster || isExpectedSeriesStart)
                         {
@@ -1142,7 +645,7 @@ namespace WatchPartyForEmby
                                 $"redirecting to current episode {currentEpisode.ItemId}");
                             await PlaySeriesEpisodeForSessions(
                                 party,
-                                currentEpisode,
+                                episodeSwitchTarget ?? currentEpisode,
                                 new[] { e.Session },
                                 currentPosition);
                             return;
@@ -1334,6 +837,31 @@ namespace WatchPartyForEmby
                             var positionDifference = Math.Abs(currentPosition - estimatedPartyPosition);
                             var isMaster = !string.IsNullOrEmpty(party.MasterUserId)
                                 && session.UserId == party.MasterUserId;
+
+                            if (party.IsSeriesParty && !isMaster)
+                            {
+                                var episodeSwitchTarget = GetSeriesEpisodeSwitchTarget(party, item);
+                                if (episodeSwitchTarget != null)
+                                {
+                                    var expectedStartKey = GetExpectedSeriesEpisodeStartKey(
+                                        session.Id,
+                                        episodeSwitchTarget.ItemId);
+                                    if (!_expectedSeriesEpisodeStarts.TryGetValue(expectedStartKey, out var expiresAt)
+                                        || expiresAt < nowUtc)
+                                    {
+                                        var playingEpisodeId = FindSeriesEpisodeId(party, item);
+                                        _logger.Info(
+                                            $"[Party {party.Id}] Session {session.Id} is on episode {playingEpisodeId}; " +
+                                            $"switching to current episode {episodeSwitchTarget.ItemId}");
+                                        Task.Run(() => PlaySeriesEpisodeForSessions(
+                                            party,
+                                            episodeSwitchTarget,
+                                            new[] { session },
+                                            estimatedPartyPosition));
+                                    }
+                                    continue;
+                                }
+                            }
                             
                             UpdateParticipantActivity(party.Id, session.UserId, currentPosition, session.PlayState?.IsPaused ?? false);
                             
@@ -1367,32 +895,6 @@ namespace WatchPartyForEmby
                                 {
                                     _plugin.PartyParticipants[party.Id][session.UserId].IsBuffering = false;
                                 }
-                            }
-                        }
-                    }
-                }
-                
-                if (config.WatchParties.Count == 0
-                    && !string.IsNullOrEmpty(config.SelectedItemId)
-                    && config.IsPartyActive
-                    && config.IsPlaying
-                    && config.CurrentPositionTicks > 0)
-                {
-                    var sessions = _sessionManager.Sessions.Where(s => s.NowPlayingItem != null).ToList();
-                    
-                    foreach (var session in sessions)
-                    {
-                        var item = _libraryManager.GetItemById(session.NowPlayingItem.Id);
-                        if (item != null && IsSelectedItem(item, config))
-                        {
-                            var currentPosition = session.PlayState?.PositionTicks ?? 0;
-                            var positionDifference = Math.Abs(currentPosition - config.CurrentPositionTicks);
-                            var syncThreshold = TimeSpan.FromSeconds(10).Ticks;
-                            
-                            if (positionDifference > syncThreshold)
-                            {
-                                _logger.Info($"[Watch Party] Session {session.Id} is {TimeSpan.FromTicks(positionDifference).TotalSeconds:F1}s behind, syncing");
-                                Task.Run(async () => await SyncUserToPosition(session, item, config.CurrentPositionTicks));
                             }
                         }
                     }
@@ -1439,190 +941,39 @@ namespace WatchPartyForEmby
             }
         }
 
-        private WatchPartyItem FindPartyForItem(BaseItem item, bool includeQueuedSeriesEpisodes = false)
+        private WatchPartyItem FindPartyForItem(BaseItem item)
         {
-            if (item == null) return null;
-            
-            var config = _plugin.Configuration;
-
-            if (includeQueuedSeriesEpisodes)
-            {
-                foreach (var party in config.WatchParties.Where(candidate => candidate.IsSeriesParty && candidate.IsActive))
-                {
-                    if (!string.IsNullOrEmpty(FindSeriesEpisodeId(party, item, allowSourceItemMatch: false)))
-                    {
-                        return party;
-                    }
-                }
-            }
-            
-            // First, check if this is a STRM file
-            var isStrmFile = !string.IsNullOrEmpty(item.Path) && item.Path.EndsWith(".strm", StringComparison.OrdinalIgnoreCase);
-            
-            if (isStrmFile)
-            {
-                var itemPath = NormalizePath(item.Path);
-                _logger.Debug($"[Watch Party] Checking if STRM file {itemPath} belongs to a watch party");
-                
-                // Method 1: Check by STRM file path
-                foreach (var party in config.WatchParties)
-                {
-                    if (string.IsNullOrEmpty(party.ItemId)) continue;
-                    
-                    var partyStrmPath = GetStrmFilePath(party);
-                    if (!string.IsNullOrEmpty(partyStrmPath))
-                    {
-                        var normalizedPartyPath = NormalizePath(partyStrmPath);
-                        if (string.Equals(itemPath, normalizedPartyPath, GetPathComparison()))
-                        {
-                            _logger.Debug($"[Watch Party] STRM file path {itemPath} matches party {party.Id}");
-                            return party;
-                        }
-                    }
-                }
-                
-                // Method 2: Check by STRM content (reads the file and matches the target path)
-                try
-                {
-                    if (File.Exists(item.Path))
-                    {
-                        if (!_strmContentCache.TryGetValue(item.Path, out var strmContent))
-                        {
-                            strmContent = File.ReadAllText(item.Path).Trim();
-                            _strmContentCache[item.Path] = strmContent;
-                        }
-                        
-                        _logger.Debug($"[Watch Party] STRM file content: {strmContent}");
-                        
-                        foreach (var party in config.WatchParties)
-                        {
-                            if (string.IsNullOrEmpty(party.ItemId)) continue;
-                            
-                            var partyItem = _libraryManager.GetItemById(party.ItemId);
-                            if (partyItem != null && !string.IsNullOrEmpty(partyItem.Path))
-                            {
-                                var normalizedStrmContent = NormalizePath(strmContent);
-                                var normalizedPartyItemPath = NormalizePath(partyItem.Path);
-                                if (string.Equals(normalizedStrmContent, normalizedPartyItemPath, GetPathComparison()))
-                                {
-                                    _logger.Debug($"[Watch Party] STRM file content matches party {party.Id} item path");
-                                    return party;
-                                }
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.ErrorException($"Error reading STRM file {itemPath}", ex);
-                }
-            }
-            
-            // Check by item ID directly
-            foreach (var party in config.WatchParties)
-            {
-                if (string.IsNullOrEmpty(party.ItemId)) continue;
-                
-                if (Guid.TryParse(party.ItemId, out var partyItemGuid) && item.Id == partyItemGuid)
-                {
-                    return party;
-                }
-                else if (long.TryParse(party.ItemId, out var partyInternalId) && item.InternalId == partyInternalId)
-                {
-                    return party;
-                }
-            }
-            
-            if (!string.IsNullOrEmpty(config.SelectedItemId))
-            {
-                if (Guid.TryParse(config.SelectedItemId, out var selectedItemGuid) && item.Id == selectedItemGuid)
-                {
-                    return new WatchPartyItem
-                    {
-                        Id = "legacy",
-                        ItemId = config.SelectedItemId,
-                        ItemName = config.SelectedItemName,
-                        IsActive = config.IsPartyActive,
-                        CurrentPositionTicks = config.CurrentPositionTicks,
-                        IsPlaying = config.IsPlaying,
-                        MaxParticipants = config.MaxParticipants
-                    };
-                }
-                else if (long.TryParse(config.SelectedItemId, out var selectedInternalId) && item.InternalId == selectedInternalId)
-                {
-                    return new WatchPartyItem
-                    {
-                        Id = "legacy",
-                        ItemId = config.SelectedItemId,
-                        ItemName = config.SelectedItemName,
-                        IsActive = config.IsPartyActive,
-                        CurrentPositionTicks = config.CurrentPositionTicks,
-                        IsPlaying = config.IsPlaying,
-                        MaxParticipants = config.MaxParticipants
-                    };
-                }
-            }
-            
-            return null;
+            return item == null
+                ? null
+                : WatchPartyItemMatcher.FindActiveParty(
+                    _plugin.Configuration.WatchParties,
+                    item.Id,
+                    item.InternalId);
         }
 
-        private string FindSeriesEpisodeId(
-            WatchPartyItem party,
-            BaseItem item,
-            bool allowSourceItemMatch = true)
+        private string FindSeriesEpisodeId(WatchPartyItem party, BaseItem item)
+        {
+            return item == null
+                ? null
+                : WatchPartyItemMatcher.FindEpisodeItemId(party, item.Id, item.InternalId);
+        }
+
+        private WatchPartyEpisode GetSeriesEpisodeSwitchTarget(WatchPartyItem party, BaseItem item)
         {
             if (party?.IsSeriesParty != true || item == null)
             {
                 return null;
             }
 
-            var itemPath = NormalizePath(item.Path);
-            foreach (var episode in party.EpisodeQueue ?? new List<WatchPartyEpisode>())
-            {
-                if (string.IsNullOrEmpty(episode?.ItemId))
-                {
-                    continue;
-                }
-
-                var generatedPath = NormalizePath(GetSeriesEpisodeStrmPath(party, episode));
-                if (!string.IsNullOrEmpty(itemPath)
-                    && string.Equals(itemPath, generatedPath, GetPathComparison()))
-                {
-                    return episode.ItemId;
-                }
-
-                if (!allowSourceItemMatch)
-                {
-                    continue;
-                }
-
-                var sourceItem = _libraryManager.GetItemById(episode.ItemId);
-                if (sourceItem != null && (sourceItem.Id == item.Id || sourceItem.InternalId == item.InternalId))
-                {
-                    return episode.ItemId;
-                }
-            }
-
-            return null;
-        }
-
-        private bool IsSelectedItem(BaseItem item, PluginConfiguration config)
-        {
-            if (item == null || string.IsNullOrEmpty(config.SelectedItemId))
-            {
-                return false;
-            }
-            
-            if (Guid.TryParse(config.SelectedItemId, out var selectedItemGuid))
-            {
-                return item.Id == selectedItemGuid;
-            }
-            else if (long.TryParse(config.SelectedItemId, out var selectedInternalId))
-            {
-                return item.InternalId == selectedInternalId;
-            }
-            
-            return false;
+            var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+            var playingEpisodeId = FindSeriesEpisodeId(party, item);
+            return currentEpisode != null
+                && !string.Equals(
+                    playingEpisodeId,
+                    currentEpisode.ItemId,
+                    StringComparison.OrdinalIgnoreCase)
+                ? currentEpisode
+                : null;
         }
 
         private async void OnPlaybackProgress(object sender, PlaybackProgressEventArgs e)
@@ -1720,6 +1071,17 @@ namespace WatchPartyForEmby
                 var matchingParty = FindPartyForItem(item);
                 if (matchingParty != null && matchingParty.Id == party.Id)
                 {
+                    var episodeSwitchTarget = GetSeriesEpisodeSwitchTarget(party, item);
+                    if (episodeSwitchTarget != null)
+                    {
+                        await PlaySeriesEpisodeForSessions(
+                            party,
+                            episodeSwitchTarget,
+                            new[] { session },
+                            positionTicks);
+                        continue;
+                    }
+
                     await SyncUserToPosition(session, item, positionTicks);
                 }
             }
@@ -1798,11 +1160,7 @@ namespace WatchPartyForEmby
             IReadOnlyCollection<SessionInfo> sessions,
             long startPositionTicks = 0)
         {
-            var generatedPath = episode == null ? null : GetSeriesEpisodeStrmPath(party, episode);
-            var episodeItem = string.IsNullOrEmpty(generatedPath)
-                ? null
-                : _libraryManager.FindByPath(generatedPath, false);
-            episodeItem = episodeItem ?? (episode == null ? null : _libraryManager.GetItemById(episode.ItemId));
+            var episodeItem = episode == null ? null : _libraryManager.GetItemById(episode.ItemId);
             if (episodeItem == null)
             {
                 _logger.Warn($"[Party {party.Id}] Cannot play next episode because item {episode?.ItemId} was not found");
@@ -1815,13 +1173,6 @@ namespace WatchPartyForEmby
                 _expectedSeriesEpisodeStarts.TryRemove(expectedStart.Key, out _);
             }
             var expectedStartExpiration = nowUtc.AddSeconds(30);
-
-            if (!string.IsNullOrEmpty(generatedPath)
-                && !string.Equals(NormalizePath(episodeItem.Path), NormalizePath(generatedPath), GetPathComparison()))
-            {
-                _logger.Warn(
-                    $"[Party {party.Id}] Generated next-episode item is not indexed yet; falling back to the source library item");
-            }
 
             foreach (var session in sessions)
             {

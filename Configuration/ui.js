@@ -94,8 +94,7 @@ define([], function () {
                             <span style="color: ${statusColor}; font-size: 0.9em; margin-left: 0.5em;">● ${statusText}${waitingText}</span>
                         </div>
                         <div style="font-size: 0.85em; color: #999;">
-                            Library: ${party.CollectionName || 'Watch Party'} | 
-                            Type: ${party.ItemType || 'Unknown'} | 
+                            Type: ${party.ItemType || 'Unknown'} |
                             Max: ${party.MaxParticipants || 50} viewers${allowedUsers} | 
                             Created: ${created}
                         </div>
