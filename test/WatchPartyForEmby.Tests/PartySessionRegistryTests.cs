@@ -111,6 +111,33 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void ProgressFromOldPlaybackIsRejectedAfterNewPlaybackBecomesCurrent()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 0, 35, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "web-session",
+                Participant("master", "web-session", now, "new-playback"));
+
+            Assert.True(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                "new-playback"));
+            Assert.False(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                "old-playback"));
+
+            // Some Emby StateChange reports omit PlaySessionId. They cannot be proven
+            // stale and must remain usable for pause/unpause clock state handling.
+            Assert.True(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                playSessionId: null));
+        }
+
+        [Fact]
         public void SecondMasterUserSessionDoesNotOverwriteTheRegisteredMaster()
         {
             var registry = new PartySessionRegistry();

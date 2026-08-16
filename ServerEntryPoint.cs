@@ -1269,6 +1269,21 @@ namespace WatchPartyForEmby
                 
                 if (party != null && party.IsActive)
                 {
+                    // One Emby Web SessionId can briefly retain several PlaySessionIds
+                    // after a seek or stream reload. Ignore progress from the replaced
+                    // playback before it can overwrite the participant's current playback
+                    // id or move the authoritative party clock backwards and forwards.
+                    if (!_plugin.PartyParticipants.IsCurrentPlaybackSession(
+                            party.Id,
+                            e.Session.Id,
+                            e.PlaySessionId))
+                    {
+                        _logger.Info(
+                            $"[Party {party.Id}] Ignoring stale progress from playback " +
+                            $"{e.PlaySessionId} for session {e.Session.Id}");
+                        return;
+                    }
+
                     var pauseState = _partySessionPauseState.GetOrAdd(
                         party.Id,
                         _ => new ConcurrentDictionary<string, bool>());

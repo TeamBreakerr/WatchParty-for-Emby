@@ -50,6 +50,38 @@ namespace WatchPartyForEmby
             }
         }
 
+        /// <summary>
+        /// Returns false only when both the registered participant and the incoming
+        /// progress report identify different playback instances. Emby can reuse one
+        /// SessionId while an old PlaySessionId continues reporting progress; accepting
+        /// that stale report would replace the current playback and move the party clock.
+        /// Position-less StateChange reports may omit PlaySessionId, so an empty value is
+        /// not sufficient evidence that the event is stale.
+        /// </summary>
+        public bool IsCurrentPlaybackSession(
+            string partyId,
+            string sessionId,
+            string playSessionId)
+        {
+            lock (_syncRoot)
+            {
+                if (string.IsNullOrEmpty(partyId)
+                    || string.IsNullOrEmpty(sessionId)
+                    || !_sessionsByParty.TryGetValue(partyId, out var sessions)
+                    || !sessions.TryGetValue(sessionId, out var participant)
+                    || string.IsNullOrEmpty(participant.PlaySessionId)
+                    || string.IsNullOrEmpty(playSessionId))
+                {
+                    return true;
+                }
+
+                return string.Equals(
+                    participant.PlaySessionId,
+                    playSessionId,
+                    StringComparison.Ordinal);
+            }
+        }
+
         public bool TryGetLatestSessionForUser(string partyId, string userId, out PartyParticipant participant)
         {
             lock (_syncRoot)
