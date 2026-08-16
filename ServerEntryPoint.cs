@@ -134,13 +134,20 @@ namespace WatchPartyForEmby
             Task.Run(() => ValidateAndCleanWatchParties(force: true));
         }
 
-        private PartyParticipant GetOrCreateParticipant(string partyId, SessionInfo session)
+        private PartyParticipant GetOrCreateParticipant(
+            string partyId,
+            SessionInfo session,
+            string playSessionId = null)
         {
             var user = session.UserName ?? session.UserId;
             if (_plugin.PartyParticipants.TryGetSession(partyId, session.Id, out var existing))
             {
                 existing.UserName = user;
                 existing.SessionId = session.Id;
+                if (!string.IsNullOrEmpty(playSessionId))
+                {
+                    existing.PlaySessionId = playSessionId;
+                }
                 return existing;
             }
 
@@ -149,7 +156,8 @@ namespace WatchPartyForEmby
             {
                 UserId = session.UserId,
                 UserName = user,
-                SessionId = session.Id
+                SessionId = session.Id,
+                PlaySessionId = playSessionId
             };
             _plugin.PartyParticipants.AddOrUpdate(partyId, session.Id, participant);
             return participant;
@@ -165,9 +173,27 @@ namespace WatchPartyForEmby
             }
         }
 
-        private bool RemoveParticipant(string partyId, string sessionId)
+        private bool RemoveParticipant(
+            string partyId,
+            string sessionId,
+            string expectedPlaySessionId = null,
+            bool requirePlaySessionMatch = false)
         {
-            if (_plugin.PartyParticipants.TryRemoveSession(partyId, sessionId, out var participant, out var wasMaster))
+            PartyParticipant participant;
+            bool wasMaster;
+            var removed = requirePlaySessionMatch
+                ? _plugin.PartyParticipants.TryRemoveSession(
+                    partyId,
+                    sessionId,
+                    expectedPlaySessionId,
+                    out participant,
+                    out wasMaster)
+                : _plugin.PartyParticipants.TryRemoveSession(
+                    partyId,
+                    sessionId,
+                    out participant,
+                    out wasMaster);
+            if (removed)
             {
                 _logger.Info($"[Party {partyId}] Participant session left: {participant.UserName} ({sessionId})");
                 return wasMaster;
@@ -492,6 +518,10 @@ namespace WatchPartyForEmby
             bool initiatorIsMaster,
             long? reportedPositionTicks)
         {
+            // A drag immediately before pause may still have a debounced sync waiting to
+            // fire. The explicit pause sync supersedes it and must be the only final seek.
+            CancelPendingMasterSeekSync(party.Id);
+
             var controllingSession = GetActiveMasterSession(party);
             if (controllingSession == null)
             {
@@ -537,7 +567,8 @@ namespace WatchPartyForEmby
                     targetPosition,
                     allowReplace: true,
                     controllingSession: controllingSession,
-                    applySyncOffset: false);
+                    applySyncOffset: false,
+                    force: true);
             }
         }
         
@@ -790,7 +821,7 @@ namespace WatchPartyForEmby
 
                     var nowUtc = DateTime.UtcNow;
                     var userStartPosition = e.PlaybackPositionTicks ?? 0;
-                    GetOrCreateParticipant(party.Id, e.Session);
+                    GetOrCreateParticipant(party.Id, e.Session, e.PlaySessionId);
                     var isMaster = TryResolveMasterSession(party, e.Session);
                     var startedEpisodeId = FindSeriesEpisodeId(party, e.Item);
                     var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
@@ -1128,7 +1159,8 @@ namespace WatchPartyForEmby
             long positionTicks,
             bool allowReplace = false,
             SessionInfo controllingSession = null,
-            bool applySyncOffset = true)
+            bool applySyncOffset = true,
+            bool force = false)
         {
             try
             {
@@ -1152,7 +1184,12 @@ namespace WatchPartyForEmby
                 var adjustedPosition = Math.Max(0, positionTicks + offsetTicks);
 
                 var nowUtc = DateTime.UtcNow;
-                if (!_playbackSyncCoordinator.TryBeginSeek(session.Id, adjustedPosition, nowUtc, allowReplace))
+                if (!_playbackSyncCoordinator.TryBeginSeek(
+                    session.Id,
+                    adjustedPosition,
+                    nowUtc,
+                    allowReplace,
+                    force))
                 {
                     _logger.Debug($"[Watch Party] Suppressed duplicate seek for settling session {session.Id}");
                     return;
@@ -1235,6 +1272,10 @@ namespace WatchPartyForEmby
                     var reportedPosition = e.PlaybackPositionTicks;
                     var currentPosition = reportedPosition ?? 0;
                     var isMaster = TryResolveMasterSession(party, e.Session);
+                    if (isMaster)
+                    {
+                        GetOrCreateParticipant(party.Id, e.Session, e.PlaySessionId);
+                    }
 
                     UpdateParticipantActivity(party.Id, e.Session.Id, currentPosition, e.IsPaused);
 
@@ -1247,7 +1288,7 @@ namespace WatchPartyForEmby
                     // of playing at a stale position for 10-30 seconds.
                     if (!isMaster && !party.IsWaitingRoom && CanUserJoinParty(party, e.Session.UserId))
                     {
-                        GetOrCreateParticipant(party.Id, e.Session);
+                        GetOrCreateParticipant(party.Id, e.Session, e.PlaySessionId);
 
                         var syncedSessions = _partySyncedSessions.GetOrAdd(
                             party.Id,
@@ -1342,7 +1383,10 @@ namespace WatchPartyForEmby
                             _logger.Debug($"[Watch Party] Master user updated party {party.Id} position to {party.CurrentPositionTicks} ticks, Playing: {party.IsPlaying}");
                             CheckpointPartyProgress(party);
 
-                            if (masterSeeked)
+                            // A transition into pause already performed one explicit,
+                            // offset-free sync above. Do not classify the same pause report
+                            // as a second seek. Timeline drags while already paused still sync.
+                            if (masterSeeked && !(e.IsPaused && !wasPaused))
                             {
                                 _logger.Info(
                                     $"[Party {party.Id}] Master seeked to " +
@@ -1726,6 +1770,23 @@ namespace WatchPartyForEmby
                 
                 if (party != null && party.IsActive)
                 {
+                    if (_plugin.PartyParticipants.TryGetSession(
+                            party.Id,
+                            e.Session.Id,
+                            out var currentParticipant)
+                        && !string.IsNullOrEmpty(currentParticipant.PlaySessionId)
+                        && !string.Equals(
+                            e.PlaySessionId,
+                            currentParticipant.PlaySessionId,
+                            StringComparison.Ordinal))
+                    {
+                        _logger.Info(
+                            $"[Party {party.Id}] Ignoring delayed Stop for playback " +
+                            $"{e.PlaySessionId}; session {e.Session.Id} now represents " +
+                            $"{currentParticipant.PlaySessionId}");
+                        return;
+                    }
+
                     var isMaster = TryResolveMasterSession(party, e.Session);
                     var stoppedPosition = GetLastKnownPosition(party, e.Session);
                     var stoppedEpisodeId = FindSeriesEpisodeId(party, e.Item);
@@ -1808,7 +1869,11 @@ namespace WatchPartyForEmby
                         }
                     }
 
-                    RemoveParticipant(party.Id, e.Session.Id);
+                    RemoveParticipant(
+                        party.Id,
+                        e.Session.Id,
+                        e.PlaySessionId,
+                        requirePlaySessionMatch: true);
                     
                     if (isMaster)
                     {

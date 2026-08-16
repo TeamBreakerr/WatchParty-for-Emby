@@ -105,6 +105,7 @@ namespace WatchPartyForEmby
         public string UserId { get; set; }
         public string UserName { get; set; }
         public string SessionId { get; set; }
+        public string PlaySessionId { get; set; }
         public DateTime JoinedAt { get; set; }
         public DateTime LastActivityAt { get; set; }
         public long CurrentPositionTicks { get; set; }

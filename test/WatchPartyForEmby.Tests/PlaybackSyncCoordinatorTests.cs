@@ -179,6 +179,23 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void PauseSyncCanForceOneSeekEvenWhenTheSameTargetIsPending()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 16, 11, 30, 0, DateTimeKind.Utc);
+            var target = TimeSpan.FromMinutes(10).Ticks;
+
+            Assert.True(coordinator.TryBeginSeek("ios-session", target, now));
+            Assert.False(coordinator.TryBeginSeek("ios-session", target, now.AddSeconds(1)));
+            Assert.True(coordinator.TryBeginSeek(
+                "ios-session",
+                target,
+                now.AddSeconds(1),
+                allowReplace: true,
+                force: true));
+        }
+
+        [Fact]
         public void PauseAndUnpauseEchoesAreConsumedInsteadOfBeingRebroadcast()
         {
             var coordinator = new PlaybackSyncCoordinator();

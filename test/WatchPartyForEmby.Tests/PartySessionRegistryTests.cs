@@ -5,13 +5,18 @@ namespace WatchPartyForEmby.Tests
 {
     public sealed class PartySessionRegistryTests
     {
-        private static PartyParticipant Participant(string userId, string sessionId, DateTime lastActivityAt)
+        private static PartyParticipant Participant(
+            string userId,
+            string sessionId,
+            DateTime lastActivityAt,
+            string playSessionId = null)
         {
             return new PartyParticipant
             {
                 UserId = userId,
                 UserName = "user-" + userId,
                 SessionId = sessionId,
+                PlaySessionId = playSessionId,
                 LastActivityAt = lastActivityAt
             };
         }
@@ -52,6 +57,57 @@ namespace WatchPartyForEmby.Tests
             Assert.False(registry.TryGetSession("party", "old-session", out _));
             Assert.Equal(1, registry.SessionCount("party"));
             Assert.True(registry.HasUser("party", "user-1"));
+        }
+
+        [Fact]
+        public void DelayedStopForOldPlaybackDoesNotRemoveReplacementUsingSameSessionId()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 16, 12, 0, 0, DateTimeKind.Utc);
+
+            registry.AddOrUpdate(
+                "party",
+                "ios-session",
+                Participant("user-1", "ios-session", now, "old-playback"));
+            registry.AddOrUpdate(
+                "party",
+                "ios-session",
+                Participant("user-1", "ios-session", now.AddSeconds(1), "new-playback"));
+
+            Assert.False(registry.TryRemoveSession(
+                "party",
+                "ios-session",
+                "old-playback",
+                out _,
+                out _));
+            Assert.True(registry.TryGetSession("party", "ios-session", out var current));
+            Assert.Equal("new-playback", current.PlaySessionId);
+
+            Assert.True(registry.TryRemoveSession(
+                "party",
+                "ios-session",
+                "new-playback",
+                out _,
+                out _));
+        }
+
+        [Fact]
+        public void StopWithoutPlaybackIdDoesNotRemoveAKnownCurrentPlayback()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 16, 12, 30, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "ios-session",
+                Participant("user-1", "ios-session", now, "current-playback"));
+
+            Assert.False(registry.TryRemoveSession(
+                "party",
+                "ios-session",
+                expectedPlaySessionId: null,
+                out _,
+                out _));
+            Assert.True(registry.TryGetSession("party", "ios-session", out _));
         }
 
         [Fact]

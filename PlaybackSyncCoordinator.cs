@@ -26,8 +26,15 @@ namespace WatchPartyForEmby
         /// Periodic corrections must not replace a still-settling master seek; only a new
         /// master-triggered seek may do so. The settle window throttles how often the same
         /// participant can be commanded, so periodic calibration never stacks seeks.
+        /// <paramref name="force"/> is reserved for an accepted pause, where one explicit
+        /// final-position command is required even when the same target is already pending.
         /// </summary>
-        public bool TryBeginSeek(string sessionId, long targetPositionTicks, DateTime nowUtc, bool allowReplace = false)
+        public bool TryBeginSeek(
+            string sessionId,
+            long targetPositionTicks,
+            DateTime nowUtc,
+            bool allowReplace = false,
+            bool force = false)
         {
             if (string.IsNullOrEmpty(sessionId) || targetPositionTicks < 0)
             {
@@ -43,12 +50,12 @@ namespace WatchPartyForEmby
                         // The settle window expired without client confirmation; allow a retry.
                         _pendingSeeks.Remove(sessionId);
                     }
-                    else if (pending.TargetPositionTicks == targetPositionTicks)
+                    else if (pending.TargetPositionTicks == targetPositionTicks && !force)
                     {
                         // Same target is still pending: suppress the duplicate.
                         return false;
                     }
-                    else if (!allowReplace)
+                    else if (!allowReplace && !force)
                     {
                         // A periodic correction must not stomp a master seek that is still
                         // settling; otherwise the client gets bounced around by converging

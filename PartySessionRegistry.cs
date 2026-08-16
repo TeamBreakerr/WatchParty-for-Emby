@@ -170,6 +170,26 @@ namespace WatchPartyForEmby
             out PartyParticipant removed,
             out bool wasMaster)
         {
+            return TryRemoveSession(
+                partyId,
+                sessionId,
+                expectedPlaySessionId: null,
+                out removed,
+                out wasMaster);
+        }
+
+        /// <summary>
+        /// Removes a session only when it still represents the expected playback
+        /// instance. Emby clients reuse SessionId across plays, so a delayed Stop for an
+        /// old PlaySessionId must not evict the replacement playback from the party.
+        /// </summary>
+        public bool TryRemoveSession(
+            string partyId,
+            string sessionId,
+            string expectedPlaySessionId,
+            out PartyParticipant removed,
+            out bool wasMaster)
+        {
             lock (_syncRoot)
             {
                 removed = null;
@@ -179,6 +199,16 @@ namespace WatchPartyForEmby
                     || !_sessionsByParty.TryGetValue(partyId, out var sessions)
                     || !sessions.TryGetValue(sessionId, out removed))
                 {
+                    return false;
+                }
+
+                if (!string.IsNullOrEmpty(removed.PlaySessionId)
+                    && !string.Equals(
+                        removed.PlaySessionId,
+                        expectedPlaySessionId,
+                        StringComparison.Ordinal))
+                {
+                    removed = null;
                     return false;
                 }
 
