@@ -283,5 +283,41 @@ namespace WatchPartyForEmby.Tests
                 coordinator.GetEstimatedPartyPosition("party", 0, now.AddSeconds(7)));
         }
 
+        [Fact]
+        public void PositionlessPauseFreezesAndPositionlessUnpauseResumesTheMasterClock()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 16, 15, 36, 32, DateTimeKind.Utc);
+            var reportedPosition = TimeSpan.FromSeconds(3.9).Ticks;
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                reportedPosition,
+                isPlaying: true,
+                now,
+                TimeSpan.FromSeconds(10).Ticks);
+
+            var frozenPosition = coordinator.SetMasterPlaybackState(
+                "party",
+                isPlaying: false,
+                reportedPosition,
+                now.AddSeconds(1));
+
+            Assert.Equal(TimeSpan.FromSeconds(4.9).Ticks, frozenPosition);
+            Assert.Equal(
+                frozenPosition,
+                coordinator.GetEstimatedPartyPosition("party", 0, now.AddSeconds(24)));
+
+            var resumedPosition = coordinator.SetMasterPlaybackState(
+                "party",
+                isPlaying: true,
+                frozenPosition,
+                now.AddSeconds(24));
+            Assert.Equal(frozenPosition, resumedPosition);
+            Assert.Equal(
+                frozenPosition + TimeSpan.FromSeconds(2).Ticks,
+                coordinator.GetEstimatedPartyPosition("party", 0, now.AddSeconds(26)));
+        }
+
     }
 }

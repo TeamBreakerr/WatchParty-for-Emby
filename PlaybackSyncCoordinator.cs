@@ -298,6 +298,39 @@ namespace WatchPartyForEmby
             }
         }
 
+        /// <summary>
+        /// Changes only the running/paused state of the master clock while preserving its
+        /// projected position. Emby Web frequently emits position-less StateChange events;
+        /// a position-less Pause must still freeze the clock and a position-less Unpause
+        /// must resume it from that frozen point.
+        /// </summary>
+        public long SetMasterPlaybackState(
+            string partyId,
+            bool isPlaying,
+            long fallbackPositionTicks,
+            DateTime nowUtc)
+        {
+            fallbackPositionTicks = Math.Max(0, fallbackPositionTicks);
+            if (string.IsNullOrEmpty(partyId))
+            {
+                return fallbackPositionTicks;
+            }
+
+            lock (_syncRoot)
+            {
+                var preservedPosition = _masterClocks.TryGetValue(partyId, out var clock)
+                    ? EstimatePosition(clock, nowUtc)
+                    : fallbackPositionTicks;
+                _masterClocks[partyId] = new MasterClockState
+                {
+                    PositionTicks = preservedPosition,
+                    IsPlaying = isPlaying,
+                    UpdatedAt = nowUtc
+                };
+                return preservedPosition;
+            }
+        }
+
         public void StopMasterClock(string partyId, long positionTicks, DateTime nowUtc)
         {
             if (string.IsNullOrEmpty(partyId))

@@ -1406,12 +1406,21 @@ namespace WatchPartyForEmby
                         }
                         else
                         {
-                            // Emby Web sends a position-less StateChange report while a seek is
-                            // in flight. Treating it as position 0 made participants jump back
-                            // to the beginning before the real target arrived.
+                            // Emby Web sends position-less StateChange reports for Pause,
+                            // Unpause and while a seek is in flight. Preserve the projected
+                            // position, but still apply the playing state; otherwise a paused
+                            // master clock keeps advancing and later participants seek ahead by
+                            // exactly the wall-clock duration of the pause.
+                            var preservedPosition = _playbackSyncCoordinator.SetMasterPlaybackState(
+                                party.Id,
+                                !e.IsPaused && !party.IsWaitingRoom,
+                                party.CurrentPositionTicks,
+                                nowUtc);
+                            party.CurrentPositionTicks = preservedPosition;
                             _logger.Debug(
                                 $"[Watch Party] Master session {e.Session.Id} reported progress without a position; " +
-                                "keeping party clock unchanged");
+                                $"preserved {TimeSpan.FromTicks(preservedPosition).TotalSeconds:F1}s and " +
+                                $"set Playing={party.IsPlaying}");
                         }
                     }
                 }
