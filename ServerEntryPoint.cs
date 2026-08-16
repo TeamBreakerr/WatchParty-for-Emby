@@ -1335,7 +1335,8 @@ namespace WatchPartyForEmby
                     var isExpectedPauseEcho = _playbackSyncCoordinator.ConsumeExpectedPauseState(
                         e.Session.Id,
                         e.IsPaused,
-                        nowUtc);
+                        nowUtc,
+                        clearOnMismatch: isPauseTransition);
                     var isSeekStateEchoExpected = _playbackSyncCoordinator.IsSeekStateEchoExpected(
                         e.Session.Id,
                         nowUtc);

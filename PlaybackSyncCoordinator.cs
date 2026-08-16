@@ -14,11 +14,15 @@ namespace WatchPartyForEmby
         // ~6.3s after the command while a 115 stream re-buffers. Eight seconds covers that
         // observed tail without suppressing intentional pause input for the full 30s.
         private static readonly TimeSpan SeekStateEchoWindow = TimeSpan.FromSeconds(8);
-        private static readonly TimeSpan PauseEchoWindow = TimeSpan.FromSeconds(8);
+        // Pause is sent immediately before an active seek. On 115-backed playback the
+        // iOS client has taken 9.37s to report the commanded paused state, so this echo
+        // lifetime must cover the same slow-buffering envelope as seek settlement.
+        private static readonly TimeSpan PauseEchoWindow = TimeSpan.FromSeconds(30);
 
         private readonly object _syncRoot = new object();
         private readonly Dictionary<string, PendingSeekState> _pendingSeeks = new Dictionary<string, PendingSeekState>();
-        private readonly Dictionary<string, ExpectedPauseState> _expectedPauseStates = new Dictionary<string, ExpectedPauseState>();
+        private readonly Dictionary<string, List<ExpectedPauseState>> _expectedPauseStates =
+            new Dictionary<string, List<ExpectedPauseState>>();
         private readonly Dictionary<string, MasterClockState> _masterClocks = new Dictionary<string, MasterClockState>();
 
         /// <summary>
@@ -177,15 +181,37 @@ namespace WatchPartyForEmby
 
             lock (_syncRoot)
             {
-                _expectedPauseStates[sessionId] = new ExpectedPauseState
+                if (!_expectedPauseStates.TryGetValue(sessionId, out var expectedStates))
                 {
-                    IsPaused = isPaused,
-                    ExpiresAt = nowUtc + PauseEchoWindow
-                };
+                    expectedStates = new List<ExpectedPauseState>();
+                    _expectedPauseStates[sessionId] = expectedStates;
+                }
+
+                expectedStates.RemoveAll(expected => nowUtc >= expected.ExpiresAt);
+                var expiresAt = nowUtc + PauseEchoWindow;
+                if (expectedStates.Count > 0
+                    && expectedStates[expectedStates.Count - 1].IsPaused == isPaused)
+                {
+                    // Refresh a duplicate command instead of creating an expectation that
+                    // could consume a later intentional state transition twice.
+                    expectedStates[expectedStates.Count - 1].ExpiresAt = expiresAt;
+                }
+                else
+                {
+                    expectedStates.Add(new ExpectedPauseState
+                    {
+                        IsPaused = isPaused,
+                        ExpiresAt = expiresAt
+                    });
+                }
             }
         }
 
-        public bool ConsumeExpectedPauseState(string sessionId, bool isPaused, DateTime nowUtc)
+        public bool ConsumeExpectedPauseState(
+            string sessionId,
+            bool isPaused,
+            DateTime nowUtc,
+            bool clearOnMismatch = false)
         {
             if (string.IsNullOrEmpty(sessionId))
             {
@@ -194,23 +220,38 @@ namespace WatchPartyForEmby
 
             lock (_syncRoot)
             {
-                if (!_expectedPauseStates.TryGetValue(sessionId, out var expected))
+                if (!_expectedPauseStates.TryGetValue(sessionId, out var expectedStates))
                 {
                     return false;
                 }
 
-                if (nowUtc >= expected.ExpiresAt)
+                expectedStates.RemoveAll(expected => nowUtc >= expected.ExpiresAt);
+                if (expectedStates.Count == 0)
                 {
                     _expectedPauseStates.Remove(sessionId);
                     return false;
                 }
 
-                if (expected.IsPaused != isPaused)
+                var matchingIndex = expectedStates.FindIndex(expected => expected.IsPaused == isPaused);
+                if (matchingIndex < 0)
                 {
+                    if (clearOnMismatch)
+                    {
+                        // A genuine transition to a state we never commanded is user/client
+                        // input. Invalidate the queue so it cannot swallow a later action.
+                        _expectedPauseStates.Remove(sessionId);
+                    }
                     return false;
                 }
 
-                _expectedPauseStates.Remove(sessionId);
+                // A client may acknowledge Pause after a newer Unpause was already sent.
+                // Consume commands through the matching state in order, leaving newer
+                // expectations queued for their own delayed echoes.
+                expectedStates.RemoveRange(0, matchingIndex + 1);
+                if (expectedStates.Count == 0)
+                {
+                    _expectedPauseStates.Remove(sessionId);
+                }
                 return true;
             }
         }

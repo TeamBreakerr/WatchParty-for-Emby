@@ -208,8 +208,55 @@ namespace WatchPartyForEmby.Tests
 
             coordinator.ExpectPauseState("ios-session", false, now.AddSeconds(3));
 
-            Assert.False(coordinator.ConsumeExpectedPauseState("ios-session", true, now.AddSeconds(4)));
-            Assert.True(coordinator.ConsumeExpectedPauseState("ios-session", false, now.AddSeconds(4)));
+            // An opposite state means the user/client took a different action before
+            // the expected echo arrived. Invalidate the old expectation immediately so
+            // a later intentional state change is not swallowed.
+            Assert.False(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                true,
+                now.AddSeconds(4),
+                clearOnMismatch: true));
+            Assert.False(coordinator.ConsumeExpectedPauseState("ios-session", false, now.AddSeconds(4)));
+        }
+
+        [Fact]
+        public void SlowIosPauseEchoIsStillConsumedAfterTenSeconds()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 16, 11, 20, 0, DateTimeKind.Utc);
+
+            coordinator.ExpectPauseState("ios-session", true, now);
+
+            // Production trace: the iOS client confirmed a remote Pause after 9.37s
+            // while the 115-backed stream was settling. Treat it as the command echo,
+            // not a new participant-initiated pause that should control the master.
+            Assert.True(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                true,
+                now.AddMilliseconds(9370)));
+        }
+
+        [Fact]
+        public void LatePauseEchoIsNotOverwrittenByANewerUnpauseCommand()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 16, 11, 40, 0, DateTimeKind.Utc);
+
+            coordinator.ExpectPauseState("ios-session", true, now);
+            coordinator.ExpectPauseState("ios-session", false, now.AddSeconds(9));
+
+            // Exact production ordering from the regression: the master unpaused while
+            // iOS was still settling the prior Pause+Seek. Both delayed command echoes
+            // must be consumed in order rather than the newer expectation replacing the
+            // older one and turning Paused=true into a participant control action.
+            Assert.True(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                true,
+                now.AddMilliseconds(9370)));
+            Assert.True(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                false,
+                now.AddMilliseconds(9500)));
         }
 
         [Fact]
