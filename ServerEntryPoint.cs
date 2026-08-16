@@ -164,6 +164,26 @@ namespace WatchPartyForEmby
             return participant;
         }
 
+        private void ResetCommandStateForNewPlayback(
+            string partyId,
+            SessionInfo session,
+            string playSessionId)
+        {
+            _plugin.PartyParticipants.TryGetSession(
+                partyId,
+                session.Id,
+                out var existingParticipant);
+            if (_playbackSyncCoordinator.ResetForNewPlayback(
+                    session.Id,
+                    existingParticipant?.PlaySessionId,
+                    playSessionId))
+            {
+                _logger.Debug(
+                    $"[Party {partyId}] Cleared prior command state for new playback " +
+                    $"{playSessionId} on session {session.Id}");
+            }
+        }
+
         private void UpdateParticipantActivity(string partyId, string sessionId, long positionTicks, bool isPaused)
         {
             if (_plugin.PartyParticipants.TryGetSession(partyId, sessionId, out var participant))
@@ -196,6 +216,7 @@ namespace WatchPartyForEmby
                     out wasMaster);
             if (removed)
             {
+                _playbackSyncCoordinator.ClearSession(sessionId);
                 _logger.Info($"[Party {partyId}] Participant session left: {participant.UserName} ({sessionId})");
                 return wasMaster;
             }
@@ -827,6 +848,10 @@ namespace WatchPartyForEmby
 
                     var nowUtc = DateTime.UtcNow;
                     var userStartPosition = e.PlaybackPositionTicks ?? 0;
+                    ResetCommandStateForNewPlayback(
+                        party.Id,
+                        e.Session,
+                        e.PlaySessionId);
                     GetOrCreateParticipant(party.Id, e.Session, e.PlaySessionId);
                     var isMaster = TryResolveMasterSession(party, e.Session);
                     var startedEpisodeId = FindSeriesEpisodeId(party, e.Item);
@@ -1287,11 +1312,16 @@ namespace WatchPartyForEmby
                             e.PlaySessionId)
                         && !isExpectedSeriesProgress)
                     {
-                        _logger.Info(
+                        _logger.Debug(
                             $"[Party {party.Id}] Ignoring stale progress from playback " +
                             $"{e.PlaySessionId} for session {e.Session.Id}");
                         return;
                     }
+
+                    ResetCommandStateForNewPlayback(
+                        party.Id,
+                        e.Session,
+                        e.PlaySessionId);
 
                     var pauseState = _partySessionPauseState.GetOrAdd(
                         party.Id,

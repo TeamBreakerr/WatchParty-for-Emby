@@ -117,6 +117,41 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void NewPlaybackInstanceDoesNotInheritPriorSeekCooldown()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 17, 1, 42, 3, DateTimeKind.Utc);
+
+            Assert.True(coordinator.TryBeginSeek(
+                "ios-session",
+                TimeSpan.FromSeconds(12).Ticks,
+                now));
+
+            // The same Emby SessionId is reused when the controlled client starts the
+            // next episode. Its initial sync must not be suppressed for 30 seconds by
+            // the previous episode's pending seek.
+            Assert.True(coordinator.ResetForNewPlayback(
+                "ios-session",
+                previousPlaySessionId: "old-playback",
+                newPlaySessionId: "new-playback"));
+            Assert.True(coordinator.TryBeginSeek(
+                "ios-session",
+                TimeSpan.FromMinutes(10).Ticks,
+                now.AddSeconds(2)));
+
+            // Duplicate PlaybackStart for the same playback must preserve the new seek's
+            // cooldown, otherwise repeated starts can create a seek loop.
+            Assert.False(coordinator.ResetForNewPlayback(
+                "ios-session",
+                previousPlaySessionId: "new-playback",
+                newPlaySessionId: "new-playback"));
+            Assert.False(coordinator.TryBeginSeek(
+                "ios-session",
+                TimeSpan.FromMinutes(11).Ticks,
+                now.AddSeconds(3)));
+        }
+
+        [Fact]
         public void SeekIsNotConfirmedWhileTheClientIsFarFromTheTarget()
         {
             var coordinator = new PlaybackSyncCoordinator();

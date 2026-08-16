@@ -153,6 +153,30 @@ namespace WatchPartyForEmby
         }
 
         /// <summary>
+        /// Clears command state inherited from a previous playback instance that reused
+        /// the same Emby SessionId. A duplicate start for the same PlaySessionId keeps the
+        /// current cooldown so repeated PlaybackStart events cannot create a seek loop.
+        /// </summary>
+        public bool ResetForNewPlayback(
+            string sessionId,
+            string previousPlaySessionId,
+            string newPlaySessionId)
+        {
+            if (string.IsNullOrEmpty(sessionId)
+                || string.IsNullOrEmpty(newPlaySessionId)
+                || string.Equals(
+                    previousPlaySessionId,
+                    newPlaySessionId,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            ClearSession(sessionId);
+            return true;
+        }
+
+        /// <summary>
         /// Returns true only during the short interval in which a seek may make a client
         /// emit synthetic pause/unpause transitions. This is intentionally much shorter
         /// than the buffering cooldown so real user pause input is not ignored for 30s.
