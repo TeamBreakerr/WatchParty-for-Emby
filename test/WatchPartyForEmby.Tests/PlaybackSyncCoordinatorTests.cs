@@ -166,6 +166,43 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void FailedSeekCanBeCancelledAndRetriedImmediately()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 17, 2, 0, 0, DateTimeKind.Utc);
+            var target = TimeSpan.FromMinutes(8).Ticks;
+
+            Assert.True(coordinator.TryBeginSeek("ios-session", target, now));
+            Assert.True(coordinator.CancelPendingSeek("ios-session", target));
+            Assert.True(coordinator.TryBeginSeek(
+                "ios-session",
+                target,
+                now.AddMilliseconds(100)));
+        }
+
+        [Fact]
+        public void FailedOlderSeekCannotCancelANewerReplacement()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 17, 2, 0, 0, DateTimeKind.Utc);
+            var olderTarget = TimeSpan.FromMinutes(8).Ticks;
+            var newerTarget = TimeSpan.FromMinutes(12).Ticks;
+
+            Assert.True(coordinator.TryBeginSeek("ios-session", olderTarget, now));
+            Assert.True(coordinator.TryBeginSeek(
+                "ios-session",
+                newerTarget,
+                now.AddMilliseconds(50),
+                allowReplace: true));
+
+            Assert.False(coordinator.CancelPendingSeek("ios-session", olderTarget));
+            Assert.False(coordinator.TryBeginSeek(
+                "ios-session",
+                newerTarget,
+                now.AddMilliseconds(100)));
+        }
+
+        [Fact]
         public void TransientTargetEchoDoesNotEndTheSeekQuietPeriod()
         {
             var coordinator = new PlaybackSyncCoordinator();
@@ -292,6 +329,87 @@ namespace WatchPartyForEmby.Tests
                 "ios-session",
                 false,
                 now.AddMilliseconds(9500)));
+        }
+
+        [Fact]
+        public void OutOfOrderUnpauseAndPauseEchoesAreBothConsumed()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 17, 8, 0, 0, DateTimeKind.Utc);
+
+            coordinator.ExpectPauseState("ios-session", true, now);
+            coordinator.ExpectPauseState("ios-session", false, now.AddMilliseconds(10));
+
+            Assert.True(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                false,
+                now.AddSeconds(1)));
+            Assert.True(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                true,
+                now.AddSeconds(2)));
+        }
+
+        [Fact]
+        public void FailedOlderPauseCommandCannotCancelANewerExpectation()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 17, 8, 30, 0, DateTimeKind.Utc);
+
+            var olderPause = coordinator.ExpectPauseState("ios-session", true, now);
+            coordinator.ExpectPauseState("ios-session", false, now.AddMilliseconds(10));
+
+            Assert.True(coordinator.CancelExpectedPauseState("ios-session", olderPause));
+            Assert.True(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                false,
+                now.AddSeconds(1)));
+            Assert.False(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                true,
+                now.AddSeconds(2)));
+        }
+
+        [Fact]
+        public void FailedDuplicatePauseCommandCannotCancelTheOtherCommand()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 17, 8, 45, 0, DateTimeKind.Utc);
+
+            var olderPause = coordinator.ExpectPauseState("ios-session", true, now);
+            coordinator.ExpectPauseState("ios-session", true, now.AddMilliseconds(10));
+
+            Assert.True(coordinator.CancelExpectedPauseState("ios-session", olderPause));
+            Assert.True(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                true,
+                now.AddSeconds(1)));
+        }
+
+        [Fact]
+        public void PausedFirstProgressIsClassifiedBeforeARejoinSeekCreatesEchoes()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 17, 9, 0, 0, DateTimeKind.Utc);
+
+            var inbound = coordinator.ClassifyInboundPauseState(
+                "ios-session",
+                previousIsPaused: false,
+                reportedIsPaused: true,
+                now);
+
+            Assert.True(coordinator.TryBeginSeek(
+                "ios-session",
+                TimeSpan.FromMinutes(5).Ticks,
+                now.AddMilliseconds(1)));
+            coordinator.ExpectPauseState(
+                "ios-session",
+                true,
+                now.AddMilliseconds(1));
+
+            Assert.True(inbound.IsTransition);
+            Assert.False(inbound.IsExpectedCommandEcho);
+            Assert.False(inbound.IsSeekCommandEcho);
         }
 
         [Fact]

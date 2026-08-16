@@ -13,6 +13,14 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void ExternalDashboardDefaultsToLoopbackOnly()
+        {
+            var configuration = new PluginConfiguration();
+
+            Assert.Equal("127.0.0.1", configuration.ListenAddress);
+        }
+
+        [Fact]
         public void DirectItemUpgradeDeletesLegacyRoomsAndIsIdempotent()
         {
             var configuration = new PluginConfiguration();

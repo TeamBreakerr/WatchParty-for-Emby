@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 
 namespace WatchPartyForEmby
 {
@@ -10,8 +11,8 @@ namespace WatchPartyForEmby
     /// </summary>
     public sealed class SeriesEpisodeTransitionTracker
     {
-        private readonly ConcurrentDictionary<string, DateTime> _expectedStarts =
-            new ConcurrentDictionary<string, DateTime>(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, ExpectedEpisodeStart> _expectedStarts =
+            new ConcurrentDictionary<string, ExpectedEpisodeStart>(StringComparer.Ordinal);
 
         public void ExpectStart(string sessionId, string episodeItemId, DateTime expiresAtUtc)
         {
@@ -20,7 +21,9 @@ namespace WatchPartyForEmby
                 throw new ArgumentException("sessionId and episodeItemId are required");
             }
 
-            _expectedStarts[GetKey(sessionId, episodeItemId)] = expiresAtUtc;
+            _expectedStarts[sessionId] = new ExpectedEpisodeStart(
+                episodeItemId,
+                expiresAtUtc);
         }
 
         public void CancelExpectedStart(string sessionId, string episodeItemId)
@@ -30,7 +33,14 @@ namespace WatchPartyForEmby
                 return;
             }
 
-            _expectedStarts.TryRemove(GetKey(sessionId, episodeItemId), out _);
+            if (_expectedStarts.TryGetValue(sessionId, out var expectedStart)
+                && string.Equals(
+                    expectedStart.EpisodeItemId,
+                    episodeItemId,
+                    StringComparison.Ordinal))
+            {
+                TryRemoveExpectedStart(sessionId, expectedStart);
+            }
         }
 
         public bool IsExpectedStart(string sessionId, string episodeItemId, DateTime nowUtc)
@@ -40,18 +50,21 @@ namespace WatchPartyForEmby
                 return false;
             }
 
-            var key = GetKey(sessionId, episodeItemId);
-            if (!_expectedStarts.TryGetValue(key, out var expiresAtUtc))
+            if (!_expectedStarts.TryGetValue(sessionId, out var expectedStart)
+                || !string.Equals(
+                    expectedStart.EpisodeItemId,
+                    episodeItemId,
+                    StringComparison.Ordinal))
             {
                 return false;
             }
 
-            if (expiresAtUtc >= nowUtc)
+            if (expectedStart.ExpiresAtUtc >= nowUtc)
             {
                 return true;
             }
 
-            _expectedStarts.TryRemove(key, out _);
+            TryRemoveExpectedStart(sessionId, expectedStart);
             return false;
         }
 
@@ -62,10 +75,17 @@ namespace WatchPartyForEmby
                 return false;
             }
 
-            return _expectedStarts.TryRemove(
-                    GetKey(sessionId, episodeItemId),
-                    out var expiresAtUtc)
-                && expiresAtUtc >= nowUtc;
+            if (!_expectedStarts.TryGetValue(sessionId, out var expectedStart)
+                || !string.Equals(
+                    expectedStart.EpisodeItemId,
+                    episodeItemId,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return TryRemoveExpectedStart(sessionId, expectedStart)
+                && expectedStart.ExpiresAtUtc >= nowUtc;
         }
 
         public bool ShouldRetainSessionOnStop(
@@ -87,16 +107,38 @@ namespace WatchPartyForEmby
         {
             foreach (var expectedStart in _expectedStarts)
             {
-                if (expectedStart.Value < nowUtc)
+                if (expectedStart.Value.ExpiresAtUtc < nowUtc)
                 {
-                    _expectedStarts.TryRemove(expectedStart.Key, out _);
+                    TryRemoveExpectedStart(expectedStart.Key, expectedStart.Value);
                 }
             }
         }
 
-        private static string GetKey(string sessionId, string episodeItemId)
+        public bool ClearSession(string sessionId)
         {
-            return sessionId + ":" + episodeItemId;
+            return !string.IsNullOrEmpty(sessionId)
+                && _expectedStarts.TryRemove(sessionId, out _);
+        }
+
+        private bool TryRemoveExpectedStart(
+            string sessionId,
+            ExpectedEpisodeStart expectedStart)
+        {
+            return ((ICollection<KeyValuePair<string, ExpectedEpisodeStart>>)_expectedStarts)
+                .Remove(new KeyValuePair<string, ExpectedEpisodeStart>(sessionId, expectedStart));
+        }
+
+        private sealed class ExpectedEpisodeStart
+        {
+            public ExpectedEpisodeStart(string episodeItemId, DateTime expiresAtUtc)
+            {
+                EpisodeItemId = episodeItemId;
+                ExpiresAtUtc = expiresAtUtc;
+            }
+
+            public string EpisodeItemId { get; }
+
+            public DateTime ExpiresAtUtc { get; }
         }
     }
 }

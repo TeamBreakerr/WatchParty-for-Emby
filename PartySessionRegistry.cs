@@ -11,11 +11,30 @@ namespace WatchPartyForEmby
     /// </summary>
     public sealed class PartySessionRegistry
     {
+        private const int DefaultMaxRetiredPlaybackIdsPerParty = 256;
         private readonly object _syncRoot = new object();
+        private readonly int _maxRetiredPlaybackIdsPerParty;
         private readonly Dictionary<string, Dictionary<string, PartyParticipant>> _sessionsByParty =
             new Dictionary<string, Dictionary<string, PartyParticipant>>(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _masterSessions =
             new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, Dictionary<string, HashSet<string>>> _retiredPlaybackIds =
+            new Dictionary<string, Dictionary<string, HashSet<string>>>(StringComparer.Ordinal);
+        private readonly Dictionary<string, Queue<KeyValuePair<string, string>>> _retiredPlaybackOrder =
+            new Dictionary<string, Queue<KeyValuePair<string, string>>>(StringComparer.Ordinal);
+
+        public PartySessionRegistry(
+            int maxRetiredPlaybackIdsPerParty = DefaultMaxRetiredPlaybackIdsPerParty)
+        {
+            if (maxRetiredPlaybackIdsPerParty <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(maxRetiredPlaybackIdsPerParty),
+                    "Retired playback history capacity must be positive.");
+            }
+
+            _maxRetiredPlaybackIdsPerParty = maxRetiredPlaybackIdsPerParty;
+        }
 
         public PartyParticipant AddOrUpdate(string partyId, string sessionId, PartyParticipant participant)
         {
@@ -32,9 +51,178 @@ namespace WatchPartyForEmby
                     _sessionsByParty[partyId] = sessions;
                 }
 
+                var stored = Clone(participant);
+                stored.SessionId = sessionId;
+                if (sessions.TryGetValue(sessionId, out var previous))
+                {
+                    RetirePreviousPlayback(partyId, sessionId, previous.PlaySessionId, stored.PlaySessionId);
+                }
+                sessions[sessionId] = stored;
+                return Clone(stored);
+            }
+        }
+
+        /// <summary>
+        /// Atomically creates a session or refreshes its playback identity while
+        /// preserving its latest position and pause state.
+        /// </summary>
+        public PartyParticipant UpsertSession(
+            string partyId,
+            string sessionId,
+            string userId,
+            string userName,
+            string playSessionId,
+            DateTime nowUtc,
+            out string previousPlaySessionId,
+            out bool created)
+        {
+            if (string.IsNullOrEmpty(partyId) || string.IsNullOrEmpty(sessionId))
+            {
+                throw new ArgumentException("partyId and sessionId are required");
+            }
+
+            lock (_syncRoot)
+            {
+                if (!_sessionsByParty.TryGetValue(partyId, out var sessions))
+                {
+                    sessions = new Dictionary<string, PartyParticipant>(StringComparer.Ordinal);
+                    _sessionsByParty[partyId] = sessions;
+                }
+
+                created = !sessions.TryGetValue(sessionId, out var participant);
+                previousPlaySessionId = created ? null : participant.PlaySessionId;
+                if (created)
+                {
+                    participant = new PartyParticipant
+                    {
+                        JoinedAt = nowUtc
+                    };
+                    sessions[sessionId] = participant;
+                }
+
+                participant.UserId = userId;
+                participant.UserName = userName;
                 participant.SessionId = sessionId;
-                sessions[sessionId] = participant;
-                return participant;
+                participant.LastActivityAt = nowUtc;
+                if (!string.IsNullOrEmpty(playSessionId))
+                {
+                    RetirePreviousPlayback(
+                        partyId,
+                        sessionId,
+                        participant.PlaySessionId,
+                        playSessionId);
+                    participant.PlaySessionId = playSessionId;
+                }
+
+                return Clone(participant);
+            }
+        }
+
+        /// <summary>
+        /// Atomically enforces the party's distinct-user capacity and upserts a
+        /// playback session. A non-positive capacity means unlimited participants.
+        /// </summary>
+        public bool TryUpsertSession(
+            string partyId,
+            string sessionId,
+            string userId,
+            string userName,
+            string playSessionId,
+            DateTime nowUtc,
+            int maxParticipants,
+            out PartyParticipant participant,
+            out string previousPlaySessionId,
+            out bool created)
+        {
+            if (string.IsNullOrEmpty(partyId) || string.IsNullOrEmpty(sessionId))
+            {
+                throw new ArgumentException("partyId and sessionId are required");
+            }
+
+            lock (_syncRoot)
+            {
+                participant = null;
+                previousPlaySessionId = null;
+                created = false;
+                if (maxParticipants > 0
+                    && !HasUser(partyId, userId)
+                    && DistinctUserCount(partyId) >= maxParticipants)
+                {
+                    return false;
+                }
+
+                participant = UpsertSession(
+                    partyId,
+                    sessionId,
+                    userId,
+                    userName,
+                    playSessionId,
+                    nowUtc,
+                    out previousPlaySessionId,
+                    out created);
+                return true;
+            }
+        }
+
+        public bool UpdateActivity(
+            string partyId,
+            string sessionId,
+            long positionTicks,
+            bool isPaused,
+            DateTime nowUtc)
+        {
+            lock (_syncRoot)
+            {
+                if (string.IsNullOrEmpty(partyId)
+                    || string.IsNullOrEmpty(sessionId)
+                    || !_sessionsByParty.TryGetValue(partyId, out var sessions)
+                    || !sessions.TryGetValue(sessionId, out var participant))
+                {
+                    return false;
+                }
+
+                participant.LastActivityAt = nowUtc;
+                participant.CurrentPositionTicks = Math.Max(0, positionTicks);
+                participant.IsPaused = isPaused;
+                return true;
+            }
+        }
+
+        public bool ResetEpisodeState(string partyId)
+        {
+            lock (_syncRoot)
+            {
+                if (string.IsNullOrEmpty(partyId)
+                    || !_sessionsByParty.TryGetValue(partyId, out var sessions))
+                {
+                    return false;
+                }
+
+                foreach (var participant in sessions.Values)
+                {
+                    participant.CurrentPositionTicks = 0;
+                    participant.IsPaused = false;
+                    participant.IsBuffering = false;
+                }
+
+                return true;
+            }
+        }
+
+        public bool SetBuffering(string partyId, string sessionId, bool isBuffering)
+        {
+            lock (_syncRoot)
+            {
+                if (string.IsNullOrEmpty(partyId)
+                    || string.IsNullOrEmpty(sessionId)
+                    || !_sessionsByParty.TryGetValue(partyId, out var sessions)
+                    || !sessions.TryGetValue(sessionId, out var participant))
+                {
+                    return false;
+                }
+
+                participant.IsBuffering = isBuffering;
+                return true;
             }
         }
 
@@ -46,7 +234,8 @@ namespace WatchPartyForEmby
                 return !string.IsNullOrEmpty(partyId)
                     && !string.IsNullOrEmpty(sessionId)
                     && _sessionsByParty.TryGetValue(partyId, out var sessions)
-                    && sessions.TryGetValue(sessionId, out participant);
+                    && sessions.TryGetValue(sessionId, out var stored)
+                    && (participant = Clone(stored)) != null;
             }
         }
 
@@ -82,6 +271,63 @@ namespace WatchPartyForEmby
             }
         }
 
+        /// <summary>
+        /// Accepts progress for the current playback, or atomically adopts the first
+        /// previously unseen playback id when Emby omitted PlaybackStart. Playback ids
+        /// retired by an observed replacement can never reclaim the session later.
+        /// </summary>
+        public bool TryAcceptPlaybackProgress(
+            string partyId,
+            string sessionId,
+            string playSessionId,
+            out bool adopted,
+            out string previousPlaySessionId)
+        {
+            lock (_syncRoot)
+            {
+                adopted = false;
+                previousPlaySessionId = null;
+                if (string.IsNullOrEmpty(partyId)
+                    || string.IsNullOrEmpty(sessionId)
+                    || string.IsNullOrEmpty(playSessionId)
+                    || !_sessionsByParty.TryGetValue(partyId, out var sessions)
+                    || !sessions.TryGetValue(sessionId, out var participant))
+                {
+                    return true;
+                }
+
+                previousPlaySessionId = participant.PlaySessionId;
+                if (string.IsNullOrEmpty(previousPlaySessionId))
+                {
+                    participant.PlaySessionId = playSessionId;
+                    adopted = true;
+                    return true;
+                }
+
+                if (string.Equals(
+                        previousPlaySessionId,
+                        playSessionId,
+                        StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                if (IsRetiredPlayback(partyId, sessionId, playSessionId))
+                {
+                    return false;
+                }
+
+                RetirePreviousPlayback(
+                    partyId,
+                    sessionId,
+                    previousPlaySessionId,
+                    playSessionId);
+                participant.PlaySessionId = playSessionId;
+                adopted = true;
+                return true;
+            }
+        }
+
         public bool TryGetLatestSessionForUser(string partyId, string userId, out PartyParticipant participant)
         {
             lock (_syncRoot)
@@ -108,7 +354,7 @@ namespace WatchPartyForEmby
                     }
                 }
 
-                participant = best;
+                participant = Clone(best);
                 return best != null;
             }
         }
@@ -119,7 +365,7 @@ namespace WatchPartyForEmby
             {
                 return !string.IsNullOrEmpty(partyId)
                     && _sessionsByParty.TryGetValue(partyId, out var sessions)
-                        ? sessions.Values.ToList()
+                        ? sessions.Values.Select(Clone).ToList()
                         : Array.Empty<PartyParticipant>();
             }
         }
@@ -202,10 +448,11 @@ namespace WatchPartyForEmby
             out PartyParticipant removed,
             out bool wasMaster)
         {
-            return TryRemoveSession(
+            return TryRemoveSessionInternal(
                 partyId,
                 sessionId,
                 expectedPlaySessionId: null,
+                requirePlaySessionMatch: false,
                 out removed,
                 out wasMaster);
         }
@@ -222,6 +469,22 @@ namespace WatchPartyForEmby
             out PartyParticipant removed,
             out bool wasMaster)
         {
+            return TryRemoveSessionInternal(
+                partyId,
+                sessionId,
+                expectedPlaySessionId,
+                requirePlaySessionMatch: true,
+                out removed,
+                out wasMaster);
+        }
+
+        public bool TryRemoveSessionIfInactive(
+            string partyId,
+            string sessionId,
+            DateTime inactiveBeforeUtc,
+            out PartyParticipant removed,
+            out bool wasMaster)
+        {
             lock (_syncRoot)
             {
                 removed = null;
@@ -229,22 +492,55 @@ namespace WatchPartyForEmby
                 if (string.IsNullOrEmpty(partyId)
                     || string.IsNullOrEmpty(sessionId)
                     || !_sessionsByParty.TryGetValue(partyId, out var sessions)
-                    || !sessions.TryGetValue(sessionId, out removed))
+                    || !sessions.TryGetValue(sessionId, out var participant)
+                    || participant.LastActivityAt >= inactiveBeforeUtc)
                 {
                     return false;
                 }
 
-                if (!string.IsNullOrEmpty(removed.PlaySessionId)
+                return TryRemoveSessionInternal(
+                    partyId,
+                    sessionId,
+                    expectedPlaySessionId: null,
+                    requirePlaySessionMatch: false,
+                    out removed,
+                    out wasMaster);
+            }
+        }
+
+        private bool TryRemoveSessionInternal(
+            string partyId,
+            string sessionId,
+            string expectedPlaySessionId,
+            bool requirePlaySessionMatch,
+            out PartyParticipant removed,
+            out bool wasMaster)
+        {
+            lock (_syncRoot)
+            {
+                removed = null;
+                wasMaster = false;
+                if (string.IsNullOrEmpty(partyId)
+                    || string.IsNullOrEmpty(sessionId)
+                    || !_sessionsByParty.TryGetValue(partyId, out var sessions)
+                    || !sessions.TryGetValue(sessionId, out var stored))
+                {
+                    return false;
+                }
+
+                if (requirePlaySessionMatch
+                    && !string.IsNullOrEmpty(stored.PlaySessionId)
                     && !string.Equals(
-                        removed.PlaySessionId,
+                        stored.PlaySessionId,
                         expectedPlaySessionId,
                         StringComparison.Ordinal))
                 {
-                    removed = null;
                     return false;
                 }
 
+                RetirePlayback(partyId, sessionId, stored.PlaySessionId);
                 sessions.Remove(sessionId);
+                removed = Clone(stored);
                 if (sessions.Count == 0)
                 {
                     _sessionsByParty.Remove(partyId);
@@ -380,7 +676,105 @@ namespace WatchPartyForEmby
             {
                 _sessionsByParty.Remove(partyId);
                 _masterSessions.Remove(partyId);
+                _retiredPlaybackIds.Remove(partyId);
+                _retiredPlaybackOrder.Remove(partyId);
             }
+        }
+
+        private void RetirePreviousPlayback(
+            string partyId,
+            string sessionId,
+            string previousPlaySessionId,
+            string newPlaySessionId)
+        {
+            if (string.IsNullOrEmpty(previousPlaySessionId)
+                || string.IsNullOrEmpty(newPlaySessionId)
+                || string.Equals(
+                    previousPlaySessionId,
+                    newPlaySessionId,
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            RetirePlayback(partyId, sessionId, previousPlaySessionId);
+        }
+
+        private void RetirePlayback(
+            string partyId,
+            string sessionId,
+            string playSessionId)
+        {
+            if (string.IsNullOrEmpty(playSessionId))
+            {
+                return;
+            }
+
+            if (!_retiredPlaybackIds.TryGetValue(partyId, out var retiredBySession))
+            {
+                retiredBySession = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+                _retiredPlaybackIds[partyId] = retiredBySession;
+            }
+
+            if (!retiredBySession.TryGetValue(sessionId, out var retiredIds))
+            {
+                retiredIds = new HashSet<string>(StringComparer.Ordinal);
+                retiredBySession[sessionId] = retiredIds;
+            }
+
+            if (!retiredIds.Add(playSessionId))
+            {
+                return;
+            }
+
+            if (!_retiredPlaybackOrder.TryGetValue(partyId, out var retiredOrder))
+            {
+                retiredOrder = new Queue<KeyValuePair<string, string>>();
+                _retiredPlaybackOrder[partyId] = retiredOrder;
+            }
+
+            retiredOrder.Enqueue(
+                new KeyValuePair<string, string>(sessionId, playSessionId));
+            while (retiredOrder.Count > _maxRetiredPlaybackIdsPerParty)
+            {
+                var oldest = retiredOrder.Dequeue();
+                if (retiredBySession.TryGetValue(oldest.Key, out var oldestSessionIds))
+                {
+                    oldestSessionIds.Remove(oldest.Value);
+                    if (oldestSessionIds.Count == 0)
+                    {
+                        retiredBySession.Remove(oldest.Key);
+                    }
+                }
+            }
+        }
+
+        private bool IsRetiredPlayback(string partyId, string sessionId, string playSessionId)
+        {
+            return _retiredPlaybackIds.TryGetValue(partyId, out var retiredBySession)
+                && retiredBySession.TryGetValue(sessionId, out var retiredIds)
+                && retiredIds.Contains(playSessionId);
+        }
+
+        private static PartyParticipant Clone(PartyParticipant participant)
+        {
+            if (participant == null)
+            {
+                return null;
+            }
+
+            return new PartyParticipant
+            {
+                UserId = participant.UserId,
+                UserName = participant.UserName,
+                SessionId = participant.SessionId,
+                PlaySessionId = participant.PlaySessionId,
+                JoinedAt = participant.JoinedAt,
+                LastActivityAt = participant.LastActivityAt,
+                CurrentPositionTicks = participant.CurrentPositionTicks,
+                IsPaused = participant.IsPaused,
+                IsBuffering = participant.IsBuffering
+            };
         }
     }
 }

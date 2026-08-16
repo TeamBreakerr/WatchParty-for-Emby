@@ -49,12 +49,12 @@ namespace WatchPartyForEmby
                         using (var pbkdf2 = new Rfc2898DeriveBytes(password, salt, iterations))
                         {
                             var testHash = pbkdf2.GetBytes(HashSize);
-                            bool match = true;
-                            for (int i = 0; i < HashSize; i++)
+                            var storedHash = new byte[HashSize];
+                            Array.Copy(hashBytes, SaltSize, storedHash, 0, HashSize);
+                            if (CryptographicOperations.FixedTimeEquals(storedHash, testHash))
                             {
-                                if (hashBytes[i + SaltSize] != testHash[i]) { match = false; break; }
+                                return true;
                             }
-                            if (match) return true;
                         }
                     }
                     return false;
@@ -66,8 +66,7 @@ namespace WatchPartyForEmby
                     {
                         var bytes = Encoding.UTF8.GetBytes(password);
                         var testHash = sha256.ComputeHash(bytes);
-                        var testHashBase64 = Convert.ToBase64String(testHash);
-                        return testHashBase64 == hash;
+                        return CryptographicOperations.FixedTimeEquals(hashBytes, testHash);
                     }
                 }
                 
@@ -111,13 +110,11 @@ namespace WatchPartyForEmby
         public long CurrentPositionTicks { get; set; }
         public bool IsPaused { get; set; }
         public bool IsBuffering { get; set; }
-        public bool IsReady { get; set; }
         
         public PartyParticipant()
         {
             JoinedAt = DateTime.UtcNow;
             LastActivityAt = DateTime.UtcNow;
-            IsReady = false;
         }
     }
 
@@ -155,20 +152,13 @@ namespace WatchPartyForEmby
         public string MasterUserId { get; set; }
         public string PasswordHash { get; set; }
         public bool IsWaitingRoom { get; set; }
-        public DateTime? ScheduledStartTime { get; set; }
         public bool AutoStartWhenReady { get; set; }
         public int MinReadyCount { get; set; }
         public string PauseControl { get; set; }
-        public bool HostOnlySeek { get; set; }
-        public bool LockSeekAhead { get; set; }
         public int SyncToleranceSeconds { get; set; }
         public int MaxBufferThresholdSeconds { get; set; }
         public bool AutoKickInactiveMinutes { get; set; }
         public int InactiveTimeoutMinutes { get; set; }
-        public bool EnableNetworkLatencyCompensation { get; set; }
-        public int NetworkLatencyMeasurementIntervalSeconds { get; set; }
-        public bool AutoAdjustForLatency { get; set; }
-        public int MaxLatencyCompensationMs { get; set; }
 
         public WatchPartyItem()
         {
@@ -183,16 +173,10 @@ namespace WatchPartyForEmby
             AutoStartWhenReady = true;
             MinReadyCount = 1;
             PauseControl = "Anyone";
-            HostOnlySeek = true;
-            LockSeekAhead = true;
             SyncToleranceSeconds = 10;
             MaxBufferThresholdSeconds = 30;
             AutoKickInactiveMinutes = true;
             InactiveTimeoutMinutes = 15;
-            EnableNetworkLatencyCompensation = true;
-            NetworkLatencyMeasurementIntervalSeconds = 30;
-            AutoAdjustForLatency = true;
-            MaxLatencyCompensationMs = 5000;
         }
     }
 
@@ -203,11 +187,10 @@ namespace WatchPartyForEmby
 
         public int SyncIntervalSeconds { get; set; } = 5;
         public int SyncOffsetMilliseconds { get; set; } = 1000;
-        public bool EnableDebugLogging { get; set; }
 
         public bool EnableExternalWebServer { get; set; } = false;
         public int ExternalWebServerPort { get; set; } = 8097;
-        public string ListenAddress { get; set; } = "0.0.0.0";
+        public string ListenAddress { get; set; } = "127.0.0.1";
         public string AllowedCorsOrigins { get; set; } = "";
         public string AdminPasswordHash { get; set; }
         public string EmbyApiKey { get; set; }
@@ -246,12 +229,11 @@ namespace WatchPartyForEmby
         public PluginConfiguration()
         {
             ConfigurationVersion = 0;
-            EnableDebugLogging = false;
             WatchParties = new List<WatchPartyItem>();
             SyncIntervalSeconds = 5;
             SyncOffsetMilliseconds = 1000;
             ExternalWebServerPort = 8097;
-            ListenAddress = "0.0.0.0";
+            ListenAddress = "127.0.0.1";
             AllowedCorsOrigins = "";
             AdminPasswordHash = string.Empty;
             ExternalServerUrl = string.Empty;

@@ -64,6 +64,8 @@
         
         .autocomplete-item.selected {
             background: #3a3a3a;
+            outline: 2px solid #4CAF50;
+            outline-offset: -2px;
         }
         
         .autocomplete-dropdown::-webkit-scrollbar {
@@ -81,6 +83,55 @@
         
         .autocomplete-dropdown::-webkit-scrollbar-thumb:hover {
             background: #555;
+        }
+
+        .watch-party-actions {
+            margin-top: 2em;
+            display: flex;
+            gap: 1em;
+        }
+
+        @media (max-width: 480px) {
+            .scrollSlider.padded-left-page,
+            .scrollSlider.padded-right {
+                padding-left: 0.75em !important;
+                padding-right: 0.75em !important;
+            }
+
+            .watchPartyConfigForm .paper-card,
+            .help-page {
+                padding: 1em !important;
+            }
+
+            .watch-party-actions {
+                flex-direction: column;
+            }
+
+            .watch-party-actions .emby-button {
+                flex: none !important;
+                width: 100%;
+            }
+
+            .autocomplete-dropdown {
+                max-height: 45vh;
+            }
+
+            .watch-party-list-card {
+                align-items: stretch !important;
+                flex-direction: column;
+                gap: 0.75em;
+            }
+
+            .watch-party-list-actions {
+                flex-wrap: wrap;
+                justify-content: flex-end;
+            }
+
+            .watchPartyConfigForm code,
+            .help-page code {
+                overflow-wrap: anywhere;
+                white-space: pre-wrap;
+            }
         }
     </style>
     <div class="scrollSlider flex-direction-column padded-left padded-left-page padded-right padded-top-page padded-bottom-page">
@@ -102,10 +153,10 @@
                         </div>
 
                         <div class="selectContainer" style="margin-top: 1em;">
-                            <label class="selectLabel" for="selectedItemId">选择电影或电视剧</label>
+                            <label class="selectLabel" for="searchContent">选择电影或电视剧</label>
                             <div class="autocomplete-container">
-                                <input is="emby-input" type="text" id="searchContent" placeholder="搜索电影和电视剧……" autocomplete="off" style="width: 100%;" />
-                                <div id="searchContentDropdown" class="autocomplete-dropdown"></div>
+                                <input is="emby-input" type="text" id="searchContent" placeholder="搜索电影和电视剧……" autocomplete="off" style="width: 100%;" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="searchContentDropdown" aria-expanded="false" />
+                                <div id="searchContentDropdown" class="autocomplete-dropdown" role="listbox" aria-label="电影和电视剧搜索结果"></div>
                                 <input type="hidden" id="selectedItemId" />
                             </div>
                             <div class="fieldDescription">
@@ -124,10 +175,10 @@
                         </div>
 
                         <div class="selectContainer" id="seriesContainer" style="margin-top: 1em; display: none;">
-                            <label class="selectLabel" for="selectedSeasonId">选择季</label>
+                            <label class="selectLabel" for="searchSeason">选择季</label>
                             <div class="autocomplete-container">
-                                <input is="emby-input" type="text" id="searchSeason" placeholder="搜索季……" autocomplete="off" style="width: 100%;" />
-                                <div id="searchSeasonDropdown" class="autocomplete-dropdown"></div>
+                                <input is="emby-input" type="text" id="searchSeason" placeholder="搜索季……" autocomplete="off" style="width: 100%;" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="searchSeasonDropdown" aria-expanded="false" />
+                                <div id="searchSeasonDropdown" class="autocomplete-dropdown" role="listbox" aria-label="季搜索结果"></div>
                                 <input type="hidden" id="selectedSeasonId" />
                             </div>
                             <div class="fieldDescription" id="seasonFieldDescription">
@@ -136,10 +187,10 @@
                         </div>
 
                         <div class="selectContainer" id="episodeContainer" style="margin-top: 1em; display: none;">
-                            <label class="selectLabel" id="episodeFieldLabel" for="selectedEpisodeId">选择集</label>
+                            <label class="selectLabel" id="episodeFieldLabel" for="searchEpisode">选择集</label>
                             <div class="autocomplete-container">
-                                <input is="emby-input" type="text" id="searchEpisode" placeholder="搜索剧集……" autocomplete="off" style="width: 100%;" />
-                                <div id="searchEpisodeDropdown" class="autocomplete-dropdown"></div>
+                                <input is="emby-input" type="text" id="searchEpisode" placeholder="搜索剧集……" autocomplete="off" style="width: 100%;" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="searchEpisodeDropdown" aria-expanded="false" />
+                                <div id="searchEpisodeDropdown" class="autocomplete-dropdown" role="listbox" aria-label="剧集搜索结果"></div>
                                 <input type="hidden" id="selectedEpisodeId" />
                             </div>
                             <div class="fieldDescription" id="episodeFieldDescription">
@@ -205,65 +256,45 @@
                             </div>
                         </div>
 
-                        <div class="checkboxContainer" style="margin-top: 1em;">
+                        <div class="checkboxContainer" id="autoStartWhenReadyContainer" style="margin-top: 1em;">
                             <label>
                                 <input is="emby-checkbox" type="checkbox" id="autoStartWhenReady" />
                                 <span>达到最低人数后自动开始</span>
                             </label>
                             <div class="fieldDescription">
-                                开始播放的成员达到最低人数后自动开播
+                                已进入房间并开始播放的用户达到最低就绪人数后自动开播；未加入的白名单用户不会阻塞开播。
                             </div>
                         </div>
 
-                        <div class="inputContainer" style="margin-top: 1em;">
+                        <div class="inputContainer" id="minReadyCountContainer" style="margin-top: 1em;">
                             <label class="inputLabel inputLabelUnfocused" for="minReadyCount">最低就绪人数</label>
                             <input is="emby-input" type="number" id="minReadyCount" min="1" max="50" step="1" value="1" />
                             <div class="fieldDescription">
-                                房间开始前必须已经开始播放的最少人数
+                                自动开始所需的已就绪用户数；达到该人数即可开始，不要求房间内所有用户都就绪。
                             </div>
                         </div>
 
                         <h3 style="margin-top: 2em; margin-bottom: 1em; color: #4CAF50;">播放控制</h3>
 
                         <div class="selectContainer" style="margin-top: 1em;">
-                            <label class="selectLabel" for="pauseControl">暂停权限</label>
+                            <label class="selectLabel" for="pauseControl">播放/暂停权限</label>
                             <select is="emby-select" id="pauseControl" class="emby-select-withcolor emby-select">
-                                <option value="Anyone">任何人都可暂停</option>
-                                <option value="Host">仅主控用户</option>
-                                <option value="Vote">投票决定</option>
+                                <option value="Anyone">任何人都可播放或暂停</option>
+                                <option value="Host">仅主控用户可播放或暂停</option>
+                                <option value="Vote">由参与者投票决定</option>
                             </select>
                             <div class="fieldDescription">
-                                选择谁可以暂停播放
-                            </div>
-                        </div>
-
-                        <div class="checkboxContainer" style="margin-top: 1em;">
-                            <label>
-                                <input is="emby-checkbox" type="checkbox" id="hostOnlySeek" />
-                                <span>仅主控用户可拖动进度</span>
-                            </label>
-                            <div class="fieldDescription">
-                                只有主控用户可以快进或后退
-                            </div>
-                        </div>
-
-                        <div class="checkboxContainer" style="margin-top: 1em;">
-                            <label>
-                                <input is="emby-checkbox" type="checkbox" id="lockSeekAhead" />
-                                <span>禁止参与者超前播放</span>
-                            </label>
-                            <div class="fieldDescription">
-                                防止非主控用户跳到主控进度之后，避免剧透
+                                选择谁可以向房间发送播放和暂停信号。播放进度始终以主控用户为准，观众拖动后会被重新校准。
                             </div>
                         </div>
 
                         <h3 style="margin-top: 2em; margin-bottom: 1em; color: #4CAF50;">同步与性能</h3>
 
                         <div class="inputContainer" style="margin-top: 1em;">
-                            <label class="inputLabel inputLabelUnfocused" for="syncToleranceSeconds">同步容差（秒）</label>
+                            <label class="inputLabel inputLabelUnfocused" for="syncToleranceSeconds">主控跳转识别阈值（秒）</label>
                             <input is="emby-input" type="number" id="syncToleranceSeconds" min="1" max="60" step="1" value="10" />
                             <div class="fieldDescription">
-                                进度相差多少秒后触发同步；数值越小，同步越紧密
+                                主控上报位置偏离服务器投影时间超过该值时，视为人工拖动并立即同步。普通播放仍使用内置安全容差，避免 115/小雅流被反复 seek。
                             </div>
                         </div>
 
@@ -285,49 +316,11 @@
                             </div>
                         </div>
 
-                        <div class="inputContainer" style="margin-top: 1em;">
+                        <div class="inputContainer" id="inactiveTimeoutContainer" style="margin-top: 1em;">
                             <label class="inputLabel inputLabelUnfocused" for="inactiveTimeoutMinutes">不活跃超时（分钟）</label>
                             <input is="emby-input" type="number" id="inactiveTimeoutMinutes" min="5" max="120" step="5" value="15" />
                             <div class="fieldDescription">
                                 用户无活动多长时间后从房间移除
-                            </div>
-                        </div>
-
-                        <h3 style="margin-top: 2em; margin-bottom: 1em; color: #4CAF50;">网络延迟补偿</h3>
-
-                        <div class="checkboxContainer" style="margin-top: 1em;">
-                            <label>
-                                <input is="emby-checkbox" type="checkbox" id="enableNetworkLatencyCompensation" />
-                                <span>启用网络延迟补偿</span>
-                            </label>
-                            <div class="fieldDescription">
-                                测量并补偿服务器与客户端之间的网络往返延迟
-                            </div>
-                        </div>
-
-                        <div class="inputContainer" style="margin-top: 1em;">
-                            <label class="inputLabel inputLabelUnfocused" for="networkLatencyMeasurementIntervalSeconds">延迟测量间隔（秒）</label>
-                            <input is="emby-input" type="number" id="networkLatencyMeasurementIntervalSeconds" min="10" max="300" step="10" value="30" />
-                            <div class="fieldDescription">
-                                测量网络延迟的频率（10–300 秒，默认 30 秒）
-                            </div>
-                        </div>
-
-                        <div class="checkboxContainer" style="margin-top: 1em;">
-                            <label>
-                                <input is="emby-checkbox" type="checkbox" id="autoAdjustForLatency" />
-                                <span>根据延迟自动调整</span>
-                            </label>
-                            <div class="fieldDescription">
-                                根据测得的网络延迟自动调整同步时机
-                            </div>
-                        </div>
-
-                        <div class="inputContainer" style="margin-top: 1em;">
-                            <label class="inputLabel inputLabelUnfocused" for="maxLatencyCompensationMs">最大延迟补偿（毫秒）</label>
-                            <input is="emby-input" type="number" id="maxLatencyCompensationMs" min="100" max="10000" step="100" value="5000" />
-                            <div class="fieldDescription">
-                                允许应用的最大延迟补偿（100–10000 毫秒，默认 5000）
                             </div>
                         </div>
 
@@ -346,16 +339,6 @@
                             <input is="emby-input" type="number" id="syncOffsetMilliseconds" min="-10000" max="10000" step="100" />
                             <div class="fieldDescription">
                                 调整参与者的同步位置：正值使参与者略微超前，负值增加延迟（-10000 到 +10000 毫秒，默认 1000）
-                            </div>
-                        </div>
-
-                        <div class="checkboxContainer" style="margin-top: 1.5em;">
-                            <label>
-                                <input is="emby-checkbox" type="checkbox" id="enableDebugLogging" />
-                                <span>启用调试日志</span>
-                            </label>
-                            <div class="fieldDescription">
-                                输出详细日志以便排查问题
                             </div>
                         </div>
 
@@ -381,9 +364,9 @@
 
                         <div class="inputContainer" style="margin-top: 1em;">
                             <label class="inputLabel inputLabelUnfocused" for="listenAddress">监听地址</label>
-                            <input is="emby-input" type="text" id="listenAddress" placeholder="0.0.0.0" />
+                            <input is="emby-input" type="text" id="listenAddress" placeholder="127.0.0.1" />
                             <div class="fieldDescription">
-                                要绑定的网络地址。外网访问使用“0.0.0.0”（默认，所有接口）；仅本机访问使用“localhost”。修改后需要重启。
+                                默认仅监听 127.0.0.1，并由同机 HTTPS 反向代理访问。0.0.0.0 会把管理端口暴露到所有网卡，只应在受保护的私有网络中显式使用。修改后需要重启。
                             </div>
                         </div>
 
@@ -415,7 +398,7 @@
 
                         <div class="inputContainer" style="margin-top: 1em;">
                             <label class="inputLabel inputLabelUnfocused" for="rateLimitRequestsPerMinute">请求频率限制（次/分钟）</label>
-                            <input is="emby-input" type="number" id="rateLimitRequestsPerMinute" min="10" max="1000" step="10" value="60" />
+                            <input is="emby-input" type="number" id="rateLimitRequestsPerMinute" min="0" max="1000" step="10" value="60" />
                             <div class="fieldDescription">
                                 每个 IP 每分钟允许的最大请求数（默认 60）；设为 0 可关闭限制。
                             </div>
@@ -544,7 +527,7 @@
                             </div>
                         </div>
 
-                        <div class="inputContainer" style="margin-top: 1em;">
+                        <div class="inputContainer" id="maxFailedLoginAttemptsContainer" style="margin-top: 1em;">
                             <label class="inputLabel inputLabelUnfocused" for="maxFailedLoginAttempts">最大登录失败次数</label>
                             <input is="emby-input" type="number" id="maxFailedLoginAttempts" min="1" max="20" value="5" />
                             <div class="fieldDescription">
@@ -552,7 +535,7 @@
                             </div>
                         </div>
 
-                        <div class="inputContainer" style="margin-top: 1em;">
+                        <div class="inputContainer" id="lockoutDurationContainer" style="margin-top: 1em;">
                             <label class="inputLabel inputLabelUnfocused" for="lockoutDurationMinutes">锁定时长（分钟）</label>
                             <input is="emby-input" type="number" id="lockoutDurationMinutes" min="1" max="1440" value="15" />
                             <div class="fieldDescription">
@@ -560,7 +543,7 @@
                             </div>
                         </div>
 
-                        <div class="inputContainer" style="margin-top: 1em;">
+                        <div class="inputContainer" id="lockoutWindowContainer" style="margin-top: 1em;">
                             <label class="inputLabel inputLabelUnfocused" for="lockoutWindowMinutes">失败统计窗口（分钟）</label>
                             <input is="emby-input" type="number" id="lockoutWindowMinutes" min="1" max="60" value="10" />
                             <div class="fieldDescription">
@@ -580,9 +563,9 @@
 
                         <div class="inputContainer" style="margin-top: 1em;">
                             <label class="inputLabel inputLabelUnfocused" for="maxAuditLogEntries">审计日志最大条数</label>
-                            <input is="emby-input" type="number" id="maxAuditLogEntries" min="100" max="10000" value="1000" />
+                            <input is="emby-input" type="number" id="maxAuditLogEntries" min="0" max="100000" step="100" value="1000" />
                             <div class="fieldDescription">
-                                内存中保留的审计日志上限（默认 1000 条，范围 100–10000 条）。
+                                内存中保留的审计日志上限（默认 1000 条，范围 0–100000 条）；设为 0 不在内存保留，但安全事件仍写入 Emby 日志。
                             </div>
                         </div>
 
@@ -619,7 +602,7 @@
                             <strong>状态：</strong> <span id="webServerStatusText">正在检查……</span>
                         </div>
 
-                        <div style="margin-top: 2em; display: flex; gap: 1em;">
+                        <div class="watch-party-actions">
                             <button is="emby-button" type="button" id="btnSaveSettings" class="raised button-submit" style="flex: 1;">
                                 <span>保存设置</span>
                             </button>

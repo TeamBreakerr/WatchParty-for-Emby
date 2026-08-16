@@ -16,12 +16,7 @@
   <ItemGroup>
     <EmbeddedResource Include="Configuration\configPage.html" />
     <EmbeddedResource Include="Configuration\configPage.js" />
-    <EmbeddedResource Include="Configuration\dashboard.html" />
     <EmbeddedResource Include="Configuration\external.html" />
-    <EmbeddedResource Include="Configuration\chat.html" />
-    <EmbeddedResource Include="Configuration\api.js" />
-    <EmbeddedResource Include="Configuration\ui.js" />
-    <EmbeddedResource Include="Configuration\partyManager.js" />
     <EmbeddedResource Include="images\logo.jpg" />
   </ItemGroup>
 

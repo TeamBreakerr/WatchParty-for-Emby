@@ -1,4 +1,7 @@
 using System;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace WatchPartyForEmby.Tests
@@ -38,6 +41,68 @@ namespace WatchPartyForEmby.Tests
             Assert.True(registry.TryGetSession("party", "vidhub-session", out var vidhub));
             Assert.Equal("ios-session", ios.SessionId);
             Assert.Equal("vidhub-session", vidhub.SessionId);
+        }
+
+        [Fact]
+        public async Task ConcurrentNewUsersCannotExceedTheDistinctUserCapacity()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 3, 0, 0, DateTimeKind.Utc);
+            using var startTogether = new Barrier(2);
+
+            Task<bool> Join(string userId)
+            {
+                return Task.Run(() =>
+                {
+                    startTogether.SignalAndWait();
+                    return registry.TryUpsertSession(
+                        "party",
+                        "session-" + userId,
+                        userId,
+                        "User " + userId,
+                        "playback-" + userId,
+                        now,
+                        maxParticipants: 1,
+                        out _,
+                        out _,
+                        out _);
+                });
+            }
+
+            var results = await Task.WhenAll(Join("a"), Join("b"));
+
+            Assert.Equal(1, results.Count(joined => joined));
+            Assert.Equal(1, registry.DistinctUserCount("party"));
+            Assert.Equal(1, registry.SessionCount("party"));
+        }
+
+        [Fact]
+        public void ExistingUserCanAddAndRefreshSessionsWhenThePartyIsAtCapacity()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 3, 15, 0, DateTimeKind.Utc);
+
+            Assert.True(registry.TryUpsertSession(
+                "party", "ios-session", "viewer", "Viewer", "playback-1", now,
+                maxParticipants: 1,
+                out _, out _, out var firstCreated));
+            Assert.True(firstCreated);
+
+            Assert.True(registry.TryUpsertSession(
+                "party", "web-session", "viewer", "Viewer", "playback-2", now.AddSeconds(1),
+                maxParticipants: 1,
+                out _, out _, out var secondCreated));
+            Assert.True(secondCreated);
+
+            Assert.True(registry.TryUpsertSession(
+                "party", "web-session", "viewer", "Viewer", "playback-3", now.AddSeconds(2),
+                maxParticipants: 1,
+                out var refreshed, out var previousPlayback, out var refreshCreated));
+            Assert.False(refreshCreated);
+            Assert.Equal("playback-2", previousPlayback);
+            Assert.Equal("playback-3", refreshed.PlaySessionId);
+            Assert.Equal(1, registry.DistinctUserCount("party"));
+            Assert.Equal(2, registry.SessionCount("party"));
         }
 
         [Fact]
@@ -111,6 +176,79 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void ExplicitUnconditionalRemovalRemovesAKnownPlayback()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 16, 12, 45, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "ios-session",
+                Participant("user-1", "ios-session", now, "current-playback"));
+
+            Assert.True(registry.TryRemoveSession(
+                "party",
+                "ios-session",
+                out var removed,
+                out _));
+            Assert.Equal("current-playback", removed.PlaySessionId);
+            Assert.False(registry.TryGetSession("party", "ios-session", out _));
+        }
+
+        [Fact]
+        public void InactiveCleanupCannotRemoveASessionThatBecameActiveAfterSnapshot()
+        {
+            var registry = new PartySessionRegistry();
+            var threshold = new DateTime(2026, 8, 16, 13, 0, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "ios-session",
+                Participant(
+                    "user-1",
+                    "ios-session",
+                    threshold.AddMinutes(-1),
+                    "current-playback"));
+
+            Assert.True(registry.UpdateActivity(
+                "party",
+                "ios-session",
+                positionTicks: 10,
+                isPaused: false,
+                threshold.AddSeconds(1)));
+
+            Assert.False(registry.TryRemoveSessionIfInactive(
+                "party",
+                "ios-session",
+                threshold,
+                out _,
+                out _));
+            Assert.True(registry.TryGetSession("party", "ios-session", out _));
+        }
+
+        [Fact]
+        public void InactiveCleanupAtomicallyRemovesAStillInactiveSession()
+        {
+            var registry = new PartySessionRegistry();
+            var threshold = new DateTime(2026, 8, 16, 13, 30, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "ios-session",
+                Participant(
+                    "user-1",
+                    "ios-session",
+                    threshold.AddMinutes(-1),
+                    "current-playback"));
+
+            Assert.True(registry.TryRemoveSessionIfInactive(
+                "party",
+                "ios-session",
+                threshold,
+                out var removed,
+                out _));
+            Assert.Equal("ios-session", removed.SessionId);
+            Assert.False(registry.TryGetSession("party", "ios-session", out _));
+        }
+
+        [Fact]
         public void ProgressFromOldPlaybackIsRejectedAfterNewPlaybackBecomesCurrent()
         {
             var registry = new PartySessionRegistry();
@@ -135,6 +273,276 @@ namespace WatchPartyForEmby.Tests
                 "party",
                 "web-session",
                 playSessionId: null));
+        }
+
+        [Fact]
+        public void FirstUnseenProgressPlaybackCanReplaceCurrentWhenStartWasMissing()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 0, 45, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "web-session",
+                Participant("master", "web-session", now, "old-playback"));
+
+            Assert.True(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "new-playback",
+                out var adopted,
+                out var previousPlayback));
+            Assert.True(adopted);
+            Assert.Equal("old-playback", previousPlayback);
+            Assert.True(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                "new-playback"));
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "old-playback",
+                out adopted,
+                out _));
+            Assert.False(adopted);
+        }
+
+        [Fact]
+        public void PlaybackStartRetiresPreviousIdSoDelayedProgressCannotReclaimSession()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 0, 50, 0, DateTimeKind.Utc);
+            registry.UpsertSession(
+                "party",
+                "web-session",
+                "master",
+                "Master",
+                "old-playback",
+                now,
+                out _,
+                out _);
+            registry.UpsertSession(
+                "party",
+                "web-session",
+                "master",
+                "Master",
+                "new-playback",
+                now.AddSeconds(1),
+                out _,
+                out _);
+
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "old-playback",
+                out var adopted,
+                out _));
+            Assert.False(adopted);
+            Assert.True(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                "new-playback"));
+        }
+
+        [Fact]
+        public void DelayedProgressCannotReclaimARecreatedSessionAfterItsPlaybackStopped()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 2, 30, 0, DateTimeKind.Utc);
+            registry.UpsertSession(
+                "party",
+                "ios-session",
+                "viewer",
+                "Viewer",
+                "playback-1",
+                now,
+                out _,
+                out _);
+
+            Assert.True(registry.TryRemoveSession(
+                "party",
+                "ios-session",
+                "playback-1",
+                out _,
+                out _));
+
+            registry.UpsertSession(
+                "party",
+                "ios-session",
+                "viewer",
+                "Viewer",
+                "playback-2",
+                now.AddSeconds(1),
+                out _,
+                out _);
+
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party",
+                "ios-session",
+                "playback-1",
+                out var adopted,
+                out _));
+            Assert.False(adopted);
+            Assert.True(registry.TryGetSession("party", "ios-session", out var current));
+            Assert.Equal("playback-2", current.PlaySessionId);
+        }
+
+        [Fact]
+        public void RetiredPlaybackHistoryKeepsRecentIdsAndEvictsTheOldestAtItsConfiguredLimit()
+        {
+            var registry = new PartySessionRegistry(maxRetiredPlaybackIdsPerParty: 2);
+            var now = new DateTime(2026, 8, 17, 2, 45, 0, DateTimeKind.Utc);
+
+            registry.UpsertSession(
+                "party", "session-1", "viewer-1", "Viewer 1", "playback-1", now,
+                out _, out _);
+            Assert.True(registry.TryRemoveSession(
+                "party", "session-1", "playback-1", out _, out _));
+            registry.UpsertSession(
+                "party", "session-2", "viewer-2", "Viewer 2", "playback-2", now.AddSeconds(1),
+                out _, out _);
+            Assert.True(registry.TryRemoveSession(
+                "party", "session-2", "playback-2", out _, out _));
+            registry.UpsertSession(
+                "party", "session-3", "viewer-3", "Viewer 3", "playback-3", now.AddSeconds(2),
+                out _, out _);
+            Assert.True(registry.TryRemoveSession(
+                "party", "session-3", "playback-3", out _, out _));
+
+            registry.UpsertSession(
+                "party", "session-2", "viewer-2", "Viewer 2", "playback-4", now.AddSeconds(3),
+                out _, out _);
+            registry.UpsertSession(
+                "party", "session-1", "viewer-1", "Viewer 1", "playback-5", now.AddSeconds(3),
+                out _, out _);
+
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party", "session-2", "playback-2", out _, out _));
+            Assert.True(registry.TryAcceptPlaybackProgress(
+                "party", "session-1", "playback-1", out var adopted, out _));
+            Assert.True(adopted);
+        }
+
+        [Fact]
+        public void ClearPartyClearsPlaybackTombstonesBeforeThePartyIsRecreated()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 2, 50, 0, DateTimeKind.Utc);
+            registry.UpsertSession(
+                "party", "ios-session", "viewer", "Viewer", "playback-1", now,
+                out _, out _);
+            Assert.True(registry.TryRemoveSession(
+                "party", "ios-session", "playback-1", out _, out _));
+
+            registry.ClearParty("party");
+            registry.UpsertSession(
+                "party", "ios-session", "viewer", "Viewer", "playback-2", now.AddSeconds(1),
+                out _, out _);
+
+            Assert.True(registry.TryAcceptPlaybackProgress(
+                "party", "ios-session", "playback-1", out var adopted, out _));
+            Assert.True(adopted);
+        }
+
+        [Fact]
+        public void ReturnedParticipantIsASnapshotAndCannotMutateRegistryState()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 1, 0, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "ios-session",
+                Participant("user-1", "ios-session", now, "current-playback"));
+
+            Assert.True(registry.TryGetSession("party", "ios-session", out var snapshot));
+            snapshot.PlaySessionId = "stale-playback";
+            snapshot.CurrentPositionTicks = TimeSpan.FromHours(1).Ticks;
+
+            Assert.True(registry.TryGetSession("party", "ios-session", out var current));
+            Assert.Equal("current-playback", current.PlaySessionId);
+            Assert.Equal(0, current.CurrentPositionTicks);
+        }
+
+        [Fact]
+        public void SessionIdentityAndActivityAreUpdatedThroughAtomicOperations()
+        {
+            var registry = new PartySessionRegistry();
+            var startedAt = new DateTime(2026, 8, 17, 1, 30, 0, DateTimeKind.Utc);
+            var progressedAt = startedAt.AddSeconds(10);
+
+            var participant = registry.UpsertSession(
+                "party",
+                "web-session",
+                "master-user",
+                "Master",
+                "playback-1",
+                startedAt,
+                out var previousPlayback,
+                out var created);
+
+            Assert.True(created);
+            Assert.Null(previousPlayback);
+            Assert.Equal("playback-1", participant.PlaySessionId);
+            Assert.True(registry.UpdateActivity(
+                "party",
+                "web-session",
+                TimeSpan.FromMinutes(12).Ticks,
+                isPaused: true,
+                progressedAt));
+
+            Assert.True(registry.TryGetSession("party", "web-session", out var current));
+            Assert.Equal(TimeSpan.FromMinutes(12).Ticks, current.CurrentPositionTicks);
+            Assert.True(current.IsPaused);
+            Assert.Equal(progressedAt, current.LastActivityAt);
+            Assert.True(registry.SetBuffering("party", "web-session", isBuffering: true));
+            Assert.True(registry.TryGetSession("party", "web-session", out current));
+            Assert.True(current.IsBuffering);
+
+            registry.UpsertSession(
+                "party",
+                "web-session",
+                "master-user",
+                "Renamed Master",
+                "playback-2",
+                progressedAt.AddSeconds(1),
+                out previousPlayback,
+                out created);
+
+            Assert.False(created);
+            Assert.Equal("playback-1", previousPlayback);
+            Assert.True(registry.TryGetSession("party", "web-session", out current));
+            Assert.Equal("playback-2", current.PlaySessionId);
+            Assert.Equal("Renamed Master", current.UserName);
+            Assert.Equal(TimeSpan.FromMinutes(12).Ticks, current.CurrentPositionTicks);
+        }
+
+        [Fact]
+        public void EpisodeResetClearsRuntimeValuesButPreservesMembershipAndPlaybackIdentity()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 2, 0, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "ios-session",
+                new PartyParticipant
+                {
+                    UserId = "user-1",
+                    SessionId = "ios-session",
+                    PlaySessionId = "playback-1",
+                    CurrentPositionTicks = TimeSpan.FromMinutes(42).Ticks,
+                    IsPaused = true,
+                    IsBuffering = true,
+                    LastActivityAt = now
+                });
+
+            Assert.True(registry.ResetEpisodeState("party"));
+
+            Assert.True(registry.TryGetSession("party", "ios-session", out var current));
+            Assert.Equal("user-1", current.UserId);
+            Assert.Equal("playback-1", current.PlaySessionId);
+            Assert.Equal(0, current.CurrentPositionTicks);
+            Assert.False(current.IsPaused);
+            Assert.False(current.IsBuffering);
+            Assert.False(registry.ResetEpisodeState("missing-party"));
         }
 
         [Fact]

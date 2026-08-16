@@ -1,0 +1,71 @@
+using System;
+using WatchPartyForEmby.Api;
+using Xunit;
+
+namespace WatchPartyForEmby.Tests
+{
+    public sealed class ParticipantInfoProjectorTests
+    {
+        [Fact]
+        public void SameUserSessionsRemainSeparateAndOnlyRegisteredMasterIsHost()
+        {
+            var participants = new[]
+            {
+                Participant("same-user", "vidhub-session", "VidHub", 20),
+                Participant("same-user", "ios-session", "iPhone", 10)
+            };
+            var sessions = new[]
+            {
+                new ParticipantSessionDescriptor
+                {
+                    SessionId = "vidhub-session",
+                    Client = "VidHub",
+                    SupportsRemoteControl = false
+                },
+                new ParticipantSessionDescriptor
+                {
+                    SessionId = "ios-session",
+                    Client = "Emby for iOS",
+                    SupportsRemoteControl = true
+                }
+            };
+
+            var rows = ParticipantInfoProjector.Project(
+                participants,
+                readyUserIds: new[] { "same-user" },
+                masterSessionId: "vidhub-session",
+                sessions);
+
+            Assert.Equal(2, rows.Count);
+            Assert.True(rows[0].IsHost);
+            Assert.Equal("VidHub", rows[0].Client);
+            Assert.False(rows[0].SupportsRemoteControl);
+            Assert.False(rows[1].IsHost);
+            Assert.Equal("Emby for iOS", rows[1].Client);
+            Assert.True(rows[1].SupportsRemoteControl);
+            Assert.All(rows, row => Assert.True(row.IsReady));
+        }
+
+        private static PartyParticipant Participant(
+            string userId,
+            string sessionId,
+            string userName,
+            int activitySecond)
+        {
+            return new PartyParticipant
+            {
+                UserId = userId,
+                SessionId = sessionId,
+                UserName = userName,
+                LastActivityAt = new DateTime(
+                    2026,
+                    8,
+                    17,
+                    1,
+                    0,
+                    activitySecond,
+                    DateTimeKind.Utc)
+            };
+        }
+    }
+}

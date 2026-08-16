@@ -17,13 +17,14 @@ namespace WatchPartyForEmby
         private readonly ILogger _logger;
         private readonly IJsonSerializer _jsonSerializer;
         private ExternalWebServer _externalWebServer;
-        private int _lastPort = 0;
-        private string _lastListenAddress = "";
-        private bool _lastEnabled = false;
+        private ExternalWebServerBinding _lastBinding;
         public static string ExternalWebServerStatus { get; private set; } = "Not Enabled";
 
         public PartySessionRegistry PartyParticipants { get; } = new PartySessionRegistry();
-        public Dictionary<string, HashSet<string>> PartyReadyUsers { get; } = new Dictionary<string, HashSet<string>>();
+        public PartyReadyRegistry PartyReadyUsers { get; } = new PartyReadyRegistry();
+        public WaitingRoomStartCoordinator WaitingRoomStarts { get; } =
+            new WaitingRoomStartCoordinator();
+        public object ConfigurationSyncRoot { get; } = new object();
 
         public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer, ILogManager logManager, IJsonSerializer jsonSerializer)
             : base(applicationPaths, xmlSerializer)
@@ -53,15 +54,31 @@ namespace WatchPartyForEmby
 
         public override void UpdateConfiguration(BasePluginConfiguration configuration)
         {
-            if (configuration is PluginConfiguration pluginConfiguration
-                && WatchPartyItemMatcher.HasActiveBindingConflict(pluginConfiguration.WatchParties))
+            lock (ConfigurationSyncRoot)
             {
-                throw new InvalidOperationException(
-                    "An original Emby item cannot belong to more than one active watch party.");
+                if (configuration is PluginConfiguration pluginConfiguration)
+                {
+                    PluginConfigurationPolicy.Normalize(pluginConfiguration);
+
+                    if (WatchPartyItemMatcher.HasActiveBindingConflict(pluginConfiguration.WatchParties))
+                    {
+                        throw new InvalidOperationException(
+                            "An original Emby item cannot belong to more than one active watch party.");
+                    }
+                }
+
+                base.UpdateConfiguration(configuration);
             }
 
-            base.UpdateConfiguration(configuration);
             ConfigurationUpdated?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void SaveConfigurationSafely()
+        {
+            lock (ConfigurationSyncRoot)
+            {
+                SaveConfiguration();
+            }
         }
 
         public IEnumerable<PluginPageInfo> GetPages()
@@ -81,47 +98,26 @@ namespace WatchPartyForEmby
                 {
                     Name = "configPagejs",
                     EmbeddedResourcePath = GetType().Namespace + ".Configuration.configPage.js"
-                },
-                new PluginPageInfo
-                {
-                    Name = "watchpartydashboard",
-                    EmbeddedResourcePath = GetType().Namespace + ".Configuration.dashboard.html"
-                },
-                new PluginPageInfo
-                {
-                    Name = "watchpartyexternal",
-                    EmbeddedResourcePath = GetType().Namespace + ".Configuration.external.html"
-                },
-                new PluginPageInfo
-                {
-                    Name = "watchpartyapi",
-                    EmbeddedResourcePath = GetType().Namespace + ".Configuration.api.js"
-                },
-                new PluginPageInfo
-                {
-                    Name = "watchpartyui",
-                    EmbeddedResourcePath = GetType().Namespace + ".Configuration.ui.js"
-                },
-                new PluginPageInfo
-                {
-                    Name = "watchpartymanager",
-                    EmbeddedResourcePath = GetType().Namespace + ".Configuration.partyManager.js"
                 }
             };
         }
 
         public void Run()
         {
+            if (PluginConfigurationPolicy.Normalize(Configuration))
+            {
+                SaveConfigurationSafely();
+                _logger.Info("[Watch Party] Normalized persisted plugin configuration");
+            }
+
             StartWebServer();
         }
 
         private void OnConfigurationUpdated(object sender, EventArgs e)
         {
-            var currentPort = Configuration.ExternalWebServerPort;
-            var currentListenAddress = Configuration.ListenAddress ?? "0.0.0.0";
-            var currentEnabled = Configuration.EnableExternalWebServer;
+            var currentBinding = ExternalWebServerBinding.From(Configuration);
             
-            if (_lastPort != currentPort || _lastListenAddress != currentListenAddress || _lastEnabled != currentEnabled)
+            if (_lastBinding == null || !_lastBinding.Equals(currentBinding))
             {
                 _logger.Info("[Watch Party] Web server configuration changed, restarting...");
                 RestartWebServer();
@@ -130,26 +126,25 @@ namespace WatchPartyForEmby
 
         private void StartWebServer()
         {
-            if (Configuration.EnableExternalWebServer)
+            var binding = ExternalWebServerBinding.From(Configuration);
+            if (binding.Enabled)
             {
-                var listenAddress = string.IsNullOrEmpty(Configuration.ListenAddress) ? "0.0.0.0" : Configuration.ListenAddress;
-                _externalWebServer = new ExternalWebServer(_logger, _jsonSerializer, Configuration.ExternalWebServerPort, listenAddress);
+                _externalWebServer = new ExternalWebServer(
+                    _logger,
+                    _jsonSerializer,
+                    binding.Port,
+                    binding.ListenAddress);
                 ExternalWebServerStatus = _externalWebServer.Start();
                 _logger.Info($"[Watch Party] External web server status: {ExternalWebServerStatus}");
-                
-                _lastPort = Configuration.ExternalWebServerPort;
-                _lastListenAddress = listenAddress;
-                _lastEnabled = Configuration.EnableExternalWebServer;
             }
             else
             {
                 ExternalWebServerStatus = "Not Enabled";
                 _logger.Info("[Watch Party] External web server is disabled in configuration");
                 
-                _lastPort = 0;
-                _lastListenAddress = "";
-                _lastEnabled = false;
             }
+
+            _lastBinding = binding;
         }
 
         private void RestartWebServer()

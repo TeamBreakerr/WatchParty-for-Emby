@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Watch Party Dashboard</title>
+    <title>一起看外部控制台</title>
     <style>
         * {
             margin: 0;
@@ -189,6 +189,81 @@
             cursor: pointer;
             box-shadow: 0 4px 12px rgba(76, 175, 80, 0.4);
         }
+
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .toolbar-button {
+            padding: 10px 20px;
+            background: #333;
+            color: white;
+            border: 1px solid #444;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+
+        .create-btn {
+            right: 110px;
+        }
+
+        .modal-shell {
+            display: none;
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            padding: 20px;
+            background: rgba(0,0,0,0.8);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            overflow-y: auto;
+        }
+
+        .modal-panel {
+            background: #1a1a1a;
+            padding: 30px;
+            border-radius: 8px;
+            max-width: 800px;
+            width: min(100%, 800px);
+            margin: auto;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+        }
+
+        .modal-panel.compact {
+            max-width: 420px;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .modal-actions button {
+            min-height: 44px;
+        }
+
+        .field-help {
+            color: #aaa;
+            font-size: 0.85rem;
+            line-height: 1.4;
+            margin-top: 6px;
+        }
+
+        .login-error {
+            display: none;
+            margin-top: 12px;
+            padding: 10px;
+            border-radius: 4px;
+            color: #fff;
+            background: #9f2525;
+        }
         
         .load-more-option {
             font-style: italic;
@@ -236,6 +311,8 @@
         
         .autocomplete-item.selected {
             background: #3a3a3a;
+            outline: 2px solid #4CAF50;
+            outline-offset: -2px;
         }
         
         .autocomplete-dropdown::-webkit-scrollbar {
@@ -254,59 +331,125 @@
         .autocomplete-dropdown::-webkit-scrollbar-thumb:hover {
             background: #555;
         }
+
+        @media (max-width: 480px) {
+            body {
+                padding: 12px;
+            }
+
+            h1 {
+                margin-bottom: 20px;
+                font-size: 1.55rem;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 8px;
+                margin-bottom: 20px;
+            }
+
+            .stat-card {
+                min-width: 0;
+                padding: 12px 6px;
+            }
+
+            .stat-value {
+                font-size: 1.65rem;
+            }
+
+            .stat-label {
+                overflow-wrap: anywhere;
+            }
+
+            .party-grid {
+                grid-template-columns: minmax(0, 1fr);
+                gap: 12px;
+            }
+
+            .party-card {
+                min-width: 0;
+                padding: 16px;
+            }
+
+            .modal-shell {
+                padding: 8px;
+                align-items: flex-start;
+            }
+
+            .modal-panel {
+                width: 100%;
+                max-height: calc(100vh - 16px);
+                padding: 18px;
+            }
+
+            .modal-actions {
+                flex-direction: column;
+            }
+
+            .refresh-btn {
+                right: 16px;
+                bottom: 16px;
+                width: 52px;
+                height: 52px;
+            }
+
+            .create-btn {
+                right: 76px;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🎬 Watch Party Dashboard</h1>
+        <h1>🎬 一起看外部控制台</h1>
         
         <input type="hidden" id="serverUrl" value="http://localhost:8096">
         <input type="hidden" id="password" value="">
-        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-            <button id="refreshButton" style="padding: 10px 20px; background: #333; color: white; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-size: 1rem;">Refresh</button>
+        <div class="toolbar">
+            <button id="refreshButton" class="toolbar-button" type="button">刷新房间</button>
         </div>
         
-        <div id="error" class="error" style="display: none;"></div>
+        <div id="error" class="error" role="alert" aria-live="assertive" style="display: none;"></div>
         
         <div class="stats-grid" id="statsGrid">
             <div class="stat-card">
                 <div class="stat-value" id="totalParties">0</div>
-                <div class="stat-label">Total Parties</div>
+                <div class="stat-label">房间总数</div>
             </div>
             <div class="stat-card">
                 <div class="stat-value" id="activeParties">0</div>
-                <div class="stat-label">Active Parties</div>
+                <div class="stat-label">已启用房间</div>
             </div>
             <div class="stat-card">
                 <div class="stat-value" id="totalParticipants">0</div>
-                <div class="stat-label">Total Participants</div>
+                <div class="stat-label">参与者总数</div>
             </div>
         </div>
         
-        <div id="loading" class="loading">Click "Load Parties" to start</div>
+        <div id="loading" class="loading" role="status" aria-live="polite">正在加载房间……</div>
         
         <div class="party-grid" id="partyGrid" style="display: none;"></div>
         
-        <button class="refresh-btn" id="refreshButton" title="Refresh">⟳</button>
-        <button class="refresh-btn" id="createButton" title="Create Party" style="right: 110px;">+</button>
+        <button class="refresh-btn" id="refreshFloatingButton" type="button" title="刷新房间" aria-label="刷新房间">⟳</button>
+        <button class="refresh-btn create-btn" id="createButton" type="button" title="创建房间" aria-label="创建房间">+</button>
     </div>
 
-    <div id="createPartyModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; align-items: center; justify-content: center; overflow-y: auto;">
-        <div style="background: #1a1a1a; padding: 30px; border-radius: 8px; max-width: 800px; width: 90%; margin: 20px auto; max-height: 90vh; overflow-y: auto;">
-            <h2 style="margin-top: 0;">Create New Watch Party</h2>
+    <div id="createPartyModal" class="modal-shell" role="dialog" aria-modal="true" aria-labelledby="createPartyTitle">
+        <div class="modal-panel">
+            <h2 id="createPartyTitle" style="margin-top: 0;">创建一起看房间</h2>
             
-            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">Content Selection</h3>
+            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">内容选择</h3>
             <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Source Library:</label>
+                <label for="newSourceLibrary" style="display: block; margin-bottom: 5px;">选择内容媒体库</label>
                 <select id="newSourceLibrary" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-                    <option value="">Loading libraries...</option>
+                    <option value="">正在加载媒体库……</option>
                 </select>
             </div>
             <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Select Content:</label>
+                <label for="searchContent" style="display: block; margin-bottom: 5px;">选择电影或电视剧</label>
                 <div style="position: relative;">
-                    <input type="text" id="searchContent" placeholder="Search movies and TV shows..." autocomplete="off" style="width: 100%; padding: 8px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-                    <div id="searchContentDropdown" class="autocomplete-dropdown"></div>
+                    <input type="text" id="searchContent" placeholder="搜索电影和电视剧……" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="searchContentDropdown" aria-expanded="false" style="width: 100%; padding: 8px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                    <div id="searchContentDropdown" class="autocomplete-dropdown" role="listbox" aria-label="电影和电视剧搜索结果"></div>
                     <input type="hidden" id="newContentItem">
                 </div>
             </div>
@@ -314,183 +457,358 @@
                 <div id="newSeriesPartyContainer" style="margin: 15px 0; padding: 12px; border: 1px solid #4CAF50; border-radius: 4px;">
                     <label style="display: flex; align-items: center; cursor: pointer;">
                         <input type="checkbox" id="newIsSeriesParty" style="margin-right: 8px; width: 20px; height: 20px;">
-                        <span>Create a Series Party</span>
+                        <span>创建整部剧集房间</span>
                     </label>
                     <div id="newSeriesPartyModeHint" style="color: #aaa; margin-top: 6px; font-size: 0.9rem;">
-                        Off: select one season and episode. On: create the full ordered series queue; season and episode become optional starting-point selectors.
+                        关闭时只添加一集；开启后会按季和集数创建完整队列，季和集仅用于指定起播位置。
                     </div>
                 </div>
                 <div style="margin: 15px 0;">
-                    <label style="display: block; margin-bottom: 5px;">Season:</label>
+                    <label for="searchSeason" style="display: block; margin-bottom: 5px;">选择季</label>
                     <div style="position: relative;">
-                        <input type="text" id="searchSeason" placeholder="Search seasons..." autocomplete="off" style="width: 100%; padding: 8px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-                        <div id="searchSeasonDropdown" class="autocomplete-dropdown"></div>
+                        <input type="text" id="searchSeason" placeholder="搜索季……" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="searchSeasonDropdown" aria-expanded="false" style="width: 100%; padding: 8px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                        <div id="searchSeasonDropdown" class="autocomplete-dropdown" role="listbox" aria-label="季搜索结果"></div>
                         <input type="hidden" id="newSeason">
                     </div>
                 </div>
                 <div style="margin: 15px 0;">
-                    <label id="newEpisodeLabel" style="display: block; margin-bottom: 5px;">Episode:</label>
+                    <label id="newEpisodeLabel" for="searchEpisode" style="display: block; margin-bottom: 5px;">选择集</label>
                     <div style="position: relative;">
-                        <input type="text" id="searchEpisode" placeholder="Search episodes..." autocomplete="off" style="width: 100%; padding: 8px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-                        <div id="searchEpisodeDropdown" class="autocomplete-dropdown"></div>
+                        <input type="text" id="searchEpisode" placeholder="搜索剧集……" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="searchEpisodeDropdown" aria-expanded="false" style="width: 100%; padding: 8px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                        <div id="searchEpisodeDropdown" class="autocomplete-dropdown" role="listbox" aria-label="剧集搜索结果"></div>
                         <input type="hidden" id="newEpisode">
                     </div>
                 </div>
             </div>
 
-            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">Party Settings</h3>
+            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">房间设置</h3>
             <div style="margin: 15px 0;">
                 <label style="display: flex; align-items: center; cursor: pointer;">
                     <input type="checkbox" id="newIsActive" checked style="margin-right: 8px; width: 20px; height: 20px;">
-                    <span>Activate party immediately</span>
+                    <span>立即启用房间</span>
                 </label>
             </div>
             <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Max Participants:</label>
-                <input type="number" id="newMaxParticipants" value="10" min="2" max="100" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                <label for="newMaxParticipants" style="display: block; margin-bottom: 5px;">最多参与人数</label>
+                <input type="number" id="newMaxParticipants" value="50" min="2" max="100" step="1" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
             </div>
             <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Party Password (optional):</label>
-                <input type="password" id="newPartyPassword" placeholder="Leave empty for no password" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                <label for="newPartyPassword" style="display: block; margin-bottom: 5px;">房间密码（可选）</label>
+                <input type="password" id="newPartyPassword" placeholder="留空表示无需密码" autocomplete="new-password" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
             </div>
 
-            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">User Management</h3>
+            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">访问控制与等候室</h3>
             <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Master User (controls playback):</label>
+                <label for="newMasterUser" style="display: block; margin-bottom: 5px;">主控用户（必选）</label>
                 <select id="newMasterUser" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-                    <option value="">Loading users...</option>
+                    <option value="">正在加载用户……</option>
                 </select>
             </div>
             <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Allowed Users (hold Ctrl to select multiple, leave empty for all):</label>
+                <label for="newAllowedUsers" style="display: block; margin-bottom: 5px;">允许加入的用户（可选）</label>
                 <select id="newAllowedUsers" multiple size="5" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-                    <option value="">Loading users...</option>
+                    <option value="">正在加载用户……</option>
                 </select>
+                <div class="field-help">按住 Ctrl/Cmd 可多选；留空表示所有用户均可加入。选择允许用户后，主控用户会自动加入。</div>
             </div>
 
-            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">Waiting Room</h3>
+            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">等候室</h3>
             <div style="margin: 15px 0;">
                 <label style="display: flex; align-items: center; cursor: pointer;">
                     <input type="checkbox" id="newWaitingRoom" checked style="margin-right: 8px; width: 20px; height: 20px;">
-                    <span>Enable waiting room (users must mark ready)</span>
+                    <span>启用等候室</span>
                 </label>
+                <div class="field-help">在所有人开始播放前暂停各客户端。</div>
             </div>
+            <div id="waitingRoomOptions">
             <div style="margin: 15px 0;">
                 <label style="display: flex; align-items: center; cursor: pointer;">
                     <input type="checkbox" id="newAutoStart" checked style="margin-right: 8px; width: 20px; height: 20px;">
-                    <span>Auto-start when ready</span>
+                    <span>达到最低人数后自动开始</span>
                 </label>
+                <div class="field-help">已进入房间并开始播放的用户达到最低就绪人数后自动开播；未加入的允许用户不会阻塞开播。</div>
             </div>
-            <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Min ready count for auto-start:</label>
-                <input type="number" id="newMinReady" value="2" min="1" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+            <div id="minReadyOptions" style="margin: 15px 0;">
+                <label for="newMinReady" style="display: block; margin-bottom: 5px;">最低就绪人数</label>
+                <input type="number" id="newMinReady" value="1" min="1" max="100" step="1" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                <div class="field-help">达到该人数即可开始，不要求房间内所有用户都就绪。</div>
+            </div>
             </div>
 
-            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">Playback Control</h3>
+            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">播放控制</h3>
             <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Pause Control:</label>
+                <label for="newPauseControl" style="display: block; margin-bottom: 5px;">播放/暂停权限</label>
                 <select id="newPauseControl" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-                    <option value="Anyone">Anyone can pause</option>
-                    <option value="HostOnly">Host only</option>
-                    <option value="Disabled">Disabled</option>
+                    <option value="Anyone">任何人都可播放或暂停</option>
+                    <option value="Host">仅主控用户可播放或暂停</option>
+                    <option value="Vote">由参与者投票决定</option>
                 </select>
             </div>
+            <div class="field-help">选择谁可以向房间发送播放和暂停信号。播放进度始终以主控用户为准，观众拖动后会被重新校准。</div>
+
+            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">同步与性能</h3>
             <div style="margin: 15px 0;">
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" id="newHostOnlySeek" checked style="margin-right: 8px; width: 20px; height: 20px;">
-                    <span>Host only can seek</span>
-                </label>
+                <label for="newSyncTolerance" style="display: block; margin-bottom: 5px;">主控跳转识别阈值（秒）</label>
+                <input type="number" id="newSyncTolerance" value="10" min="1" max="60" step="1" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                <div class="field-help">主控上报位置偏离服务器投影时间超过该值时，视为人工拖动并立即同步。普通播放仍使用内置安全容差，避免 115/小雅流被反复 seek。</div>
             </div>
             <div style="margin: 15px 0;">
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" id="newLockSeekAhead" checked style="margin-right: 8px; width: 20px; height: 20px;">
-                    <span>Lock seek ahead of master position</span>
-                </label>
+                <label for="newMaxBuffer" style="display: block; margin-bottom: 5px;">缓冲判定阈值（秒）</label>
+                <input type="number" id="newMaxBuffer" value="30" min="10" max="120" step="5" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                <div class="field-help">用户落后达到该秒数时标记为正在缓冲。</div>
             </div>
 
-            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">Sync Settings</h3>
-            <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Sync tolerance (seconds):</label>
-                <input type="number" id="newSyncTolerance" value="10" min="1" max="60" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-            </div>
-            <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Max buffer threshold (seconds):</label>
-                <input type="number" id="newMaxBuffer" value="30" min="5" max="120" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-            </div>
-
-            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">Inactive User Management</h3>
+            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">不活跃用户管理</h3>
             <div style="margin: 15px 0;">
                 <label style="display: flex; align-items: center; cursor: pointer;">
                     <input type="checkbox" id="newAutoKick" checked style="margin-right: 8px; width: 20px; height: 20px;">
-                    <span>Auto-kick inactive users</span>
+                    <span>自动移除不活跃用户</span>
                 </label>
+                <div class="field-help">自动移除长时间没有活动的用户。</div>
             </div>
-            <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Inactive timeout (minutes):</label>
-                <input type="number" id="newInactiveTimeout" value="15" min="1" max="120" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+            <div id="inactiveTimeoutOptions" style="margin: 15px 0;">
+                <label for="newInactiveTimeout" style="display: block; margin-bottom: 5px;">不活跃超时（分钟）</label>
+                <input type="number" id="newInactiveTimeout" value="15" min="5" max="120" step="5" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                <div class="field-help">用户无活动多长时间后从房间移除。</div>
             </div>
 
-            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">Network Latency Compensation</h3>
-            <div style="margin: 15px 0;">
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" id="newEnableNetworkLatencyCompensation" checked style="margin-right: 8px; width: 20px; height: 20px;">
-                    <span>Enable network latency compensation</span>
-                </label>
-            </div>
-            <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Latency measurement interval (seconds):</label>
-                <input type="number" id="newNetworkLatencyMeasurementIntervalSeconds" value="30" min="10" max="300" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-            </div>
-            <div style="margin: 15px 0;">
-                <label style="display: flex; align-items: center; cursor: pointer;">
-                    <input type="checkbox" id="newAutoAdjustForLatency" checked style="margin-right: 8px; width: 20px; height: 20px;">
-                    <span>Auto-adjust for latency</span>
-                </label>
-            </div>
-            <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Maximum latency compensation (ms):</label>
-                <input type="number" id="newMaxLatencyCompensationMs" value="5000" min="100" max="10000" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-            </div>
-
-            <div style="display: flex; gap: 10px; margin-top: 20px;">
-                <button id="confirmCreateButton" style="flex: 1; padding: 12px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">Create Party</button>
-                <button id="cancelCreateButton" style="flex: 1; padding: 12px; background: #666; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">Cancel</button>
+            <div class="modal-actions">
+                <button id="confirmCreateButton" style="flex: 1; padding: 12px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">创建房间</button>
+                <button id="cancelCreateButton" style="flex: 1; padding: 12px; background: #666; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">取消</button>
             </div>
         </div>
     </div>
     
-    <!-- Password Input Modal -->
-    <div id="passwordModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1001; align-items: center; justify-content: center;">
-        <div style="background: #1a1a1a; padding: 30px; border-radius: 8px; max-width: 400px; width: 90%;">
-            <h2 id="passwordModalTitle" style="margin-top: 0;">Enter Password</h2>
+    <div id="adminLoginModal" class="modal-shell" style="z-index: 1002;" role="dialog" aria-modal="true" aria-labelledby="adminLoginTitle" aria-describedby="adminLoginDescription">
+        <div class="modal-panel compact">
+            <h2 id="adminLoginTitle" style="margin-top: 0;">需要管理员登录</h2>
+            <p id="adminLoginDescription" style="margin-top: 10px; color: #bbb; line-height: 1.5;">
+                请输入一起看管理员密码，以管理房间并浏览 Emby 媒体库。
+            </p>
             <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;" id="passwordModalLabel">Password:</label>
-                <input type="password" id="passwordModalInput" placeholder="Enter password" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                <label for="adminPasswordInput" style="display: block; margin-bottom: 5px;">管理员密码</label>
+                <input type="password" id="adminPasswordInput" autocomplete="current-password" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                <div id="adminLoginError" class="login-error" role="alert"></div>
             </div>
-            <div style="display: flex; gap: 10px; margin-top: 20px;">
-                <button id="passwordModalOk" style="flex: 1; padding: 12px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">OK</button>
-                <button id="passwordModalCancel" style="flex: 1; padding: 12px; background: #666; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">Cancel</button>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Username Input Modal -->
-    <div id="usernameModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1001; align-items: center; justify-content: center;">
-        <div style="background: #1a1a1a; padding: 30px; border-radius: 8px; max-width: 400px; width: 90%;">
-            <h2 style="margin-top: 0;">Enter Your Name</h2>
-            <div style="margin: 15px 0;">
-                <label style="display: block; margin-bottom: 5px;">Name for chat:</label>
-                <input type="text" id="usernameModalInput" placeholder="Enter your name" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-            </div>
-            <div style="display: flex; gap: 10px; margin-top: 20px;">
-                <button id="usernameModalOk" style="flex: 1; padding: 12px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">OK</button>
-                <button id="usernameModalCancel" style="flex: 1; padding: 12px; background: #666; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">Cancel</button>
+            <div class="modal-actions">
+                <button id="adminLoginButton" type="button" style="flex: 1; padding: 12px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">登录</button>
+                <button id="adminLoginCancelButton" type="button" style="flex: 1; padding: 12px; background: #666; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;">取消</button>
             </div>
         </div>
     </div>
     
     <script>
         console.log('External Dashboard loaded');
+
+        const sessionTokenStorageKey = 'watchPartySessionToken';
+        const csrfTokenStorageKey = 'watchPartyCsrfToken';
+        let administratorLoginPromise = null;
+
+        function copyHeaders(headers) {
+            const result = {};
+            if (!headers) {
+                return result;
+            }
+
+            if (typeof headers.forEach === 'function') {
+                headers.forEach((value, key) => {
+                    result[key] = value;
+                });
+                return result;
+            }
+
+            return Object.assign(result, headers);
+        }
+
+        function getResponseHeader(response, name) {
+            return response && response.headers && typeof response.headers.get === 'function'
+                ? response.headers.get(name)
+                : null;
+        }
+
+        async function readJsonSafely(response) {
+            try {
+                return await response.json();
+            } catch (_) {
+                return {};
+            }
+        }
+
+        function localizeApiError(payload, status, fallback) {
+            const source = payload && payload.error ? String(payload.error) : '';
+            const translations = {
+                'Rate limit exceeded. Please try again later.': '请求过于频繁，请稍后重试。',
+                'Request too large': '请求内容过大。',
+                'An internal error occurred': '服务器发生内部错误。',
+                'Invalid or expired session': '管理员会话无效或已过期。',
+                'Invalid or expired CSRF token': '安全校验令牌无效或已过期。',
+                'Invalid request body': '请求内容格式无效。',
+                'Party ID is required': '缺少房间标识。',
+                'Party is inactive or no longer waiting': '房间未启用或已经离开等候室。',
+                'Playback runtime is unavailable': '播放同步服务暂时不可用。',
+                'Account temporarily locked due to too many failed attempts': '登录失败次数过多，账户已暂时锁定。',
+                'Invalid credentials': '管理员密码不正确。',
+                'Authentication failed': '管理员身份验证失败。',
+                'Service not configured': '外部服务尚未完成配置。',
+                'Library, item, item name, and master user are required': '请完整选择媒体库、内容和主控用户。',
+                'Invalid Series Party episode queue': '整部剧集房间的剧集队列无效。',
+                'Invalid Series Party starting point': '整部剧集房间的起播位置无效。',
+                'This item already belongs to another active watch party': '该内容已属于另一个已启用的一起看房间。',
+                'Party not found': '未找到该房间。',
+                'Failed to create party': '服务器未能创建房间。',
+                'Failed to delete party': '服务器未能删除房间。'
+            };
+
+            if (translations[source]) {
+                return translations[source];
+            }
+            if (/[\u3400-\u9fff]/.test(source)) {
+                return source;
+            }
+            return `${fallback}（HTTP ${status}）`;
+        }
+
+        function requestAdministratorPassword(errorMessage) {
+            return new Promise(resolve => {
+                const modal = document.getElementById('adminLoginModal');
+                const input = document.getElementById('adminPasswordInput');
+                const error = document.getElementById('adminLoginError');
+                const loginButton = document.getElementById('adminLoginButton');
+                const cancelButton = document.getElementById('adminLoginCancelButton');
+                const previousFocus = document.activeElement;
+
+                input.value = '';
+                error.textContent = errorMessage || '';
+                error.style.display = errorMessage ? 'block' : 'none';
+                modal.style.display = 'flex';
+                input.focus();
+
+                const finish = value => {
+                    input.value = '';
+                    modal.style.display = 'none';
+                    loginButton.removeEventListener('click', submit);
+                    cancelButton.removeEventListener('click', cancel);
+                    input.removeEventListener('keydown', handleKeyDown);
+                    if (previousFocus && typeof previousFocus.focus === 'function') {
+                        previousFocus.focus();
+                    }
+                    resolve(value);
+                };
+
+                const submit = () => {
+                    const password = input.value;
+                    if (!password) {
+                        error.textContent = '请输入管理员密码。';
+                        error.style.display = 'block';
+                        input.focus();
+                        return;
+                    }
+                    finish(password);
+                };
+
+                const cancel = () => finish(null);
+                const handleKeyDown = event => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        submit();
+                    } else if (event.key === 'Escape') {
+                        event.preventDefault();
+                        cancel();
+                    }
+                };
+
+                loginButton.addEventListener('click', submit);
+                cancelButton.addEventListener('click', cancel);
+                input.addEventListener('keydown', handleKeyDown);
+            });
+        }
+
+        async function loginAdministrator() {
+            let errorMessage = '';
+
+            while (true) {
+                const adminPassword = await requestAdministratorPassword(errorMessage);
+                if (adminPassword === null) {
+                    return false;
+                }
+
+                let response;
+                try {
+                    response = await fetch(`${window.location.origin}/api/auth/login`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ adminPassword: adminPassword })
+                    });
+                } catch (_) {
+                    errorMessage = '无法连接一起看服务器，请检查网络后重试。';
+                    continue;
+                }
+
+                const data = await readJsonSafely(response);
+                if (!response.ok) {
+                    errorMessage = localizeApiError(data, response.status, '登录失败');
+                    continue;
+                }
+
+                const sessionToken = data.token || getResponseHeader(response, 'X-Session-Token');
+                const csrfToken = data.csrfToken || getResponseHeader(response, 'X-CSRF-Token');
+                if (!sessionToken) {
+                    errorMessage = '服务器已接受密码，但未返回会话令牌。';
+                    continue;
+                }
+
+                sessionStorage.setItem(sessionTokenStorageKey, sessionToken);
+                if (csrfToken) {
+                    sessionStorage.setItem(csrfTokenStorageKey, csrfToken);
+                } else {
+                    sessionStorage.removeItem(csrfTokenStorageKey);
+                }
+                return true;
+            }
+        }
+
+        function ensureAdministratorLogin() {
+            if (!administratorLoginPromise) {
+                administratorLoginPromise = loginAdministrator().finally(() => {
+                    administratorLoginPromise = null;
+                });
+            }
+            return administratorLoginPromise;
+        }
+
+        async function apiFetch(url, options, allowAuthenticationRetry) {
+            const requestOptions = Object.assign({}, options || {});
+            const headers = copyHeaders(requestOptions.headers);
+            const method = String(requestOptions.method || 'GET').toUpperCase();
+            const sessionToken = sessionStorage.getItem(sessionTokenStorageKey);
+            const csrfToken = sessionStorage.getItem(csrfTokenStorageKey);
+
+            if (sessionToken) {
+                headers['X-Session-Token'] = sessionToken;
+            }
+            if (method === 'POST' && csrfToken) {
+                headers['X-CSRF-Token'] = csrfToken;
+            }
+            requestOptions.headers = headers;
+
+            const response = await fetch(url, requestOptions);
+            const canRetry = allowAuthenticationRetry !== false;
+            if (response.status !== 401) {
+                return response;
+            }
+
+            sessionStorage.removeItem(sessionTokenStorageKey);
+            sessionStorage.removeItem(csrfTokenStorageKey);
+            if (!canRetry) {
+                return response;
+            }
+            const authenticated = await ensureAdministratorLogin();
+            if (!authenticated) {
+                throw new Error('需要管理员登录才能继续。');
+            }
+
+            return apiFetch(url, options, false);
+        }
         
         function formatTime(ticks) {
             if (!ticks || ticks === 0) {
@@ -511,7 +829,7 @@
         
         async function lookupUserName(userId) {
             if (!userId || userId === 'Not set') {
-                return 'Not set';
+                return '未设置';
             }
             
             if (userNameCache[userId]) {
@@ -520,7 +838,7 @@
             
             try {
                 const webServerUrl = window.location.origin;
-                const response = await fetch(`${webServerUrl}/api/users/lookup`, {
+                const response = await apiFetch(`${webServerUrl}/api/users/lookup`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ userId: userId })
@@ -540,16 +858,22 @@
         
         async function createPartyCard(party) {
             const statusClass = party.IsActive ? 'active' : 'inactive';
-            const statusText = party.IsActive ? 'Active' : 'Inactive';
+            const statusText = party.IsActive ? '已启用' : '未启用';
             const lockIcon = party.RequiresPassword ? '🔒 ' : '';
-            const itemId = party.ItemId || '';
             const hostUserName = await lookupUserName(party.HostUserName);
-            const safeName = escapeHtml(party.ItemName || 'Unnamed Party');
-            const safePartyTitle = escapeHtml((party.IsSeriesParty && party.SeriesName) || party.ItemName || 'Unnamed Party');
-            const safeNameForAttr = safeName.replace(/'/g, "\\'");
-            const safeType = escapeHtml(party.ItemType || 'Unknown');
+            const partyName = party.ItemName || '未命名房间';
+            const safePartyTitle = escapeHtml((party.IsSeriesParty && party.SeriesName) || partyName);
             const safeHost = escapeHtml(hostUserName);
-            const safeItemId = escapeHtml(itemId).replace(/'/g, '&#39;');
+            const participantCount = getParticipantCount(party);
+            const encodedPartyId = encodeDataAttribute(party.Id);
+            const encodedItemId = encodeDataAttribute(party.ItemId);
+            const encodedPartyName = encodeDataAttribute(partyName);
+            const itemTypeText = party.IsSeriesParty
+                ? `整部剧集房间 · 第 ${(party.CurrentEpisodeIndex || 0) + 1} / ${party.EpisodeCount || 0} 集`
+                : `单视频房间 · ${formatItemType(party.ItemType)}`;
+            const startButton = party.IsActive && party.IsWaitingRoom
+                ? `<button type="button" data-party-action="start" data-party-id="${encodedPartyId}" style="flex: 1 1 9em; padding: 8px; background: #1976d2; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem;">▶ 开始播放</button>`
+                : '';
             
             return `
                 <div class="party-card ${statusClass}">
@@ -557,34 +881,32 @@
                         <div class="party-title">${lockIcon}${safePartyTitle}</div>
                         <span class="status-badge ${statusClass}">${statusText}</span>
                     </div>
-                    <div class="party-info" onclick="joinParty('${party.Id}', ${party.RequiresPassword}, '${safeNameForAttr}')" style="cursor: pointer;">
+                    <div class="party-info">
                         <div class="info-row">
-                            <span class="info-label">Type:</span>
-                            <span class="info-value">${party.IsSeriesParty ? `Series Party · Episode ${(party.CurrentEpisodeIndex || 0) + 1}/${party.EpisodeCount || 0}` : safeType}</span>
+                            <span class="info-label">房间类型：</span>
+                            <span class="info-value">${escapeHtml(itemTypeText)}</span>
                         </div>
                         <div class="info-row">
-                            <span class="info-label">Master:</span>
+                            <span class="info-label">主控用户：</span>
                             <span class="info-value">${safeHost}</span>
                         </div>
                         <div class="info-row">
-                            <span class="info-label">Participants:</span>
-                            <span class="info-value">${party.ParticipantCount || 0} / ${party.MaxParticipants}</span>
+                            <span class="info-label">参与人数：</span>
+                            <span class="info-value">${participantCount} / ${party.MaxParticipants}</span>
                         </div>
                         <div class="info-row">
-                            <span class="info-label">Position:</span>
+                            <span class="info-label">播放位置：</span>
                             <span class="info-value">${formatTime(party.CurrentPositionTicks)}</span>
                         </div>
                         <div class="info-row">
-                            <span class="info-label">Status:</span>
-                            <span class="info-value">${party.IsPlaying ? '▶ Playing' : '⏸ Paused'}</span>
-                        </div>
-                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #444; text-align: center; color: #4CAF50;">
-                            💬 Click to join chat
+                            <span class="info-label">播放状态：</span>
+                            <span class="info-value">${party.IsWaitingRoom ? '⏳ 等候中' : party.IsPlaying ? '▶ 正在播放' : '⏸ 已暂停'}</span>
                         </div>
                     </div>
-                    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #444; display: flex; gap: 10px;">
-                        <button onclick="playVideo(event, '${party.Id}', '${safeItemId}')" style="flex: 1; padding: 8px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem;">▶️ Play</button>
-                        <button onclick="deleteParty(event, '${party.Id}', '${safeNameForAttr}')" style="flex: 1; padding: 8px; background: #d32f2f; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem;">🗑️ Delete</button>
+                    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #444; display: flex; flex-wrap: wrap; gap: 10px;">
+                        ${startButton}
+                        <button type="button" data-party-action="play" data-party-id="${encodedPartyId}" data-item-id="${encodedItemId}" style="flex: 1 1 9em; padding: 8px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem;">▶️ 在 Emby 中打开</button>
+                        <button type="button" data-party-action="delete" data-party-id="${encodedPartyId}" data-party-name="${encodedPartyName}" style="flex: 1 1 9em; padding: 8px; background: #d32f2f; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem;">🗑️ 删除房间</button>
                     </div>
                 </div>
             `;
@@ -595,110 +917,50 @@
             div.textContent = text;
             return div.innerHTML;
         }
-        
-        function showPasswordModal(title, label) {
-            return new Promise((resolve, reject) => {
-                const modal = document.getElementById('passwordModal');
-                const titleElement = document.getElementById('passwordModalTitle');
-                const labelElement = document.getElementById('passwordModalLabel');
-                const input = document.getElementById('passwordModalInput');
-                const okBtn = document.getElementById('passwordModalOk');
-                const cancelBtn = document.getElementById('passwordModalCancel');
-                
-                titleElement.textContent = title;
-                labelElement.textContent = label;
-                input.value = '';
-                modal.style.display = 'flex';
-                input.focus();
-                
-                const handleOk = () => {
-                    const value = input.value;
-                    cleanup();
-                    resolve(value);
-                };
-                
-                const handleCancel = () => {
-                    cleanup();
-                    resolve(null);
-                };
-                
-                const handleKeyPress = (e) => {
-                    if (e.key === 'Enter') handleOk();
-                    if (e.key === 'Escape') handleCancel();
-                };
-                
-                const cleanup = () => {
-                    modal.style.display = 'none';
-                    okBtn.removeEventListener('click', handleOk);
-                    cancelBtn.removeEventListener('click', handleCancel);
-                    input.removeEventListener('keypress', handleKeyPress);
-                };
-                
-                okBtn.addEventListener('click', handleOk);
-                cancelBtn.addEventListener('click', handleCancel);
-                input.addEventListener('keypress', handleKeyPress);
-            });
+
+        function encodeDataAttribute(value) {
+            return escapeHtml(encodeURIComponent(String(value || '')));
         }
-        
-        function showUsernameModal() {
-            return new Promise((resolve, reject) => {
-                const modal = document.getElementById('usernameModal');
-                const input = document.getElementById('usernameModalInput');
-                const okBtn = document.getElementById('usernameModalOk');
-                const cancelBtn = document.getElementById('usernameModalCancel');
-                
-                input.value = '';
-                modal.style.display = 'flex';
-                input.focus();
-                
-                const handleOk = () => {
-                    const value = input.value.trim();
-                    cleanup();
-                    resolve(value);
-                };
-                
-                const handleCancel = () => {
-                    cleanup();
-                    resolve(null);
-                };
-                
-                const handleKeyPress = (e) => {
-                    if (e.key === 'Enter') handleOk();
-                    if (e.key === 'Escape') handleCancel();
-                };
-                
-                const cleanup = () => {
-                    modal.style.display = 'none';
-                    okBtn.removeEventListener('click', handleOk);
-                    cancelBtn.removeEventListener('click', handleCancel);
-                    input.removeEventListener('keypress', handleKeyPress);
-                };
-                
-                okBtn.addEventListener('click', handleOk);
-                cancelBtn.addEventListener('click', handleCancel);
-                input.addEventListener('keypress', handleKeyPress);
-            });
-        }
-        
-        async function joinParty(partyId, requiresPassword, partyName) {
-            if (requiresPassword) {
-                const password = await showPasswordModal(
-                    'Party Password Required',
-                    `Enter password for "${partyName}":`
-                );
-                if (!password) return;
-                
-                sessionStorage.setItem(`party_${partyId}_password`, password);
+
+        function decodeDataAttribute(value) {
+            try {
+                return decodeURIComponent(value || '');
+            } catch (_) {
+                return '';
             }
-            
-            const username = await showUsernameModal();
-            if (!username) {
-                alert('Username is required to join the chat!');
+        }
+
+        function formatItemType(itemType) {
+            if (itemType === 'Movie') return '电影';
+            if (itemType === 'Episode') return '单集';
+            if (itemType === 'Series') return '电视剧';
+            return itemType || '未知类型';
+        }
+
+        function handlePartyGridClick(event) {
+            const actionButton = event.target.closest('[data-party-action]');
+            if (!actionButton || !event.currentTarget.contains(actionButton)) {
                 return;
             }
-            
-            const chatUrl = `chat.html?partyId=${encodeURIComponent(partyId)}&username=${encodeURIComponent(username)}&partyName=${encodeURIComponent(partyName)}`;
-            window.open(chatUrl, `chat_${partyId}`, 'width=500,height=700,resizable=yes,scrollbars=yes');
+
+            const partyId = decodeDataAttribute(actionButton.dataset.partyId);
+            if (actionButton.dataset.partyAction === 'play') {
+                playVideo(event, partyId, decodeDataAttribute(actionButton.dataset.itemId));
+            } else if (actionButton.dataset.partyAction === 'delete') {
+                deleteParty(event, partyId, decodeDataAttribute(actionButton.dataset.partyName));
+            } else if (actionButton.dataset.partyAction === 'start') {
+                startParty(event, partyId);
+            }
+        }
+
+        function getParticipantCount(party) {
+            if (Number.isFinite(party.ParticipantCount)) {
+                return party.ParticipantCount;
+            }
+            if (Array.isArray(party.Participants)) {
+                return party.Participants.length;
+            }
+            return 0;
         }
         
         let cachedServerId = null;
@@ -724,9 +986,9 @@
         
         async function playVideo(event, partyId, itemId) {
             event.stopPropagation();
-            
+
             if (!itemId) {
-                alert('No video selected for this party');
+                alert('该房间尚未选择可播放的视频。');
                 return;
             }
             
@@ -739,18 +1001,44 @@
                 : `${embyServerUrl}/web/index.html#!/item?id=${encodeURIComponent(itemId)}&context=home`;
             window.open(playUrl, '_blank');
         }
-        
+
+        async function startParty(event, partyId) {
+            event.stopPropagation();
+            if (!partyId) {
+                alert('无法开始播放：房间标识无效。');
+                return;
+            }
+
+            try {
+                const response = await apiFetch(`${window.location.origin}/api/parties/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ partyId: partyId })
+                });
+
+                if (!response.ok) {
+                    const error = await readJsonSafely(response);
+                    throw new Error(localizeApiError(error, response.status, '服务器未能开始播放'));
+                }
+
+                alert('房间已开始播放。');
+                loadParties();
+            } catch (err) {
+                alert(`开始播放失败：${err.message}`);
+            }
+        }
+
         async function deleteParty(event, partyId, partyName) {
             event.stopPropagation();
-            
-            if (!confirm(`Are you sure you want to delete "${partyName}"?`)) {
+
+            if (!confirm(`确定要删除房间“${partyName}”吗？`)) {
                 return;
             }
             
             const webServerUrl = window.location.origin;
 
             try {
-                const response = await fetch(`${webServerUrl}/api/parties/delete`, {
+                const response = await apiFetch(`${webServerUrl}/api/parties/delete`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -759,14 +1047,14 @@
                 });
                 
                 if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.error || 'Failed to delete party');
+                    const error = await readJsonSafely(response);
+                    throw new Error(localizeApiError(error, response.status, '服务器未能删除房间'));
                 }
-                
-                alert('Party deleted successfully!');
+
+                alert('房间已删除。');
                 loadParties();
             } catch (err) {
-                alert(`Error deleting party: ${err.message}`);
+                alert(`删除房间失败：${err.message}`);
             }
         }
         
@@ -788,13 +1076,13 @@
                 localStorage.setItem('watchPartyServer', embyServerUrl);
                 
                 if (!embyServerUrl) {
-                    throw new Error('Please enter an Emby server URL');
+                    throw new Error('请先配置 Emby 服务器地址');
                 }
                 
                 const url = `${webServerUrl}/api/parties`;
                 
                 console.log('Fetching from:', url);
-                const response = await fetch(url, {
+                const response = await apiFetch(url, {
                     headers: password ? { 'X-Party-Password': password } : {}
                 });
                 
@@ -804,11 +1092,11 @@
                     if (response.status === 401 || response.status === 403) {
                         sessionStorage.removeItem('watchPartyPassword');
                         document.getElementById('password').value = '';
-                        throw new Error('Invalid password. Please enter the correct password.');
+                        throw new Error('密码无效，请输入正确的房间密码');
                     }
                     const errorText = await response.text();
                     console.error('Response error:', errorText);
-                    throw new Error(`Failed to load parties (${response.status}): ${errorText}`);
+                    throw new Error(`加载房间失败（HTTP ${response.status}）`);
                 }
                 
                 const data = await response.json();
@@ -827,7 +1115,7 @@
                 
                 document.getElementById('totalParties').textContent = parties.length;
                 document.getElementById('activeParties').textContent = parties.filter(p => p.IsActive).length;
-                document.getElementById('totalParticipants').textContent = parties.reduce((sum, p) => sum + (p.ParticipantCount || 0), 0);
+                document.getElementById('totalParticipants').textContent = parties.reduce((sum, party) => sum + getParticipantCount(party), 0);
                 
                 const grid = document.getElementById('partyGrid');
                 const loading = document.getElementById('loading');
@@ -835,7 +1123,7 @@
                 
                 if (parties.length === 0) {
                     loading.style.display = 'block';
-                    loading.textContent = 'No watch parties found';
+                    loading.textContent = '尚未创建一起看房间';
                     grid.style.display = 'none';
                 } else {
                     loading.style.display = 'none';
@@ -849,7 +1137,7 @@
             } catch (err) {
                 console.error('Error loading parties:', err);
                 const errorEl = document.getElementById('error');
-                errorEl.textContent = `Error: ${err.message}. Check browser console (F12) for details.`;
+                errorEl.textContent = `加载失败：${err.message}。详细信息请查看浏览器控制台（F12）。`;
                 errorEl.style.display = 'block';
                 document.getElementById('loading').style.display = 'none';
             }
@@ -881,6 +1169,11 @@
                     const userData = await userResponse.json();
                     if (userData.authenticated) {
                         window.ssoUsername = userData.username;
+                        const ssoCsrfToken = userData.csrfToken
+                            || getResponseHeader(userResponse, 'X-CSRF-Token');
+                        if (ssoCsrfToken) {
+                            sessionStorage.setItem(csrfTokenStorageKey, ssoCsrfToken);
+                        }
                         console.log('SSO user:', userData.username);
                     }
                 }
@@ -889,6 +1182,8 @@
             }
 
             const refreshBtn = document.getElementById('refreshButton');
+            const refreshFloatingBtn = document.getElementById('refreshFloatingButton');
+            const partyGrid = document.getElementById('partyGrid');
             
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', loadParties);
@@ -896,6 +1191,12 @@
             } else {
                 console.error('Refresh button not found!');
             }
+
+            if (refreshFloatingBtn) {
+                refreshFloatingBtn.addEventListener('click', loadParties);
+            }
+
+            partyGrid.addEventListener('click', handlePartyGridClick);
             
             const createBtn = document.getElementById('createButton');
             if (createBtn) {
@@ -907,6 +1208,13 @@
             document.getElementById('newIsSeriesParty').addEventListener('change', function(e) {
                 updateExternalSeriesPartyMode(e.target.checked);
             });
+            document.getElementById('newWaitingRoom').addEventListener('change', updateWaitingRoomOptions);
+            document.getElementById('newAutoStart').addEventListener('change', updateWaitingRoomOptions);
+            document.getElementById('newAutoKick').addEventListener('change', updateInactiveUserOptions);
+            document.getElementById('newMasterUser').addEventListener('change', ensureMasterIsAllowed);
+            document.getElementById('newAllowedUsers').addEventListener('change', ensureMasterIsAllowed);
+            updateWaitingRoomOptions();
+            updateInactiveUserOptions();
             
             document.getElementById('newSourceLibrary').addEventListener('change', function(e) {
                 const libraryId = e.target.value;
@@ -969,13 +1277,41 @@
             const searchInput = document.getElementById(searchInputId);
             const hiddenInput = document.getElementById(hiddenInputId);
             const dropdown = document.getElementById(dropdownId);
-            
+
             let searchTimeout;
-            
+
+            const setExpanded = expanded => {
+                dropdown.classList.toggle('show', expanded);
+                searchInput.setAttribute('aria-expanded', String(expanded));
+                if (!expanded) {
+                    searchInput.removeAttribute('aria-activedescendant');
+                }
+            };
+
+            const moveActiveOption = direction => {
+                const options = Array.from(dropdown.querySelectorAll('[role="option"]'));
+                if (options.length === 0) {
+                    return;
+                }
+
+                let index = options.findIndex(option => option.classList.contains('selected'));
+                index = index < 0
+                    ? (direction > 0 ? 0 : options.length - 1)
+                    : (index + direction + options.length) % options.length;
+
+                options.forEach((option, optionIndex) => {
+                    const selected = optionIndex === index;
+                    option.classList.toggle('selected', selected);
+                    option.setAttribute('aria-selected', String(selected));
+                });
+                searchInput.setAttribute('aria-activedescendant', options[index].id);
+                options[index].scrollIntoView({ block: 'nearest' });
+            };
+
             searchInput.addEventListener('focus', function() {
                 if (window[`${searchInputId}_items`] && window[`${searchInputId}_items`].length > 0) {
                     renderDropdown(searchInputId, hiddenInputId, dropdownId, '', onSelectCallback, onLoadMoreCallback);
-                    dropdown.classList.add('show');
+                    setExpanded(true);
                 }
             });
             
@@ -992,16 +1328,43 @@
                 } else if (query.length === 0) {
                     if (window[`${searchInputId}_items`] && window[`${searchInputId}_items`].length > 0) {
                         renderDropdown(searchInputId, hiddenInputId, dropdownId, query, onSelectCallback, onLoadMoreCallback);
-                        dropdown.classList.add('show');
+                        setExpanded(true);
                     } else {
-                        dropdown.classList.remove('show');
+                        setExpanded(false);
                     }
+                } else {
+                    setExpanded(false);
                 }
             });
-            
+
+            searchInput.addEventListener('keydown', function(event) {
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    if (!dropdown.classList.contains('show')) {
+                        renderDropdown(searchInputId, hiddenInputId, dropdownId, searchInput.value, onSelectCallback, onLoadMoreCallback);
+                        setExpanded(true);
+                    }
+                    moveActiveOption(event.key === 'ArrowDown' ? 1 : -1);
+                    return;
+                }
+
+                if (event.key === 'Enter' && dropdown.classList.contains('show')) {
+                    const activeOption = dropdown.querySelector('[role="option"].selected');
+                    if (activeOption) {
+                        event.preventDefault();
+                        activeOption.click();
+                    }
+                } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    setExpanded(false);
+                } else if (event.key === 'Tab') {
+                    setExpanded(false);
+                }
+            });
+
             document.addEventListener('click', function(e) {
                 if (!searchInput.contains(e.target) && !dropdown.contains(e.target)) {
-                    dropdown.classList.remove('show');
+                    setExpanded(false);
                 }
             });
         }
@@ -1024,25 +1387,31 @@
             if (filteredItems.length === 0 && !metadata.hasMore) {
                 const noResults = document.createElement('div');
                 noResults.className = 'autocomplete-item';
-                noResults.textContent = 'No results found';
+                noResults.textContent = '未找到匹配结果';
+                noResults.setAttribute('role', 'status');
                 noResults.style.textAlign = 'center';
                 noResults.style.color = '#999';
                 dropdown.appendChild(noResults);
                 return;
             }
-            
-            filteredItems.forEach(item => {
+
+            filteredItems.forEach((item, index) => {
                 const div = document.createElement('div');
                 div.className = 'autocomplete-item';
                 div.textContent = item.text;
                 div.dataset.value = item.id;
-                
+                div.id = `${dropdownId}-option-${index}`;
+                div.setAttribute('role', 'option');
+                div.setAttribute('aria-selected', 'false');
+
                 div.addEventListener('click', function() {
                     searchInput.value = item.text;
                     hiddenInput.value = item.id;
                     hiddenInput.dataset.type = item.type || '';
                     hiddenInput.dataset.name = item.name || item.text;
                     dropdown.classList.remove('show');
+                    searchInput.setAttribute('aria-expanded', 'false');
+                    searchInput.removeAttribute('aria-activedescendant');
                     
                     if (onSelectCallback) {
                         onSelectCallback({
@@ -1060,7 +1429,10 @@
             if (metadata.hasMore && !lowerQuery) {
                 const loadMore = document.createElement('div');
                 loadMore.className = 'autocomplete-item load-more';
-                loadMore.textContent = `--- Load More (${metadata.currentCount} of ${metadata.totalCount}) ---`;
+                loadMore.id = `${dropdownId}-load-more`;
+                loadMore.setAttribute('role', 'option');
+                loadMore.setAttribute('aria-selected', 'false');
+                loadMore.textContent = `—— 加载更多（已加载 ${metadata.currentCount} / ${metadata.totalCount}）——`;
                 loadMore.addEventListener('click', function() {
                     if (onLoadMoreCallback) {
                         onLoadMoreCallback();
@@ -1073,12 +1445,10 @@
         async function performSearch(searchInputId, query, onSelectCallback, onLoadMoreCallback) {
             const dropdown = document.getElementById(`${searchInputId}Dropdown`);
             const webServerUrl = window.location.origin;
-            const sessionToken = sessionStorage.getItem('watchPartySessionToken');
-            
             if (searchInputId === 'searchContent' && window.currentLibraryId) {
                 window[`${searchInputId}_searchMode`] = true;
                 try {
-                    const response = await fetch(`${webServerUrl}/api/emby/Items?ParentId=${window.currentLibraryId}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=SortName&Fields=Id,Name,ProductionYear,Type&StartIndex=0&Limit=50&SearchTerm=${encodeURIComponent(query)}`, {
+                    const response = await apiFetch(`${webServerUrl}/api/emby/Items?ParentId=${window.currentLibraryId}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=SortName&Fields=Id,Name,ProductionYear,Type&StartIndex=0&Limit=50&SearchTerm=${encodeURIComponent(query)}`, {
                         headers: {}
                     });
                     const data = await response.json();
@@ -1087,7 +1457,7 @@
                     
                     window[`${searchInputId}_items`] = items.map(item => {
                         const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
-                        const type = item.Type === 'Series' ? ' [TV Show]' : ' [Movie]';
+                        const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
                         return {
                             id: item.Id,
                             text: `${item.Name}${year}${type}`,
@@ -1104,13 +1474,14 @@
                     
                     renderDropdown(searchInputId, searchInputId === 'searchContent' ? 'newContentItem' : searchInputId === 'searchSeason' ? 'newSeason' : 'newEpisode', `${searchInputId}Dropdown`, '', onSelectCallback, onLoadMoreCallback);
                     dropdown.classList.add('show');
+                    document.getElementById(searchInputId).setAttribute('aria-expanded', 'true');
                 } catch (err) {
                     console.error('Error searching content:', err);
                 }
             } else if (searchInputId === 'searchSeason' && window.currentSeriesId) {
                 window[`${searchInputId}_searchMode`] = true;
                 try {
-                    const response = await fetch(`${webServerUrl}/api/emby/Shows/${window.currentSeriesId}/Seasons?Fields=Id,Name,IndexNumber&StartIndex=0&Limit=50&SearchTerm=${encodeURIComponent(query)}`, {
+                    const response = await apiFetch(`${webServerUrl}/api/emby/Shows/${window.currentSeriesId}/Seasons?Fields=Id,Name,IndexNumber&StartIndex=0&Limit=50&SearchTerm=${encodeURIComponent(query)}`, {
                         headers: {}
                     });
                     const data = await response.json();
@@ -1121,8 +1492,8 @@
                         const seasonNum = season.IndexNumber ? ` ${season.IndexNumber}` : '';
                         return {
                             id: season.Id,
-                            text: `${season.Name || 'Season' + seasonNum}`,
-                            name: season.Name || 'Season' + seasonNum
+                            text: `${season.Name || '第' + seasonNum + '季'}`,
+                            name: season.Name || '第' + seasonNum + '季'
                         };
                     });
                     
@@ -1134,6 +1505,7 @@
                     
                     renderDropdown(searchInputId, 'newSeason', `${searchInputId}Dropdown`, '', onSelectCallback, onLoadMoreCallback);
                     dropdown.classList.add('show');
+                    document.getElementById(searchInputId).setAttribute('aria-expanded', 'true');
                 } catch (err) {
                     console.error('Error searching seasons:', err);
                 }
@@ -1141,7 +1513,7 @@
                 const seriesId = window.currentSeriesId;
                 window[`${searchInputId}_searchMode`] = true;
                 try {
-                    const response = await fetch(`${webServerUrl}/api/emby/Shows/${seriesId}/Episodes?SeasonId=${window.currentSeasonId}&Fields=Id,Name,IndexNumber,ParentIndexNumber&StartIndex=0&Limit=50&SearchTerm=${encodeURIComponent(query)}`, {
+                    const response = await apiFetch(`${webServerUrl}/api/emby/Shows/${seriesId}/Episodes?SeasonId=${window.currentSeasonId}&Fields=Id,Name,IndexNumber,ParentIndexNumber&StartIndex=0&Limit=50&SearchTerm=${encodeURIComponent(query)}`, {
                         headers: {}
                     });
                     const data = await response.json();
@@ -1166,6 +1538,7 @@
                     
                     renderDropdown(searchInputId, 'newEpisode', `${searchInputId}Dropdown`, '', onSelectCallback, onLoadMoreCallback);
                     dropdown.classList.add('show');
+                    document.getElementById(searchInputId).setAttribute('aria-expanded', 'true');
                 } catch (err) {
                     console.error('Error searching episodes:', err);
                 }
@@ -1178,29 +1551,28 @@
             
             const embyServerUrl = document.getElementById('serverUrl').value.trim();
             if (!embyServerUrl) {
-                alert('Please set Emby server URL first');
+                alert('请先在插件设置中配置 Emby 服务器地址。');
                 modal.style.display = 'none';
                 return;
             }
             
             await loadLibrariesForCreate(embyServerUrl);
             await loadUsersForCreate(embyServerUrl);
+            document.getElementById('newSourceLibrary').focus();
         }
         
         function hideCreatePartyModal() {
             const modal = document.getElementById('createPartyModal');
             modal.style.display = 'none';
             document.getElementById('newIsActive').checked = true;
-            document.getElementById('newMaxParticipants').value = 10;
+            document.getElementById('newMaxParticipants').value = 50;
             document.getElementById('newPartyPassword').value = '';
             document.getElementById('newMasterUser').value = '';
             document.getElementById('newAllowedUsers').selectedIndex = -1;
             document.getElementById('newWaitingRoom').checked = true;
             document.getElementById('newAutoStart').checked = true;
-            document.getElementById('newMinReady').value = 2;
+            document.getElementById('newMinReady').value = 1;
             document.getElementById('newPauseControl').value = 'Anyone';
-            document.getElementById('newHostOnlySeek').checked = true;
-            document.getElementById('newLockSeekAhead').checked = true;
             document.getElementById('newSyncTolerance').value = 10;
             document.getElementById('newMaxBuffer').value = 30;
             document.getElementById('newAutoKick').checked = true;
@@ -1208,6 +1580,8 @@
             document.getElementById('seriesControls').style.display = 'none';
             document.getElementById('newIsSeriesParty').checked = false;
             updateExternalSeriesPartyMode(false);
+            updateWaitingRoomOptions();
+            updateInactiveUserOptions();
             
             document.getElementById('searchContent').value = '';
             document.getElementById('newContentItem').value = '';
@@ -1219,6 +1593,10 @@
             document.getElementById('searchContentDropdown').classList.remove('show');
             document.getElementById('searchSeasonDropdown').classList.remove('show');
             document.getElementById('searchEpisodeDropdown').classList.remove('show');
+            ['searchContent', 'searchSeason', 'searchEpisode'].forEach(id => {
+                document.getElementById(id).setAttribute('aria-expanded', 'false');
+                document.getElementById(id).removeAttribute('aria-activedescendant');
+            });
         }
 
         function updateExternalSeriesPartyMode(isSeriesParty) {
@@ -1226,19 +1604,79 @@
             const episodeLabel = document.getElementById('newEpisodeLabel');
 
             if (isSeriesParty) {
-                episodeLabel.textContent = 'Starting Episode (Optional):';
-                hint.textContent = 'Series Party mode: every regular episode is queued across all seasons. Choose a season or episode only when you want a different starting point.';
+                episodeLabel.textContent = '起播集（可选）';
+                hint.textContent = '整部剧集房间：会按季和集数加入所有常规剧集。只有需要更改起播位置时才需选择季或集。';
             } else {
-                episodeLabel.textContent = 'Episode:';
-                hint.textContent = 'Single-episode mode: select a season and episode, or enable Series Party for the full ordered series queue.';
+                episodeLabel.textContent = '选择集';
+                hint.textContent = '单集模式：请选择季和集；如需完整有序队列，请开启整部剧集房间。';
+            }
+        }
+
+        function updateWaitingRoomOptions() {
+            const waitingRoom = document.getElementById('newWaitingRoom');
+            const autoStart = document.getElementById('newAutoStart');
+            const minReady = document.getElementById('newMinReady');
+            const waitingRoomOptions = document.getElementById('waitingRoomOptions');
+            const minReadyOptions = document.getElementById('minReadyOptions');
+            const waitingRoomEnabled = waitingRoom.checked;
+            const autoStartEnabled = waitingRoomEnabled && autoStart.checked;
+
+            waitingRoomOptions.hidden = !waitingRoomEnabled;
+            waitingRoomOptions.style.display = waitingRoomEnabled ? 'block' : 'none';
+            minReadyOptions.hidden = !autoStartEnabled;
+            minReadyOptions.style.display = autoStartEnabled ? 'block' : 'none';
+            autoStart.disabled = !waitingRoomEnabled;
+            minReady.disabled = !autoStartEnabled;
+        }
+
+        function updateInactiveUserOptions() {
+            const autoKick = document.getElementById('newAutoKick');
+            const inactiveTimeout = document.getElementById('newInactiveTimeout');
+            const inactiveTimeoutOptions = document.getElementById('inactiveTimeoutOptions');
+            const enabled = autoKick.checked;
+
+            inactiveTimeoutOptions.hidden = !enabled;
+            inactiveTimeoutOptions.style.display = enabled ? 'block' : 'none';
+            inactiveTimeout.disabled = !enabled;
+        }
+
+        function getSelectedAllowedUserIds() {
+            const allowedUsersSelect = document.getElementById('newAllowedUsers');
+            const selectedIds = Array.from(allowedUsersSelect.selectedOptions || [])
+                .map(option => option.value)
+                .filter(Boolean);
+            const masterUserId = document.getElementById('newMasterUser').value;
+
+            if (selectedIds.length > 0 && masterUserId && !selectedIds.includes(masterUserId)) {
+                selectedIds.unshift(masterUserId);
+            }
+
+            return selectedIds;
+        }
+
+        function ensureMasterIsAllowed() {
+            const selectedIds = getSelectedAllowedUserIds();
+            if (selectedIds.length === 0) {
+                return;
+            }
+
+            const allowedUsersSelect = document.getElementById('newAllowedUsers');
+            const masterUserId = document.getElementById('newMasterUser').value;
+            if (!allowedUsersSelect.options || !masterUserId) {
+                return;
+            }
+
+            const masterOption = Array.from(allowedUsersSelect.options)
+                .find(option => option.value === masterUserId);
+            if (masterOption) {
+                masterOption.selected = true;
             }
         }
         
         async function loadLibrariesForCreate(serverUrl) {
             try {
                 const webServerUrl = window.location.origin;
-                const sessionToken = sessionStorage.getItem('watchPartySessionToken');
-                const response = await fetch(`${webServerUrl}/api/emby/Library/MediaFolders`, {
+                const response = await apiFetch(`${webServerUrl}/api/emby/Library/MediaFolders`, {
                     headers: { 'Accept': 'application/json' }
                 });
                 const data = await response.json();
@@ -1246,7 +1684,7 @@
                 
                 const sourceSelect = document.getElementById('newSourceLibrary');
                 
-                sourceSelect.innerHTML = '<option value="">-- Select library --</option>';
+                sourceSelect.innerHTML = '<option value="">-- 选择媒体库 --</option>';
                 
                 libraries.forEach(lib => {
                     const sourceOption = document.createElement('option');
@@ -1264,8 +1702,7 @@
         async function loadUsersForCreate(serverUrl) {
             try {
                 const webServerUrl = window.location.origin;
-                const sessionToken = sessionStorage.getItem('watchPartySessionToken');
-                const response = await fetch(`${webServerUrl}/api/emby/Users`, {
+                const response = await apiFetch(`${webServerUrl}/api/emby/Users`, {
                     headers: { 'Accept': 'application/json' }
                 });
                 const users = await response.json();
@@ -1273,7 +1710,7 @@
                 const masterSelect = document.getElementById('newMasterUser');
                 const allowedSelect = document.getElementById('newAllowedUsers');
                 
-                masterSelect.innerHTML = '<option value="">-- Select master user --</option>';
+                masterSelect.innerHTML = '<option value="">-- 选择主控用户 --</option>';
                 allowedSelect.innerHTML = '';
                 
                 let ssoMatchId = null;
@@ -1303,10 +1740,9 @@
         
         async function loadContentForCreate(libraryId) {
             const webServerUrl = window.location.origin;
-            const sessionToken = sessionStorage.getItem('watchPartySessionToken');
             window.searchContent_searchMode = false;
             try {
-                const response = await fetch(`${webServerUrl}/api/emby/Items?ParentId=${libraryId}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=SortName&Fields=Id,Name,ProductionYear,Type&StartIndex=0&Limit=100`, {
+                const response = await apiFetch(`${webServerUrl}/api/emby/Items?ParentId=${libraryId}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=SortName&Fields=Id,Name,ProductionYear,Type&StartIndex=0&Limit=100`, {
                     headers: {}
                 });
                 const data = await response.json();
@@ -1315,7 +1751,7 @@
                 
                 window.searchContent_items = items.map(item => {
                     const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
-                    const type = item.Type === 'Series' ? ' [TV Show]' : ' [Movie]';
+                    const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
                     return {
                         id: item.Id,
                         text: `${item.Name}${year}${type}`,
@@ -1338,10 +1774,9 @@
         
         async function loadSeasonsForCreate(seriesId) {
             const webServerUrl = window.location.origin;
-            const sessionToken = sessionStorage.getItem('watchPartySessionToken');
             window.searchSeason_searchMode = false;
             try {
-                const response = await fetch(`${webServerUrl}/api/emby/Shows/${seriesId}/Seasons?Fields=Id,Name,IndexNumber&StartIndex=0&Limit=100`, {
+                const response = await apiFetch(`${webServerUrl}/api/emby/Shows/${seriesId}/Seasons?Fields=Id,Name,IndexNumber&StartIndex=0&Limit=100`, {
                     headers: {}
                 });
                 const data = await response.json();
@@ -1352,8 +1787,8 @@
                     const seasonNum = season.IndexNumber ? ` ${season.IndexNumber}` : '';
                     return {
                         id: season.Id,
-                        text: `${season.Name || 'Season' + seasonNum}`,
-                        name: season.Name || 'Season' + seasonNum
+                        text: `${season.Name || '第' + seasonNum + '季'}`,
+                        name: season.Name || '第' + seasonNum + '季'
                     };
                 });
                 
@@ -1372,9 +1807,8 @@
         async function loadEpisodesForCreate(seriesId, seasonId) {
             const webServerUrl = window.location.origin;
             window.searchEpisode_searchMode = false;
-            const sessionToken = sessionStorage.getItem('watchPartySessionToken');
             try {
-                const response = await fetch(`${webServerUrl}/api/emby/Shows/${seriesId}/Episodes?SeasonId=${seasonId}&Fields=Id,Name,IndexNumber,ParentIndexNumber&StartIndex=0&Limit=100`, {
+                const response = await apiFetch(`${webServerUrl}/api/emby/Shows/${seriesId}/Episodes?SeasonId=${seasonId}&Fields=Id,Name,IndexNumber,ParentIndexNumber&StartIndex=0&Limit=100`, {
                     headers: {}
                 });
                 const data = await response.json();
@@ -1407,9 +1841,8 @@
             if (!window.currentLibraryId) return;
             
             const webServerUrl = window.location.origin;
-            const sessionToken = sessionStorage.getItem('watchPartySessionToken');
             try {
-                const response = await fetch(`${webServerUrl}/api/emby/Items?ParentId=${window.currentLibraryId}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=SortName&Fields=Id,Name,ProductionYear,Type&StartIndex=${window.contentOffset}&Limit=100`, {
+                const response = await apiFetch(`${webServerUrl}/api/emby/Items?ParentId=${window.currentLibraryId}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=SortName&Fields=Id,Name,ProductionYear,Type&StartIndex=${window.contentOffset}&Limit=100`, {
                     headers: {}
                 });
                 const data = await response.json();
@@ -1418,7 +1851,7 @@
                 
                 const newItems = items.map(item => {
                     const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
-                    const type = item.Type === 'Series' ? ' [TV Show]' : ' [Movie]';
+                    const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
                     return {
                         id: item.Id,
                         text: `${item.Name}${year}${type}`,
@@ -1449,9 +1882,8 @@
             if (!window.currentSeriesId) return;
             
             const webServerUrl = window.location.origin;
-            const sessionToken = sessionStorage.getItem('watchPartySessionToken');
             try {
-                const response = await fetch(`${webServerUrl}/api/emby/Shows/${window.currentSeriesId}/Seasons?Fields=Id,Name,IndexNumber&StartIndex=${window.seasonsOffset}&Limit=100`, {
+                const response = await apiFetch(`${webServerUrl}/api/emby/Shows/${window.currentSeriesId}/Seasons?Fields=Id,Name,IndexNumber&StartIndex=${window.seasonsOffset}&Limit=100`, {
                     headers: {}
                 });
                 const data = await response.json();
@@ -1462,8 +1894,8 @@
                     const seasonNum = season.IndexNumber ? ` ${season.IndexNumber}` : '';
                     return {
                         id: season.Id,
-                        text: `${season.Name || 'Season' + seasonNum}`,
-                        name: season.Name || 'Season' + seasonNum
+                        text: `${season.Name || '第' + seasonNum + '季'}`,
+                        name: season.Name || '第' + seasonNum + '季'
                     };
                 });
                 
@@ -1491,9 +1923,8 @@
             const seriesId = document.getElementById('newContentItem').value;
             
             const webServerUrl = window.location.origin;
-            const sessionToken = sessionStorage.getItem('watchPartySessionToken');
             try {
-                const response = await fetch(`${webServerUrl}/api/emby/Shows/${seriesId}/Episodes?SeasonId=${window.currentSeasonId}&Fields=Id,Name,IndexNumber,ParentIndexNumber&StartIndex=${window.episodesOffset}&Limit=100`, {
+                const response = await apiFetch(`${webServerUrl}/api/emby/Shows/${seriesId}/Episodes?SeasonId=${window.currentSeasonId}&Fields=Id,Name,IndexNumber,ParentIndexNumber&StartIndex=${window.episodesOffset}&Limit=100`, {
                     headers: {}
                 });
                 const data = await response.json();
@@ -1530,12 +1961,12 @@
 
         async function loadAllSeriesEpisodesForCreate(seriesId) {
             const webServerUrl = window.location.origin;
-            const response = await fetch(`${webServerUrl}/api/emby/Shows/${seriesId}/Episodes?Fields=Id,Name,IndexNumber,ParentIndexNumber,SeasonId&StartIndex=0&Limit=10000`, {
+            const response = await apiFetch(`${webServerUrl}/api/emby/Shows/${seriesId}/Episodes?Fields=Id,Name,IndexNumber,ParentIndexNumber,SeasonId&StartIndex=0&Limit=10000`, {
                 headers: {}
             });
 
             if (!response.ok) {
-                throw new Error('Failed to load the TV show episode queue.');
+                throw new Error('无法加载电视剧的剧集队列。');
             }
 
             const data = await response.json();
@@ -1569,19 +2000,61 @@
             const maxParticipants = parseInt(document.getElementById('newMaxParticipants').value);
             const partyPassword = document.getElementById('newPartyPassword').value.trim();
             const masterUserId = document.getElementById('newMasterUser').value;
+            const isWaitingRoom = document.getElementById('newWaitingRoom').checked;
+            const autoStartWhenReady = isWaitingRoom && document.getElementById('newAutoStart').checked;
+            const minReadyCount = parseInt(document.getElementById('newMinReady').value);
+            const syncToleranceSeconds = parseInt(document.getElementById('newSyncTolerance').value);
+            const maxBufferThresholdSeconds = parseInt(document.getElementById('newMaxBuffer').value);
+            const autoKickInactive = document.getElementById('newAutoKick').checked;
+            const inactiveTimeoutMinutes = parseInt(document.getElementById('newInactiveTimeout').value);
 
             if (!sourceLibraryId) {
-                alert('Please select a source library');
+                alert('请选择内容媒体库。');
                 return;
             }
             
             if (!contentId) {
-                alert('Please select content to watch');
+                alert('请选择要一起观看的内容。');
                 return;
             }
             
             if (!masterUserId) {
-                alert('Please select a master user');
+                alert('请选择负责控制播放的主控用户。');
+                return;
+            }
+
+            if (!Number.isInteger(maxParticipants) || maxParticipants < 2 || maxParticipants > 100) {
+                alert('最多参与人数必须在 2 到 100 之间。');
+                return;
+            }
+
+            if (autoStartWhenReady
+                && (!Number.isInteger(minReadyCount)
+                    || minReadyCount < 1
+                    || minReadyCount > maxParticipants)) {
+                alert(`最低就绪人数必须在 1 到 ${maxParticipants} 之间。`);
+                return;
+            }
+
+            if (!Number.isInteger(syncToleranceSeconds)
+                || syncToleranceSeconds < 1
+                || syncToleranceSeconds > 60) {
+                alert('主控跳转识别阈值必须在 1 到 60 秒之间。');
+                return;
+            }
+
+            if (!Number.isInteger(maxBufferThresholdSeconds)
+                || maxBufferThresholdSeconds < 10
+                || maxBufferThresholdSeconds > 120) {
+                alert('缓冲判定阈值必须在 10 到 120 秒之间。');
+                return;
+            }
+
+            if (autoKickInactive
+                && (!Number.isInteger(inactiveTimeoutMinutes)
+                || inactiveTimeoutMinutes < 5
+                || inactiveTimeoutMinutes > 120)) {
+                alert('不活跃超时必须在 5 到 120 分钟之间。');
                 return;
             }
             
@@ -1607,7 +2080,7 @@
                 finalItemType = 'Episode';
 
                 if (!selectedEpisodeId && !isSeriesParty) {
-                    alert('Please select an episode for TV shows');
+                    alert('单集模式下，请选择要观看的剧集。');
                     return;
                 }
 
@@ -1615,12 +2088,12 @@
                     try {
                         episodeQueue = await loadAllSeriesEpisodesForCreate(seriesId);
                     } catch (error) {
-                        alert(error.message || 'Failed to load the TV show episode queue.');
+                        alert(error.message || '无法加载电视剧的剧集队列。');
                         return;
                     }
 
                     if (episodeQueue.length === 0) {
-                        alert('No regular episodes were found for this TV show.');
+                        alert('该电视剧中未找到可加入队列的常规剧集。');
                         return;
                     }
 
@@ -1633,7 +2106,7 @@
                     }
 
                     if (currentEpisodeIndex < 0) {
-                        alert('The selected Series Party starting point was not found in the regular episode queue.');
+                        alert('在常规剧集队列中未找到选定的起播位置。');
                         return;
                     }
 
@@ -1648,8 +2121,7 @@
                 }
             }
             
-            const allowedUsersSelect = document.getElementById('newAllowedUsers');
-            const allowedUserIds = Array.from(allowedUsersSelect.selectedOptions).map(opt => opt.value);
+            const allowedUserIds = getSelectedAllowedUserIds();
             
             try {
                 const partyData = {
@@ -1669,39 +2141,33 @@
                     allowedUserIds: allowedUserIds,
                     masterUserId: masterUserId,
                     password: partyPassword || null,
-                    isWaitingRoom: document.getElementById('newWaitingRoom').checked,
-                    autoStartWhenReady: document.getElementById('newAutoStart').checked,
-                    minReadyCount: parseInt(document.getElementById('newMinReady').value),
+                    isWaitingRoom: isWaitingRoom,
+                    autoStartWhenReady: autoStartWhenReady,
+                    minReadyCount: minReadyCount,
                     pauseControl: document.getElementById('newPauseControl').value,
-                    hostOnlySeek: document.getElementById('newHostOnlySeek').checked,
-                    lockSeekAhead: document.getElementById('newLockSeekAhead').checked,
-                    syncToleranceSeconds: parseInt(document.getElementById('newSyncTolerance').value),
-                    maxBufferThresholdSeconds: parseInt(document.getElementById('newMaxBuffer').value),
-                    autoKickInactiveMinutes: document.getElementById('newAutoKick').checked,
-                    inactiveTimeoutMinutes: parseInt(document.getElementById('newInactiveTimeout').value),
-                    enableNetworkLatencyCompensation: document.getElementById('newEnableNetworkLatencyCompensation').checked,
-                    networkLatencyMeasurementIntervalSeconds: parseInt(document.getElementById('newNetworkLatencyMeasurementIntervalSeconds').value),
-                    autoAdjustForLatency: document.getElementById('newAutoAdjustForLatency').checked,
-                    maxLatencyCompensationMs: parseInt(document.getElementById('newMaxLatencyCompensationMs').value)
+                    syncToleranceSeconds: syncToleranceSeconds,
+                    maxBufferThresholdSeconds: maxBufferThresholdSeconds,
+                    autoKickInactiveMinutes: autoKickInactive,
+                    inactiveTimeoutMinutes: inactiveTimeoutMinutes
                 };
                 
-                const response = await fetch(`${webServerUrl}/api/parties/create`, {
+                const response = await apiFetch(`${webServerUrl}/api/parties/create`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(partyData)
                 });
                 
                 if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.error || 'Failed to create party');
+                    const error = await readJsonSafely(response);
+                    throw new Error(localizeApiError(error, response.status, '服务器未能创建房间'));
                 }
                 
                 const result = await response.json();
-                alert('Party created successfully!');
+                alert('房间创建成功。');
                 hideCreatePartyModal();
                 loadParties();
             } catch (err) {
-                alert(`Error creating party: ${err.message}`);
+                alert(`创建房间失败：${err.message}`);
             }
         }
     </script>

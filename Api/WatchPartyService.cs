@@ -3,14 +3,16 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
-using MediaBrowser.Model.Serialization;
+using MediaBrowser.Controller.Session;
 using MediaBrowser.Model.Services;
 
 namespace WatchPartyForEmby.Api
 {
     [Route("/WatchParty/List", "GET", Summary = "Get all watch parties")]
+    [Authenticated]
     public class WatchPartyListRequest : IReturn<WatchPartyListResponse>
     {
         [ApiMember(Name = "UserId", Description = "User ID to filter accessible parties", IsRequired = false)]
@@ -48,6 +50,7 @@ namespace WatchPartyForEmby.Api
     }
 
     [Route("/WatchParty/{Id}/Participants", "GET", Summary = "Get party participants")]
+    [Authenticated]
     public class PartyParticipantsRequest : IReturn<PartyParticipantsResponse>
     {
         [ApiMember(Name = "Id", Description = "Party ID", IsRequired = true)]
@@ -64,6 +67,8 @@ namespace WatchPartyForEmby.Api
         public string UserId { get; set; }
         public string UserName { get; set; }
         public string SessionId { get; set; }
+        public string Client { get; set; }
+        public bool SupportsRemoteControl { get; set; }
         public bool IsHost { get; set; }
         public bool IsReady { get; set; }
         public bool IsBuffering { get; set; }
@@ -72,12 +77,13 @@ namespace WatchPartyForEmby.Api
     }
 
     [Route("/WatchParty/{Id}/Ready", "POST", Summary = "Mark user as ready")]
+    [Authenticated]
     public class SetReadyRequest : IReturnVoid
     {
         [ApiMember(Name = "Id", Description = "Party ID", IsRequired = true)]
         public string Id { get; set; }
         
-        [ApiMember(Name = "UserId", Description = "User ID", IsRequired = true)]
+        [ApiMember(Name = "UserId", Description = "Deprecated; the authenticated Emby user is used", IsRequired = false)]
         public string UserId { get; set; }
         
         [ApiMember(Name = "IsReady", Description = "Ready state", IsRequired = true)]
@@ -85,16 +91,18 @@ namespace WatchPartyForEmby.Api
     }
 
     [Route("/WatchParty/{Id}/Start", "POST", Summary = "Start party from waiting room")]
+    [Authenticated]
     public class StartPartyRequest : IReturnVoid
     {
         [ApiMember(Name = "Id", Description = "Party ID", IsRequired = true)]
         public string Id { get; set; }
         
-        [ApiMember(Name = "UserId", Description = "User ID (must be host)", IsRequired = true)]
+        [ApiMember(Name = "UserId", Description = "Deprecated; the authenticated Emby user is used", IsRequired = false)]
         public string UserId { get; set; }
     }
 
     [Route("/WatchParty/Users", "GET", Summary = "Get all Emby users")]
+    [Authenticated]
     public class GetUsersRequest : IReturn<GetUsersResponse>
     {
     }
@@ -117,23 +125,37 @@ namespace WatchPartyForEmby.Api
         public string ImageName { get; set; }
     }
 
-    public class WatchPartyService : IService
+    public class WatchPartyService : IService, IRequiresRequest
     {
-        private readonly IJsonSerializer _jsonSerializer;
         private readonly IUserManager _userManager;
+        private readonly IAuthorizationContext _authorizationContext;
+        private readonly ISessionManager _sessionManager;
 
-        public WatchPartyService(IJsonSerializer jsonSerializer, IUserManager userManager)
+        public WatchPartyService(
+            IUserManager userManager,
+            IAuthorizationContext authorizationContext,
+            ISessionManager sessionManager)
         {
-            _jsonSerializer = jsonSerializer;
             _userManager = userManager;
+            _authorizationContext = authorizationContext;
+            _sessionManager = sessionManager;
         }
+
+        public IRequest Request { get; set; }
 
         public object Get(WatchPartyListRequest request)
         {
-            var config = Plugin.Instance.Configuration;
+            var currentUser = GetAuthenticatedUser();
+            var currentUserId = currentUser.Id.ToString();
+            var isAdministrator = currentUser.Policy?.IsAdministrator == true;
+            List<WatchPartyItem> partySnapshot;
+            lock (Plugin.Instance.ConfigurationSyncRoot)
+            {
+                partySnapshot = Plugin.Instance.Configuration.WatchParties.ToList();
+            }
             var parties = new List<WatchPartyInfo>();
 
-            foreach (var party in config.WatchParties)
+            foreach (var party in partySnapshot)
             {
                 if (!string.IsNullOrEmpty(party.PasswordHash))
                 {
@@ -142,11 +164,11 @@ namespace WatchPartyForEmby.Api
                         continue;
                     }
                 }
-                
-                if (!string.IsNullOrEmpty(request.UserId) && 
-                    party.AllowedUserIds != null && 
-                    party.AllowedUserIds.Count > 0 && 
-                    !party.AllowedUserIds.Contains(request.UserId))
+
+                if (!WatchPartyAuthorizationPolicy.CanAccessParty(
+                        party,
+                        currentUserId,
+                        isAdministrator))
                 {
                     continue;
                 }
@@ -192,42 +214,40 @@ namespace WatchPartyForEmby.Api
 
         public object Get(PartyParticipantsRequest request)
         {
+            var currentUser = GetAuthenticatedUser();
             var plugin = Plugin.Instance;
             var participants = new List<ParticipantInfo>();
 
-            var config = plugin.Configuration;
-            var party = config.WatchParties.FirstOrDefault(p => p.Id == request.Id);
-            var hostUserId = party?.HostUserId;
-            var readyUsers = plugin.PartyReadyUsers.TryGetValue(request.Id, out var readySet)
-                ? readySet
-                : new HashSet<string>();
-
-            // One row per user, using their most recently active session.
-            var participantsByUser = new Dictionary<string, PartyParticipant>(StringComparer.Ordinal);
-            foreach (var participant in plugin.PartyParticipants.GetSessions(request.Id)
-                .OrderByDescending(p => p.LastActivityAt))
+            WatchPartyItem party;
+            lock (plugin.ConfigurationSyncRoot)
             {
-                if (!string.IsNullOrEmpty(participant.UserId)
-                    && !participantsByUser.ContainsKey(participant.UserId))
-                {
-                    participantsByUser[participant.UserId] = participant;
-                }
+                party = plugin.Configuration.WatchParties.FirstOrDefault(p => p.Id == request.Id);
             }
-
-            foreach (var participant in participantsByUser.Values)
+            if (party == null)
             {
-                participants.Add(new ParticipantInfo
+                throw new ArgumentException($"Party {request.Id} not found");
+            }
+            if (!WatchPartyAuthorizationPolicy.CanAccessParty(
+                    party,
+                    currentUser.Id.ToString(),
+                    currentUser.Policy?.IsAdministrator == true))
+            {
+                throw new UnauthorizedAccessException("The current user cannot access this party");
+            }
+            var readyUsers = plugin.PartyReadyUsers.GetReadyUsersSnapshot(request.Id);
+            var sessionDescriptors = _sessionManager.Sessions.Select(session =>
+                new ParticipantSessionDescriptor
                 {
-                    UserId = participant.UserId,
-                    UserName = participant.UserName,
-                    SessionId = participant.SessionId,
-                    IsHost = participant.UserId == hostUserId,
-                    IsReady = readyUsers.Contains(participant.UserId),
-                    IsBuffering = participant.IsBuffering,
-                    CurrentPositionTicks = participant.CurrentPositionTicks,
-                    LastActivityAt = participant.LastActivityAt
+                    SessionId = session.Id,
+                    Client = session.Client,
+                    SupportsRemoteControl = session.SupportsRemoteControl
                 });
-            }
+            participants = ParticipantInfoProjector.Project(
+                plugin.PartyParticipants.GetSessions(request.Id)
+                    .OrderByDescending(participant => participant.LastActivityAt),
+                readyUsers,
+                plugin.PartyParticipants.GetMasterSession(request.Id),
+                sessionDescriptors);
 
             return new PartyParticipantsResponse
             {
@@ -237,52 +257,67 @@ namespace WatchPartyForEmby.Api
 
         public void Post(SetReadyRequest request)
         {
+            var currentUser = GetAuthenticatedUser();
+            var currentUserId = currentUser.Id.ToString();
             var plugin = Plugin.Instance;
-            var config = plugin.Configuration;
-            var party = config.WatchParties.FirstOrDefault(p => p.Id == request.Id);
+            WatchPartyItem party;
+            lock (plugin.ConfigurationSyncRoot)
+            {
+                party = plugin.Configuration.WatchParties.FirstOrDefault(p => p.Id == request.Id);
+            }
             
             if (party == null)
             {
                 throw new ArgumentException($"Party {request.Id} not found");
             }
 
-            if (!plugin.PartyReadyUsers.ContainsKey(request.Id))
+            if (!WatchPartyAuthorizationPolicy.CanSetReady(
+                    party,
+                    currentUserId,
+                    currentUser.Policy?.IsAdministrator == true,
+                    plugin.PartyParticipants.HasUser(request.Id, currentUserId)))
             {
-                plugin.PartyReadyUsers[request.Id] = new HashSet<string>();
+                throw new UnauthorizedAccessException(
+                    "The current user must be actively participating in this party");
             }
 
-            if (request.IsReady)
-            {
-                plugin.PartyReadyUsers[request.Id].Add(request.UserId);
-            }
-            else
-            {
-                plugin.PartyReadyUsers[request.Id].Remove(request.UserId);
-            }
+            plugin.PartyReadyUsers.SetReady(request.Id, currentUserId, request.IsReady);
         }
 
-        public void Post(StartPartyRequest request)
+        public async Task Post(StartPartyRequest request)
         {
-            var config = Plugin.Instance.Configuration;
-            var party = config.WatchParties.FirstOrDefault(p => p.Id == request.Id);
-            
-            if (party == null)
+            var currentUser = GetAuthenticatedUser();
+            var plugin = Plugin.Instance;
+            WatchPartyItem party;
+            lock (plugin.ConfigurationSyncRoot)
             {
-                throw new ArgumentException($"Party {request.Id} not found");
+                party = plugin.Configuration.WatchParties.FirstOrDefault(p => p.Id == request.Id);
+
+                if (party == null)
+                {
+                    throw new ArgumentException($"Party {request.Id} not found");
+                }
+
+                if (!WatchPartyAuthorizationPolicy.CanStartParty(
+                        party,
+                        currentUser.Id.ToString(),
+                        currentUser.Policy?.IsAdministrator == true))
+                {
+                    throw new UnauthorizedAccessException("Only the host can start the party");
+                }
             }
 
-            if (party.HostUserId != request.UserId)
-            {
-                throw new UnauthorizedAccessException("Only the host can start the party");
-            }
-
-            party.IsWaitingRoom = false;
-            party.IsPlaying = true;
-            Plugin.Instance.SaveConfiguration();
+            await plugin.WaitingRoomStarts.StartAsync(request.Id).ConfigureAwait(false);
         }
 
         public object Get(GetUsersRequest request)
         {
+            var currentUser = GetAuthenticatedUser();
+            if (currentUser.Policy?.IsAdministrator != true)
+            {
+                throw new UnauthorizedAccessException("Only administrators can list Emby users");
+            }
+
             return new GetUsersResponse
             {
                 Users = _userManager.GetUserList(new MediaBrowser.Model.Querying.UserQuery()).Select(u => new EmbyUserInfo 
@@ -318,6 +353,17 @@ namespace WatchPartyForEmby.Api
             {
                 return Stream.Null;
             }
+        }
+
+        private MediaBrowser.Controller.Entities.User GetAuthenticatedUser()
+        {
+            var authorization = _authorizationContext.GetAuthorizationInfo(Request);
+            if (authorization?.User == null || authorization.UserId <= 0)
+            {
+                throw new UnauthorizedAccessException("Authentication is required");
+            }
+
+            return authorization.User;
         }
     }
 }

@@ -63,5 +63,56 @@ namespace WatchPartyForEmby.Tests
                 "s2e2",
                 now.AddSeconds(6)));
         }
+
+        [Fact]
+        public void ClearingAPlaybackSessionRemovesItsPendingEpisodeTarget()
+        {
+            var tracker = new SeriesEpisodeTransitionTracker();
+            var now = new DateTime(2026, 8, 17, 0, 35, 15, DateTimeKind.Utc);
+            tracker.ExpectStart("ios-session", "s2e2", now.AddSeconds(30));
+
+            Assert.True(tracker.ClearSession("ios-session"));
+            Assert.False(tracker.IsExpectedStart("ios-session", "s2e2", now));
+        }
+
+        [Fact]
+        public void LatestExpectedEpisodeReplacesEarlierTargetForTheSameSession()
+        {
+            var tracker = new SeriesEpisodeTransitionTracker();
+            var now = new DateTime(2026, 8, 17, 2, 30, 0, DateTimeKind.Utc);
+
+            tracker.ExpectStart("ios-session", "s2e2", now.AddSeconds(30));
+            tracker.ExpectStart("ios-session", "s2e3", now.AddSeconds(30));
+
+            Assert.False(tracker.IsExpectedStart(
+                "ios-session",
+                "s2e2",
+                now.AddSeconds(1)));
+            Assert.False(tracker.ConsumeExpectedStart(
+                "ios-session",
+                "s2e2",
+                now.AddSeconds(1)));
+            Assert.True(tracker.ConsumeExpectedStart(
+                "ios-session",
+                "s2e3",
+                now.AddSeconds(1)));
+        }
+
+        [Fact]
+        public void CancellingAnOlderTargetDoesNotCancelItsReplacement()
+        {
+            var tracker = new SeriesEpisodeTransitionTracker();
+            var now = new DateTime(2026, 8, 17, 2, 45, 0, DateTimeKind.Utc);
+
+            tracker.ExpectStart("ios-session", "s2e2", now.AddSeconds(30));
+            tracker.ExpectStart("ios-session", "s2e3", now.AddSeconds(30));
+
+            tracker.CancelExpectedStart("ios-session", "s2e2");
+
+            Assert.True(tracker.IsExpectedStart(
+                "ios-session",
+                "s2e3",
+                now.AddSeconds(1)));
+        }
     }
 }
