@@ -27,7 +27,8 @@ namespace WatchPartyForEmby
         private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, int>> _partyPauseVotes = new ConcurrentDictionary<string, ConcurrentDictionary<string, int>>();
         private readonly HashSet<string> _partiesTransitioning = new HashSet<string>();
         private readonly ConcurrentDictionary<string, long> _seriesSelectionVersions = new ConcurrentDictionary<string, long>();
-        private readonly ConcurrentDictionary<string, DateTime> _expectedSeriesEpisodeStarts = new ConcurrentDictionary<string, DateTime>();
+        private readonly SeriesEpisodeTransitionTracker _seriesEpisodeTransitions =
+            new SeriesEpisodeTransitionTracker();
         private readonly object _seriesTransitionLock = new object();
         private readonly ConcurrentDictionary<string, DateTime> _lastProgressCheckpoint = new ConcurrentDictionary<string, DateTime>();
         private readonly PlaybackSyncCoordinator _playbackSyncCoordinator = new PlaybackSyncCoordinator();
@@ -831,7 +832,7 @@ namespace WatchPartyForEmby
                     var startedEpisodeId = FindSeriesEpisodeId(party, e.Item);
                     var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
                     var episodeSwitchTarget = GetSeriesEpisodeSwitchTarget(party, e.Item);
-                    var isExpectedSeriesStart = ConsumeExpectedSeriesEpisodeStart(
+                    var isExpectedSeriesStart = _seriesEpisodeTransitions.ConsumeExpectedStart(
                         e.Session.Id,
                         startedEpisodeId,
                         nowUtc);
@@ -1081,11 +1082,10 @@ namespace WatchPartyForEmby
                                 var episodeSwitchTarget = GetSeriesEpisodeSwitchTarget(party, item);
                                 if (episodeSwitchTarget != null)
                                 {
-                                    var expectedStartKey = GetExpectedSeriesEpisodeStartKey(
-                                        session.Id,
-                                        episodeSwitchTarget.ItemId);
-                                    if (!_expectedSeriesEpisodeStarts.TryGetValue(expectedStartKey, out var expiresAt)
-                                        || expiresAt < nowUtc)
+                                    if (!_seriesEpisodeTransitions.IsExpectedStart(
+                                            session.Id,
+                                            episodeSwitchTarget.ItemId,
+                                            nowUtc))
                                     {
                                         var playingEpisodeId = FindSeriesEpisodeId(party, item);
                                         _logger.Info(
@@ -1269,6 +1269,14 @@ namespace WatchPartyForEmby
                 
                 if (party != null && party.IsActive)
                 {
+                    var nowUtc = DateTime.UtcNow;
+                    var progressEpisodeId = FindSeriesEpisodeId(party, e.Item);
+                    var isExpectedSeriesProgress = party.IsSeriesParty
+                        && _seriesEpisodeTransitions.IsExpectedStart(
+                            e.Session.Id,
+                            progressEpisodeId,
+                            nowUtc);
+
                     // One Emby Web SessionId can briefly retain several PlaySessionIds
                     // after a seek or stream reload. Ignore progress from the replaced
                     // playback before it can overwrite the participant's current playback
@@ -1276,7 +1284,8 @@ namespace WatchPartyForEmby
                     if (!_plugin.PartyParticipants.IsCurrentPlaybackSession(
                             party.Id,
                             e.Session.Id,
-                            e.PlaySessionId))
+                            e.PlaySessionId)
+                        && !isExpectedSeriesProgress)
                     {
                         _logger.Info(
                             $"[Party {party.Id}] Ignoring stale progress from playback " +
@@ -1288,7 +1297,6 @@ namespace WatchPartyForEmby
                         party.Id,
                         _ => new ConcurrentDictionary<string, bool>());
                     var wasPaused = pauseState.TryGetValue(e.Session.Id, out var previousPause) && previousPause;
-                    var nowUtc = DateTime.UtcNow;
                     var reportedPosition = e.PlaybackPositionTicks;
                     var currentPosition = reportedPosition ?? 0;
                     var isMaster = TryResolveMasterSession(party, e.Session);
@@ -1692,10 +1700,7 @@ namespace WatchPartyForEmby
             }
 
             var nowUtc = DateTime.UtcNow;
-            foreach (var expectedStart in _expectedSeriesEpisodeStarts.Where(entry => entry.Value < nowUtc))
-            {
-                _expectedSeriesEpisodeStarts.TryRemove(expectedStart.Key, out _);
-            }
+            _seriesEpisodeTransitions.RemoveExpired(nowUtc);
             var expectedStartExpiration = nowUtc.AddSeconds(30);
 
             foreach (var session in sessions)
@@ -1706,10 +1711,12 @@ namespace WatchPartyForEmby
                     continue;
                 }
 
-                var expectedStartKey = GetExpectedSeriesEpisodeStartKey(session.Id, episode.ItemId);
                 try
                 {
-                    _expectedSeriesEpisodeStarts[expectedStartKey] = expectedStartExpiration;
+                    _seriesEpisodeTransitions.ExpectStart(
+                        session.Id,
+                        episode.ItemId,
+                        expectedStartExpiration);
                     await _sessionManager.SendPlayCommand(
                         session.Id,
                         session.Id,
@@ -1724,32 +1731,14 @@ namespace WatchPartyForEmby
                 }
                 catch (Exception ex)
                 {
-                    _expectedSeriesEpisodeStarts.TryRemove(expectedStartKey, out _);
+                    _seriesEpisodeTransitions.CancelExpectedStart(
+                        session.Id,
+                        episode.ItemId);
                     _logger.ErrorException(
                         $"[Party {party.Id}] Client {session.Client} did not accept episode {episode.ItemName}",
                         ex);
                 }
             }
-        }
-
-        private static string GetExpectedSeriesEpisodeStartKey(string sessionId, string episodeItemId)
-        {
-            return sessionId + ":" + episodeItemId;
-        }
-
-        private bool ConsumeExpectedSeriesEpisodeStart(
-            string sessionId,
-            string episodeItemId,
-            DateTime nowUtc)
-        {
-            if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(episodeItemId))
-            {
-                return false;
-            }
-
-            var key = GetExpectedSeriesEpisodeStartKey(sessionId, episodeItemId);
-            return _expectedSeriesEpisodeStarts.TryRemove(key, out var expiresAtUtc)
-                && expiresAtUtc >= nowUtc;
         }
 
         private void ResetSeriesEpisodeSyncState(WatchPartyItem party)
@@ -1826,6 +1815,18 @@ namespace WatchPartyForEmby
 
                     if (party.IsSeriesParty)
                     {
+                        if (_seriesEpisodeTransitions.ShouldRetainSessionOnStop(
+                                e.Session.Id,
+                                stoppedEpisodeId,
+                                currentEpisode?.ItemId,
+                                DateTime.UtcNow))
+                        {
+                            _logger.Info(
+                                $"[Party {party.Id}] Retaining session {e.Session.Id} while it switches " +
+                                $"from episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
+                            return;
+                        }
+
                         var completedEpisodeId = stoppedEpisodeId;
                         var completionResult = SeriesPartyAdvanceResult.NotCompleted;
                         var transitionAlreadyInProgress = false;
