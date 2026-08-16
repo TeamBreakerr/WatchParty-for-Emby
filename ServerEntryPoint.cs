@@ -685,9 +685,14 @@ namespace WatchPartyForEmby
 
         private async Task SendPauseStateCommand(SessionInfo session, bool isPaused)
         {
-            if (session == null || !session.SupportsRemoteControl)
+            if (session == null
+                || !PlaybackControlCapabilities.CanReceivePauseState(
+                    session.Client,
+                    session.SupportsRemoteControl))
             {
-                _logger.Info($"[Watch Party] Session {session?.Id} ({session?.Client}) does not support remote control, skipping {(isPaused ? "pause" : "unpause")}");
+                _logger.Info(
+                    $"[Watch Party] Session {session?.Id} ({session?.Client}) does not " +
+                    $"advertise pause control, skipping {(isPaused ? "pause" : "unpause")}");
                 return;
             }
 
