@@ -40,7 +40,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         loadLibraries().then(result => {
             const libraries = result.Items || [];
             select.innerHTML = '<option value="">-- 选择媒体库 --</option>';
-            
+
             libraries.forEach(library => {
                 const option = document.createElement('option');
                 option.value = library.Id;
@@ -65,11 +65,11 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             StartIndex: startIndex,
             Limit: limit
         };
-        
+
         if (searchTerm) {
             params.SearchTerm = searchTerm;
         }
-        
+
         return ApiClient.getItems(ApiClient.getCurrentUserId(), params);
     }
 
@@ -80,11 +80,11 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             StartIndex: startIndex,
             Limit: limit
         };
-        
+
         if (searchTerm) {
             params.SearchTerm = searchTerm;
         }
-        
+
         return ApiClient.getSeasons(seriesId, params);
     }
 
@@ -96,11 +96,11 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             StartIndex: startIndex,
             Limit: limit
         };
-        
+
         if (searchTerm) {
             params.SearchTerm = searchTerm;
         }
-        
+
         return ApiClient.getEpisodes(seriesId, params);
     }
 
@@ -121,7 +121,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
     function populateUsersDropdown(view, select, selectedUserIds = [], usersPromise = null) {
         (usersPromise || loadUsers()).then(users => {
             select.innerHTML = '';
-            
+
             users.forEach(user => {
                 const option = document.createElement('option');
                 option.value = user.Id;
@@ -175,7 +175,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 this.onLibraryChange(view, e.target.value);
             });
 
-            this.setupAutocomplete(view, 'searchContent', 'selectedItemId', 'searchContentDropdown', 
+            this.setupAutocomplete(view, 'searchContent', 'selectedItemId', 'searchContentDropdown',
                 (itemData) => this.onItemSelect(view, itemData),
                 () => this.loadMoreLibraryContent(view)
             );
@@ -349,7 +349,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             const dropdown = view.querySelector(`#${dropdownId}`);
             const items = this[`${searchInputId}_items`] || [];
             const metadata = this[`${searchInputId}_metadata`] || {};
-            
+
             const lowerQuery = query.toLowerCase().trim();
             const filteredItems = items.filter(item => {
                 if (!lowerQuery) return true;
@@ -419,10 +419,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
             this.setAutocompleteOpen(searchInput, dropdown, true);
         }
-        
+
         performSearch(view, searchInputId, query, onSelectCallback, onLoadMoreCallback) {
             const dropdown = view.querySelector(`#${searchInputId}Dropdown`);
-            
+
             if (searchInputId === 'searchContent' && this.currentLibraryId) {
                 const libraryId = this.currentLibraryId;
                 const requestVersion = this.libraryRequestVersion || 0;
@@ -435,7 +435,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     }
                     const items = result.Items || [];
                     const totalCount = result.TotalRecordCount || items.length;
-                    
+
                     this[`${searchInputId}_items`] = items.map(item => {
                         const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
                         const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
@@ -446,13 +446,13 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                             name: item.Name
                         };
                     });
-                    
+
                     this[`${searchInputId}_metadata`] = {
                         hasMore: false,
                         currentCount: items.length,
                         totalCount: totalCount
                     };
-                    
+
                     this.renderDropdown(view, searchInputId, `${searchInputId === 'searchContent' ? 'selectedItemId' : searchInputId === 'searchSeason' ? 'selectedSeasonId' : 'selectedEpisodeId'}`, `${searchInputId}Dropdown`, '', onSelectCallback, onLoadMoreCallback);
                     loading.hide();
                 }).catch(() => {
@@ -469,7 +469,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 loadSeasons(this.currentSeriesId, 0, 50, query).then(result => {
                     const seasons = result.Items || [];
                     const totalCount = result.TotalRecordCount || seasons.length;
-                    
+
                     this[`${searchInputId}_items`] = seasons.map(season => {
                         const seasonNum = season.IndexNumber ? ` ${season.IndexNumber}` : '';
                         return {
@@ -478,13 +478,13 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                             name: season.Name || '第' + seasonNum + '季'
                         };
                     });
-                    
+
                     this[`${searchInputId}_metadata`] = {
                         hasMore: false,
                         currentCount: seasons.length,
                         totalCount: totalCount
                     };
-                    
+
                     this.renderDropdown(view, searchInputId, 'selectedSeasonId', `${searchInputId}Dropdown`, '', onSelectCallback, onLoadMoreCallback);
                     loading.hide();
                 }).catch(() => {
@@ -498,7 +498,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 loadEpisodes(seriesId, this.currentSeasonId, 0, 50, query).then(result => {
                     const episodes = result.Items || [];
                     const totalCount = result.TotalRecordCount || episodes.length;
-                    
+
                     this[`${searchInputId}_items`] = episodes.map(episode => {
                         const epNum = episode.IndexNumber ? `E${episode.IndexNumber}` : '';
                         const seasonNum = episode.ParentIndexNumber ? `S${episode.ParentIndexNumber}` : '';
@@ -508,13 +508,13 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                             name: episode.Name
                         };
                     });
-                    
+
                     this[`${searchInputId}_metadata`] = {
                         hasMore: false,
                         currentCount: episodes.length,
                         totalCount: totalCount
                     };
-                    
+
                     this.renderDropdown(view, searchInputId, 'selectedEpisodeId', `${searchInputId}Dropdown`, '', onSelectCallback, onLoadMoreCallback);
                     loading.hide();
                 }).catch(() => {
@@ -523,7 +523,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 });
             }
         }
-        
+
         onLibraryChange(view, libraryId) {
             this.libraryRequestVersion = (this.libraryRequestVersion || 0) + 1;
             const requestVersion = this.libraryRequestVersion;
@@ -552,14 +552,14 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             this.currentSeasonId = null;
             this.libraryContentOffset = 0;
             this.searchContent_searchMode = false;
-            
+
             const searchInput = view.querySelector('#searchContent');
             if (searchInput) searchInput.value = '';
             view.querySelector('#selectedItemId').value = '';
             view.querySelector('#selectedItemId').dataset.type = '';
             view.querySelector('#selectedItemId').dataset.name = '';
             this.hideSeriesControls(view);
-            
+
             loading.show();
             loadLibraryContent(libraryId, 0, 100).then(result => {
                 if (this.currentLibraryId !== libraryId
@@ -568,7 +568,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 }
                 const items = result.Items || [];
                 const totalCount = result.TotalRecordCount || items.length;
-                
+
                 this.searchContent_items = items.map(item => {
                     const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
                     const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
@@ -579,7 +579,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         name: item.Name
                     };
                 });
-                
+
                 this.searchContent_metadata = {
                     hasMore: items.length < totalCount,
                     currentCount: items.length,
@@ -610,20 +610,20 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 this.currentSeriesId = itemData.id;
                 this.seasonsOffset = 0;
                 this.searchSeason_searchMode = false;
-                
+
                 const searchSeason = view.querySelector('#searchSeason');
                 const searchEpisode = view.querySelector('#searchEpisode');
                 if (searchSeason) searchSeason.value = '';
                 if (searchEpisode) searchEpisode.value = '';
                 view.querySelector('#selectedSeasonId').value = '';
                 view.querySelector('#selectedEpisodeId').value = '';
-                
+
                 this.showSeriesControls(view);
                 loading.show();
                 loadSeasons(itemData.id, 0, 100).then(result => {
                     const seasons = result.Items || [];
                     const totalCount = result.TotalRecordCount || seasons.length;
-                    
+
                     this.searchSeason_items = seasons.map(season => {
                         const seasonNum = season.IndexNumber ? ` ${season.IndexNumber}` : '';
                         return {
@@ -632,7 +632,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                             name: season.Name || '第' + seasonNum + '季'
                         };
                     });
-                    
+
                     this.searchSeason_metadata = {
                         hasMore: seasons.length < totalCount,
                         currentCount: seasons.length,
@@ -664,16 +664,16 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             this.episodesOffset = 0;
             this.searchEpisode_searchMode = false;
             this.episodesOffset = 0;
-            
+
             const searchEpisode = view.querySelector('#searchEpisode');
             if (searchEpisode) searchEpisode.value = '';
             view.querySelector('#selectedEpisodeId').value = '';
-            
+
             loading.show();
             loadEpisodes(seriesId, itemData.id, 0, 100).then(result => {
                 const episodes = result.Items || [];
                 const totalCount = result.TotalRecordCount || episodes.length;
-                
+
                 this.searchEpisode_items = episodes.map(episode => {
                     const epNum = episode.IndexNumber ? `E${episode.IndexNumber}` : '';
                     const seasonNum = episode.ParentIndexNumber ? `S${episode.ParentIndexNumber}` : '';
@@ -683,7 +683,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         name: episode.Name
                     };
                 });
-                
+
                 this.searchEpisode_metadata = {
                     hasMore: episodes.length < totalCount,
                     currentCount: episodes.length,
@@ -704,12 +704,12 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
         loadMoreLibraryContent(view) {
             if (!this.currentLibraryId) return;
-            
+
             loading.show();
             loadLibraryContent(this.currentLibraryId, this.libraryContentOffset, 100).then(result => {
                 const items = result.Items || [];
                 const totalCount = result.TotalRecordCount || items.length;
-                
+
                 const newItems = items.map(item => {
                     const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
                     const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
@@ -720,10 +720,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         name: item.Name
                     };
                 });
-                
+
                 this.searchContent_items = this.searchContent_items.concat(newItems);
                 this.libraryContentOffset += items.length;
-                
+
                 this.searchContent_metadata = {
                     hasMore: this.libraryContentOffset < totalCount,
                     currentCount: this.libraryContentOffset,
@@ -745,12 +745,12 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
         loadMoreSeasons(view) {
             if (!this.currentSeriesId) return;
-            
+
             loading.show();
             loadSeasons(this.currentSeriesId, this.seasonsOffset, 100).then(result => {
                 const seasons = result.Items || [];
                 const totalCount = result.TotalRecordCount || seasons.length;
-                
+
                 const newItems = seasons.map(season => {
                     const seasonNum = season.IndexNumber ? ` ${season.IndexNumber}` : '';
                     return {
@@ -759,10 +759,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         name: season.Name || '第' + seasonNum + '季'
                     };
                 });
-                
+
                 this.searchSeason_items = this.searchSeason_items.concat(newItems);
                 this.seasonsOffset += seasons.length;
-                
+
                 this.searchSeason_metadata = {
                     hasMore: this.seasonsOffset < totalCount,
                     currentCount: this.seasonsOffset,
@@ -784,14 +784,14 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
         loadMoreEpisodes(view) {
             if (!this.currentSeasonId) return;
-            
+
             const seriesId = view.querySelector('#selectedItemId').value;
-            
+
             loading.show();
             loadEpisodes(seriesId, this.currentSeasonId, this.episodesOffset, 100).then(result => {
                 const episodes = result.Items || [];
                 const totalCount = result.TotalRecordCount || episodes.length;
-                
+
                 const newItems = episodes.map(episode => {
                     const epNum = episode.IndexNumber ? `E${episode.IndexNumber}` : '';
                     const seasonNum = episode.ParentIndexNumber ? `S${episode.ParentIndexNumber}` : '';
@@ -801,10 +801,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         name: episode.Name
                     };
                 });
-                
+
                 this.searchEpisode_items = this.searchEpisode_items.concat(newItems);
                 this.episodesOffset += episodes.length;
-                
+
                 this.searchEpisode_metadata = {
                     hasMore: this.episodesOffset < totalCount,
                     currentCount: this.episodesOffset,
@@ -837,15 +837,15 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             view.querySelector('#episodeContainer').style.display = 'none';
             view.querySelector('#isSeriesParty').checked = false;
             this.updateSeriesPartyMode(view, false);
-            
+
             this.searchSeason_items = [];
             this.searchEpisode_items = [];
-            
+
             view.querySelector('#searchSeason').value = '';
             view.querySelector('#selectedSeasonId').value = '';
             view.querySelector('#searchEpisode').value = '';
             view.querySelector('#selectedEpisodeId').value = '';
-            
+
             this.setAutocompleteOpen(
                 view.querySelector('#searchSeason'),
                 view.querySelector('#searchSeasonDropdown'),
@@ -999,20 +999,20 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
         renderPartyList(view, config) {
             const container = view.querySelector('#activePartiesList');
-            
+
             if (!config.WatchParties || config.WatchParties.length === 0) {
                 container.innerHTML = '<p style="color: #999;">暂无一起看房间</p>';
                 return;
             }
 
             let html = '<div style="display: flex; flex-direction: column; gap: 1em;">';
-            
+
             config.WatchParties.forEach(party => {
                 const statusColor = party.IsActive ? '#4CAF50' : '#999';
                 const statusText = party.IsActive ? '已启用' : '已停用';
                 const created = new Date(party.CreatedDate).toLocaleDateString();
                 const encodedPartyId = encodeURIComponent(String(party.Id || ''));
-                
+
                 const features = [];
                 if (party.IsWaitingRoom) features.push('等候室');
                 if (party.PauseControl === 'Host') features.push('暂停权限：仅主控用户');
@@ -1040,7 +1040,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                            </ol>
                        </details>`
                     : '';
-                
+
                 html += `
                     <div class="paper-card watch-party-list-card" style="padding: 1em; display: flex; justify-content: space-between; align-items: center;">
                         <div style="flex: 1;">
@@ -1070,17 +1070,17 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     </div>
                 `;
             });
-            
+
             html += '</div>';
             container.innerHTML = html;
-            
+
             container.querySelectorAll('.btnDeleteParty').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     const partyId = decodeURIComponent(e.target.closest('button').dataset.partyid);
                     this.deleteParty(view, partyId);
                 });
             });
-            
+
             container.querySelectorAll('.btnToggleParty').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     const partyId = decodeURIComponent(e.target.closest('button').dataset.partyid);
@@ -1120,7 +1120,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             loading.show();
             getPluginConfiguration().then(config => {
                 config.WatchParties = config.WatchParties.filter(p => p.Id !== partyId);
-                
+
                 updatePluginConfiguration(config).then(result => {
                     loading.hide();
                     Dashboard.processPluginConfigurationUpdateResult(result);
@@ -1139,7 +1139,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 const party = config.WatchParties.find(p => p.Id === partyId);
                 if (party) {
                     party.IsActive = !party.IsActive;
-                    
+
                     updatePluginConfiguration(config).then(result => {
                         loading.hide();
                         Dashboard.processPluginConfigurationUpdateResult(result);
@@ -1154,7 +1154,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
         loadData(view) {
             loading.show();
-            
+
             getPluginConfiguration().then(config => {
                 this.config = config;
                 const librarySelect = view.querySelector('#selectedLibraryId');
@@ -1176,7 +1176,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 view.querySelector('#externalServerUrl').value = config.ExternalServerUrl || '';
                 view.querySelector('#embyServerUrl').value = config.EmbyServerUrl || '';
                 view.querySelector('#embyApiKey').value = config.EmbyApiKey || '';
-                
+
                 view.querySelector('#enableHttps').checked = config.EnableHttps === true;
                 view.querySelector('#httpsCertificateThumbprint').value = config.HttpsCertificateThumbprint || '';
                 view.querySelector('#enableCsrfProtection').checked = config.EnableCsrfProtection !== false;
@@ -1194,14 +1194,14 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 const port = finiteInteger(config.ExternalWebServerPort, 8097);
                 const placeholders = view.querySelectorAll('#portPlaceholder, #portPlaceholderDocker, #portPlaceholderDocker2');
                 placeholders.forEach(el => el.textContent = port);
-                
+
                 const adminPasswordField = view.querySelector('#adminPassword');
                 if (config.AdminPasswordHash) {
                     adminPasswordField.placeholder = '已设置密码；输入新密码可修改';
                 } else {
                     adminPasswordField.placeholder = '尚未设置密码';
                 }
-                
+
                 this.checkWebServerStatus(view, config);
 
                 view.querySelector('#isWaitingRoom').checked = true;
@@ -1225,7 +1225,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 this.renderPartyList(view, config);
 
                 loading.hide();
-                
+
             }).catch(() => {
                 loading.hide();
                 toast({ type: 'error', text: '加载设置失败。' });
@@ -1234,7 +1234,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
         saveData(view) {
             loading.show();
-            
+
             const libraryId = view.querySelector('#selectedLibraryId').value;
             const itemInput = view.querySelector('#selectedItemId');
             const itemId = itemInput.value;
@@ -1252,7 +1252,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             }
 
             const itemType = itemInput.dataset.type || null;
-            
+
             let finalItemId = itemId;
             let finalItemName = view.querySelector('#searchContent').value;
             let finalItemType = itemType;
@@ -1283,7 +1283,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     finalItemName = view.querySelector('#searchEpisode').value;
                 }
             }
-            
+
             const maxParticipants = finiteInteger(view.querySelector('#maxParticipants').value, NaN);
             if (!Number.isInteger(maxParticipants) || maxParticipants < 2 || maxParticipants > 100) {
                 loading.hide();
@@ -1338,7 +1338,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 toast({ type: 'error', text: `最低就绪人数必须在 1 到 ${maxParticipants} 之间。` });
                 return;
             }
-            
+
             const partyPassword = view.querySelector('#partyPassword').value || '';
 
             getPluginConfiguration().then(async config => {
@@ -1426,9 +1426,9 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 updatePluginConfiguration(config).then(result => {
                     loading.hide();
                     Dashboard.processPluginConfigurationUpdateResult(result);
-                    
+
                     this.resetCreatePartyForm(view);
-                    
+
                     this.renderPartyList(view, this.config);
                 }).catch((error) => {
                     loading.hide();
@@ -1471,7 +1471,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 config.LockoutWindowMinutes = finiteInteger(view.querySelector('#lockoutWindowMinutes').value, 10);
                 config.EnableAuditLogging = view.querySelector('#enableAuditLogging').checked;
                 config.MaxAuditLogEntries = finiteInteger(view.querySelector('#maxAuditLogEntries').value, 1000);
-                
+
                 const adminPassword = view.querySelector('#adminPassword').value.trim();
                 if (adminPassword) {
                     config.AdminPasswordHash = await this.hashPassword(adminPassword);
@@ -1482,7 +1482,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 updatePluginConfiguration(config).then(result => {
                     loading.hide();
                     Dashboard.processPluginConfigurationUpdateResult(result);
-                    
+
                     this.config = config;
                     setTimeout(() => {
                         this.checkWebServerStatus(view, config);
@@ -1541,7 +1541,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             const statusElement = view.querySelector('#webServerStatusText');
             const port = finiteInteger(config.ExternalWebServerPort, 8097);
             const enabled = config.EnableExternalWebServer !== false;
-            
+
             if (!enabled) {
                 statusElement.textContent = '已停用';
                 statusElement.style.color = '#999';

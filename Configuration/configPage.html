@@ -19,11 +19,11 @@
             border-radius: 3px;
             border: 1px solid #777;
         }
-        
+
         .autocomplete-container {
             position: relative;
         }
-        
+
         .autocomplete-dropdown {
             position: absolute;
             top: 100%;
@@ -39,11 +39,11 @@
             display: none;
             box-shadow: 0 4px 8px rgba(0,0,0,0.3);
         }
-        
+
         .autocomplete-dropdown.show {
             display: block;
         }
-        
+
         .autocomplete-item {
             padding: 10px;
             cursor: pointer;
@@ -51,36 +51,36 @@
             color: #e0e0e0;
             transition: background 0.2s;
         }
-        
+
         .autocomplete-item:hover {
             background: #3a3a3a;
         }
-        
+
         .autocomplete-item.load-more {
             color: #4CAF50;
             font-style: italic;
             text-align: center;
         }
-        
+
         .autocomplete-item.selected {
             background: #3a3a3a;
             outline: 2px solid #4CAF50;
             outline-offset: -2px;
         }
-        
+
         .autocomplete-dropdown::-webkit-scrollbar {
             width: 8px;
         }
-        
+
         .autocomplete-dropdown::-webkit-scrollbar-track {
             background: #1a1a1a;
         }
-        
+
         .autocomplete-dropdown::-webkit-scrollbar-thumb {
             background: #444;
             border-radius: 4px;
         }
-        
+
         .autocomplete-dropdown::-webkit-scrollbar-thumb:hover {
             background: #555;
         }
@@ -141,7 +141,7 @@
             <form id="watchPartyConfigForm" class="watchPartyConfigForm">
                 <div class="paper-card" style="padding: 1.5em; margin-top: 2em;">
                         <h2 style="margin-top:0;">创建房间</h2>
-                        
+
                         <div class="selectContainer">
                             <label class="selectLabel" for="selectedLibraryId">选择内容媒体库</label>
                             <select is="emby-select" id="selectedLibraryId" class="emby-select-withcolor emby-select">
@@ -610,7 +610,7 @@
                                 <span>创建原媒体同步房间</span>
                             </button>
                         </div>
-                        
+
                         <div style="margin-top: 1em;">
                             <button is="emby-button" type="button" id="btnOpenDashboard" class="raised" style="width: 100%; background: #4CAF50;">
                                 <span>📊 打开控制台</span>
@@ -620,7 +620,7 @@
 
                     <div class="paper-card" style="padding: 1.5em; margin-top: 2em;">
                         <h2 style="margin-top:0;">一起看房间</h2>
-                        
+
                         <div id="activePartiesList">
                             <p style="color: #999;">暂无一起看房间</p>
                         </div>
@@ -629,7 +629,7 @@
 
                     <div class="paper-card help-page" style="padding: 1.5em 2em; margin-top: 2em;">
                         <h2 style="margin-top: 0;">工作原理</h2>
-                        
+
                         <div style="background: #4CAF5022; border-left: 4px solid #4CAF50; padding: 1em; margin-bottom: 1.5em;">
                             <strong>适用于各类 Emby 客户端的一起看房间</strong>
                             <p style="margin: 0.5em 0;">

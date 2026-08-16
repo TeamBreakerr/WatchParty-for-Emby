@@ -45,22 +45,22 @@ namespace WatchPartyForEmby
             _cancellationTokenSource = new CancellationTokenSource();
 
             _listener = new HttpListener();
-            
+
             var config = Plugin.Instance.Configuration;
             var useHttps = config.EnableHttps && !config.UseReverseProxy;
             var protocol = useHttps ? "https" : "http";
-            
+
             // Support comma-separated listen addresses
             var addresses = listenAddress.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
                                         .Select(addr => addr.Trim())
                                         .Where(addr => !string.IsNullOrEmpty(addr))
                                         .ToList();
-            
+
             if (addresses.Count == 0)
             {
                 addresses.Add("127.0.0.1");
             }
-            
+
             foreach (var address in addresses)
             {
                 if (address == "*" || address == "0.0.0.0")
@@ -76,7 +76,7 @@ namespace WatchPartyForEmby
                     _listener.Prefixes.Add($"{protocol}://{address}:{port}/");
                 }
             }
-            
+
             if (!useHttps && !config.UseReverseProxy)
             {
                 _logger.Warn($"[ExternalWebServer] WARNING: Using HTTP without encryption. All data transmits in plain text.");
@@ -85,12 +85,12 @@ namespace WatchPartyForEmby
             {
                 _logger.Info($"[ExternalWebServer] Reverse proxy mode enabled. HTTPS, security headers, and CORS handled by proxy.");
             }
-            
+
             if (addresses.Any(a => a == "*" || a == "0.0.0.0" || a == "+"))
             {
                 _logger.Warn($"[ExternalWebServer] WARNING: Binding to all network interfaces. This may expose sensitive data.");
             }
-            
+
             if (useHttps)
             {
                 _logger.Info($"[ExternalWebServer] HTTPS enabled. Ensure certificate is bound: netsh http add sslcert ipport=0.0.0.0:{port} certhash={config.HttpsCertificateThumbprint} appid={{00000000-0000-0000-0000-000000000000}}");
@@ -113,11 +113,11 @@ namespace WatchPartyForEmby
                 var config = Plugin.Instance.Configuration;
                 var useHttps = config.EnableHttps && !config.UseReverseProxy;
                 var protocol = useHttps ? "https" : "http";
-                
+
                 var addresses = _listenAddress.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
                                             .Select(addr => addr.Trim())
                                             .Where(addr => !string.IsNullOrEmpty(addr));
-                
+
                 var commands = new List<string>();
                 foreach (var address in addresses)
                 {
@@ -125,7 +125,7 @@ namespace WatchPartyForEmby
                                     (address == "+") ? "+" : address;
                     commands.Add($"netsh http add urlacl url={protocol}://{urlPattern}:{_port}/ user=\"Everyone\"");
                 }
-                
+
                 var errorMsg = $"Error: Access Denied. Run as Administrator:\n" + string.Join("\n", commands);
                 _logger.Error(errorMsg);
                 return errorMsg;
@@ -161,19 +161,19 @@ namespace WatchPartyForEmby
                 try
                 {
                     await Task.Delay(TimeSpan.FromMinutes(5), token);
-                    
+
                     lock (_sessionLock)
                     {
                         var expiredTokens = _activeSessions
                             .Where(kvp => !kvp.Value.IsValid())
                             .Select(kvp => kvp.Key)
                             .ToList();
-                        
+
                         foreach (var expiredToken in expiredTokens)
                         {
                             _activeSessions.Remove(expiredToken);
                         }
-                        
+
                         if (expiredTokens.Count > 0)
                         {
                             _logger.Debug($"[ExternalWebServer] Cleaned up {expiredTokens.Count} expired sessions");
@@ -251,7 +251,7 @@ namespace WatchPartyForEmby
         {
             var config = Plugin.Instance.Configuration;
             var token = GenerateSessionToken();
-            
+
             lock (_sessionLock)
             {
                 _activeSessions[token] = new SessionToken
@@ -262,7 +262,7 @@ namespace WatchPartyForEmby
                     IpAddress = ipAddress
                 };
             }
-            
+
             _logger.Debug($"[ExternalWebServer] Created session for {ipAddress}");
             return token;
         }
@@ -296,7 +296,7 @@ namespace WatchPartyForEmby
         {
             if (string.IsNullOrEmpty(input)) return true;
             if (input.Length > maxLength) return false;
-            
+
             // Check for null bytes and control characters
             return !input.Any(c => c == '\0' || (char.IsControl(c) && c != '\r' && c != '\n' && c != '\t'));
         }
@@ -309,7 +309,7 @@ namespace WatchPartyForEmby
             var tokenBytes = new byte[32];
             RandomNumberGenerator.Fill(tokenBytes);
             var token = Convert.ToBase64String(tokenBytes);
-            
+
             _csrfTokens.Add(new CsrfToken
             {
                 Token = token,
@@ -317,7 +317,7 @@ namespace WatchPartyForEmby
                 ExpiresAt = DateTime.UtcNow.AddMinutes(config.SessionExpirationMinutes),
                 IpAddress = ipAddress
             });
-            
+
             return token;
         }
 
@@ -432,25 +432,25 @@ namespace WatchPartyForEmby
         private void AddSecurityHeaders(HttpListenerResponse response)
         {
             var config = Plugin.Instance.Configuration;
-            
+
             // Skip security headers if using reverse proxy (proxy will handle them)
             if (config.UseReverseProxy)
             {
                 return;
             }
-            
+
             if (config.EnableSecurityHeaders)
             {
                 response.AddHeader("X-Content-Type-Options", "nosniff");
                 response.AddHeader("X-Frame-Options", "DENY");
                 response.AddHeader("X-XSS-Protection", "1; mode=block");
                 response.AddHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-                
+
                 if (!string.IsNullOrEmpty(config.ContentSecurityPolicy))
                 {
                     response.AddHeader("Content-Security-Policy", config.ContentSecurityPolicy);
                 }
-                
+
                 if (config.EnableHttps && config.EnableHsts)
                 {
                     response.AddHeader("Strict-Transport-Security", $"max-age={config.HstsMaxAge}; includeSubDomains");
@@ -530,7 +530,7 @@ namespace WatchPartyForEmby
             {
                 var config = Plugin.Instance.Configuration;
                 var origin = request.Headers["Origin"];
-                
+
                 // Set CORS headers (skip if using reverse proxy)
                 if (!config.UseReverseProxy)
                 {
@@ -539,7 +539,7 @@ namespace WatchPartyForEmby
                         var allowedOrigins = config.AllowedCorsOrigins.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
                             .Select(o => o.Trim())
                             .ToList();
-                        
+
                         if (allowedOrigins.Contains("*"))
                         {
                             response.AddHeader("Access-Control-Allow-Origin", "*");
@@ -559,7 +559,7 @@ namespace WatchPartyForEmby
                             response.AddHeader("Vary", "Origin");
                         }
                     }
-                    
+
                     response.AddHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
                     response.AddHeader("Access-Control-Allow-Headers", "Content-Type, X-Session-Token, X-Auth-Password, X-CSRF-Token, X-Party-Password");
                     response.AddHeader("Access-Control-Expose-Headers", "X-Session-Token, X-CSRF-Token");
@@ -741,7 +741,7 @@ namespace WatchPartyForEmby
                         ? config.ExternalServerUrl
                         : config.EmbyServerUrl ?? ""
                 };
-                
+
                 var json = _jsonSerializer.SerializeToString(result);
                 response.StatusCode = (int)HttpStatusCode.OK;
                 response.ContentType = "application/json";
@@ -885,12 +885,12 @@ namespace WatchPartyForEmby
 
                 var config = Plugin.Instance.Configuration;
 
-                if (string.IsNullOrEmpty(config.AdminPasswordHash) || string.IsNullOrEmpty(adminPassword) || 
+                if (string.IsNullOrEmpty(config.AdminPasswordHash) || string.IsNullOrEmpty(adminPassword) ||
                     !PasswordHelper.VerifyPassword(adminPassword, config.AdminPasswordHash))
                 {
                     RecordLoginAttempt(ipAddress, false);
                     LogAudit(ipAddress, "login", null, false, "Invalid credentials");
-                    
+
                     // Add delay to prevent brute force
                     await Task.Delay(1000);
                     response.StatusCode = (int)HttpStatusCode.Unauthorized;
@@ -901,9 +901,9 @@ namespace WatchPartyForEmby
                 RecordLoginAttempt(ipAddress, true);
                 var token = CreateSession(ipAddress);
                 var csrfToken = GenerateCsrfToken(ipAddress);
-                
+
                 LogAudit(ipAddress, "login", "admin", true, "Successful login");
-                
+
                 response.AddHeader("X-Session-Token", token);
                 if (!string.IsNullOrEmpty(csrfToken))
                 {
@@ -911,11 +911,11 @@ namespace WatchPartyForEmby
                 }
                 response.AddHeader("Cache-Control", "no-store");
                 response.AddHeader("Pragma", "no-cache");
-                
+
                 response.StatusCode = (int)HttpStatusCode.OK;
                 response.ContentType = "application/json";
-                await WriteResponse(response, _jsonSerializer.SerializeToString(new { 
-                    success = true, 
+                await WriteResponse(response, _jsonSerializer.SerializeToString(new {
+                    success = true,
                     token = token,
                     csrfToken = csrfToken,
                     expiresIn = config.SessionExpirationMinutes * 60
@@ -939,14 +939,14 @@ namespace WatchPartyForEmby
             {
                 var config = Plugin.Instance.Configuration;
                 var apiKey = config.EmbyApiKey;
-                
+
                 if (string.IsNullOrEmpty(apiKey))
                 {
                     response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
                     await WriteResponse(response, "{\"error\":\"Service not configured\"}");
                     return;
                 }
-                
+
                 var embyPath = request.Url.AbsolutePath.Substring("/api/emby".Length);
 
                 if (string.IsNullOrEmpty(embyPath) || embyPath.Contains("..") || embyPath.Contains("//"))
@@ -959,10 +959,10 @@ namespace WatchPartyForEmby
                 using (var client = new System.Net.Http.HttpClient())
                 {
                     client.Timeout = TimeSpan.FromSeconds(30);
-                    
+
                     var embyUrl = EmbyServerAddress.Build(config.EmbyServerUrl, $"emby{embyPath}");
                     var queryParams = new List<string>();
-                    
+
                     if (request.QueryString.Count > 0)
                     {
                         foreach (var key in request.QueryString.AllKeys)
@@ -980,12 +980,12 @@ namespace WatchPartyForEmby
                                 $"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(value ?? string.Empty)}");
                         }
                     }
-                    
+
                     if (queryParams.Count > 0)
                     {
                         embyUrl += "?" + string.Join("&", queryParams);
                     }
-                    
+
                     using (var httpRequest = new System.Net.Http.HttpRequestMessage(
                         System.Net.Http.HttpMethod.Get,
                         embyUrl))
@@ -1021,40 +1021,40 @@ namespace WatchPartyForEmby
             {
                 var request = _jsonSerializer.DeserializeFromString<Dictionary<string, object>>(requestBody);
                 var userId = request.ContainsKey("userId") ? request["userId"]?.ToString() : null;
-                
+
                 if (!ValidateInput(userId, 100))
                 {
                     response.StatusCode = (int)HttpStatusCode.BadRequest;
                     await WriteResponse(response, "{\"error\":\"Invalid input\"}");
                     return;
                 }
-                
+
                 if (string.IsNullOrEmpty(userId))
                 {
                     response.StatusCode = (int)HttpStatusCode.BadRequest;
                     await WriteResponse(response, "{\"error\":\"userId is required\"}");
                     return;
                 }
-                
+
                 var config = Plugin.Instance.Configuration;
                 var embyServerUrl = EmbyServerAddress.GetBaseUrl(config.EmbyServerUrl);
-                
+
                 var apiKey = config.EmbyApiKey;
-                
+
                 using (var httpClient = new System.Net.Http.HttpClient())
                 {
                     httpClient.Timeout = TimeSpan.FromSeconds(10);
                     var httpRequest = new System.Net.Http.HttpRequestMessage(
-                        System.Net.Http.HttpMethod.Get, 
+                        System.Net.Http.HttpMethod.Get,
                         $"{embyServerUrl}/emby/Users/{Uri.EscapeDataString(userId)}"
                     );
                     httpRequest.Headers.Add("X-Emby-Token", apiKey);
-                    
+
                     var userResponse = await httpClient.SendAsync(httpRequest);
                     var userJson = await userResponse.Content.ReadAsStringAsync();
                     var userData = _jsonSerializer.DeserializeFromString<Dictionary<string, object>>(userJson);
                     var userName = userData.ContainsKey("Name") ? userData["Name"]?.ToString() : "Unknown";
-                    
+
                     var result = new { userId = userId, userName = userName };
                     var resultJson = _jsonSerializer.SerializeToString(result);
                     response.StatusCode = (int)HttpStatusCode.OK;
@@ -1165,7 +1165,7 @@ namespace WatchPartyForEmby
                             .ToList();
                     }
                 }
-                
+
                 var isSeriesParty = request.ContainsKey("isSeriesParty") && Convert.ToBoolean(request["isSeriesParty"]);
                 var episodeQueue = new List<WatchPartyEpisode>();
                 var currentEpisodeIndex = -1;
@@ -1228,7 +1228,7 @@ namespace WatchPartyForEmby
                     LibraryId = libraryId,
                     ItemId = itemId,
                     ItemName = itemName,
-                    ItemType = request.ContainsKey("itemType") && ValidateInput(request["itemType"]?.ToString(), 50) 
+                    ItemType = request.ContainsKey("itemType") && ValidateInput(request["itemType"]?.ToString(), 50)
                         ? request["itemType"]?.ToString() : "Movie",
                     SeriesId = request.ContainsKey("seriesId") && ValidateInput(request["seriesId"]?.ToString(), 100)
                         ? request["seriesId"]?.ToString() : null,
@@ -1243,22 +1243,22 @@ namespace WatchPartyForEmby
                     IsActive = request.ContainsKey("isActive") ? Convert.ToBoolean(request["isActive"]) : false,
                     CurrentPositionTicks = 0,
                     IsPlaying = false,
-                    MaxParticipants = request.ContainsKey("maxParticipants") ? 
+                    MaxParticipants = request.ContainsKey("maxParticipants") ?
                         Math.Min(Math.Max(Convert.ToInt32(request["maxParticipants"]), 1), 1000) : 50,
                     AllowedUserIds = allowedUserIds,
                     MasterUserId = masterUserId,
                     IsWaitingRoom = request.ContainsKey("isWaitingRoom") ? Convert.ToBoolean(request["isWaitingRoom"]) : false,
                     AutoStartWhenReady = request.ContainsKey("autoStartWhenReady") ? Convert.ToBoolean(request["autoStartWhenReady"]) : false,
-                    MinReadyCount = request.ContainsKey("minReadyCount") ? 
+                    MinReadyCount = request.ContainsKey("minReadyCount") ?
                         Math.Max(Convert.ToInt32(request["minReadyCount"]), 1) : 1,
                     PauseControl = request.ContainsKey("pauseControl") && ValidateInput(request["pauseControl"]?.ToString(), 20)
                         ? request["pauseControl"]?.ToString() : "Anyone",
                     SyncToleranceSeconds = request.ContainsKey("syncToleranceSeconds") ?
                         Math.Max(Convert.ToInt32(request["syncToleranceSeconds"]), 1) : 10,
-                    MaxBufferThresholdSeconds = request.ContainsKey("maxBufferThresholdSeconds") ? 
+                    MaxBufferThresholdSeconds = request.ContainsKey("maxBufferThresholdSeconds") ?
                         Math.Max(Convert.ToInt32(request["maxBufferThresholdSeconds"]), 1) : 30,
                     AutoKickInactiveMinutes = request.ContainsKey("autoKickInactiveMinutes") ? Convert.ToBoolean(request["autoKickInactiveMinutes"]) : false,
-                    InactiveTimeoutMinutes = request.ContainsKey("inactiveTimeoutMinutes") ? 
+                    InactiveTimeoutMinutes = request.ContainsKey("inactiveTimeoutMinutes") ?
                         Math.Max(Convert.ToInt32(request["inactiveTimeoutMinutes"]), 1) : 15,
                     CreatedDate = DateTime.UtcNow
                 };
