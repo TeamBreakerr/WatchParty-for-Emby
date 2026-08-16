@@ -63,6 +63,7 @@ namespace WatchPartyForEmby.Api
     {
         public string UserId { get; set; }
         public string UserName { get; set; }
+        public string SessionId { get; set; }
         public bool IsHost { get; set; }
         public bool IsReady { get; set; }
         public bool IsBuffering { get; set; }
@@ -161,9 +162,7 @@ namespace WatchPartyForEmby.Api
                 }
 
                 var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
-                var participantCount = Plugin.Instance.PartyParticipants.TryGetValue(party.Id, out var participants)
-                    ? participants.Count
-                    : 0;
+                var participantCount = Plugin.Instance.PartyParticipants.DistinctUserCount(party.Id);
                 
                 parties.Add(new WatchPartyInfo
                 {
@@ -196,29 +195,38 @@ namespace WatchPartyForEmby.Api
             var plugin = Plugin.Instance;
             var participants = new List<ParticipantInfo>();
 
-            if (plugin.PartyParticipants.TryGetValue(request.Id, out var partyParticipants))
+            var config = plugin.Configuration;
+            var party = config.WatchParties.FirstOrDefault(p => p.Id == request.Id);
+            var hostUserId = party?.HostUserId;
+            var readyUsers = plugin.PartyReadyUsers.TryGetValue(request.Id, out var readySet)
+                ? readySet
+                : new HashSet<string>();
+
+            // One row per user, using their most recently active session.
+            var participantsByUser = new Dictionary<string, PartyParticipant>(StringComparer.Ordinal);
+            foreach (var participant in plugin.PartyParticipants.GetSessions(request.Id)
+                .OrderByDescending(p => p.LastActivityAt))
             {
-                var readyUsers = plugin.PartyReadyUsers.ContainsKey(request.Id) 
-                    ? plugin.PartyReadyUsers[request.Id] 
-                    : new HashSet<string>();
-
-                var config = plugin.Configuration;
-                var party = config.WatchParties.FirstOrDefault(p => p.Id == request.Id);
-                var hostUserId = party?.HostUserId;
-
-                foreach (var participant in partyParticipants.Values)
+                if (!string.IsNullOrEmpty(participant.UserId)
+                    && !participantsByUser.ContainsKey(participant.UserId))
                 {
-                    participants.Add(new ParticipantInfo
-                    {
-                        UserId = participant.UserId,
-                        UserName = participant.UserName,
-                        IsHost = participant.UserId == hostUserId,
-                        IsReady = readyUsers.Contains(participant.UserId),
-                        IsBuffering = participant.IsBuffering,
-                        CurrentPositionTicks = participant.CurrentPositionTicks,
-                        LastActivityAt = participant.LastActivityAt
-                    });
+                    participantsByUser[participant.UserId] = participant;
                 }
+            }
+
+            foreach (var participant in participantsByUser.Values)
+            {
+                participants.Add(new ParticipantInfo
+                {
+                    UserId = participant.UserId,
+                    UserName = participant.UserName,
+                    SessionId = participant.SessionId,
+                    IsHost = participant.UserId == hostUserId,
+                    IsReady = readyUsers.Contains(participant.UserId),
+                    IsBuffering = participant.IsBuffering,
+                    CurrentPositionTicks = participant.CurrentPositionTicks,
+                    LastActivityAt = participant.LastActivityAt
+                });
             }
 
             return new PartyParticipantsResponse

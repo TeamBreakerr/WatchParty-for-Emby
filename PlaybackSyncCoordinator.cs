@@ -5,15 +5,29 @@ namespace WatchPartyForEmby
 {
     public sealed class PlaybackSyncCoordinator
     {
-        private static readonly TimeSpan SeekCooldown = TimeSpan.FromSeconds(8);
+        // The settle window doubles as the quiet period after any commanded seek.
+        // Slow sources (e.g. 115-backed streams) can take 10-30s to restart after a
+        // seek; re-commanding during that window just restarts the buffering loop.
+        private static readonly TimeSpan SeekCooldown = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan SeekConfirmTolerance = TimeSpan.FromSeconds(1.5);
+        // Production traces show iOS emitting seek-induced pause transitions as late as
+        // ~6.3s after the command while a 115 stream re-buffers. Eight seconds covers that
+        // observed tail without suppressing intentional pause input for the full 30s.
+        private static readonly TimeSpan SeekStateEchoWindow = TimeSpan.FromSeconds(8);
         private static readonly TimeSpan PauseEchoWindow = TimeSpan.FromSeconds(8);
 
         private readonly object _syncRoot = new object();
-        private readonly Dictionary<string, DateTime> _seekSettlingUntil = new Dictionary<string, DateTime>();
+        private readonly Dictionary<string, PendingSeekState> _pendingSeeks = new Dictionary<string, PendingSeekState>();
         private readonly Dictionary<string, ExpectedPauseState> _expectedPauseStates = new Dictionary<string, ExpectedPauseState>();
         private readonly Dictionary<string, MasterClockState> _masterClocks = new Dictionary<string, MasterClockState>();
 
-        public bool TryBeginSeek(string sessionId, long targetPositionTicks, DateTime nowUtc)
+        /// <summary>
+        /// Begins (or, for <paramref name="allowReplace"/>, replaces) a pending seek.
+        /// Periodic corrections must not replace a still-settling master seek; only a new
+        /// master-triggered seek may do so. The settle window throttles how often the same
+        /// participant can be commanded, so periodic calibration never stacks seeks.
+        /// </summary>
+        public bool TryBeginSeek(string sessionId, long targetPositionTicks, DateTime nowUtc, bool allowReplace = false)
         {
             if (string.IsNullOrEmpty(sessionId) || targetPositionTicks < 0)
             {
@@ -22,14 +36,84 @@ namespace WatchPartyForEmby
 
             lock (_syncRoot)
             {
-                if (_seekSettlingUntil.TryGetValue(sessionId, out var settlingUntil)
-                    && nowUtc < settlingUntil)
+                if (_pendingSeeks.TryGetValue(sessionId, out var pending))
+                {
+                    if (nowUtc >= pending.ExpiresAt)
+                    {
+                        // The settle window expired without client confirmation; allow a retry.
+                        _pendingSeeks.Remove(sessionId);
+                    }
+                    else if (pending.TargetPositionTicks == targetPositionTicks)
+                    {
+                        // Same target is still pending: suppress the duplicate.
+                        return false;
+                    }
+                    else if (!allowReplace)
+                    {
+                        // A periodic correction must not stomp a master seek that is still
+                        // settling; otherwise the client gets bounced around by converging
+                        // targets in quick succession.
+                        return false;
+                    }
+                    else
+                    {
+                        // The master kept dragging: replace the pending target so the
+                        // newer position is sent instead of being swallowed by cooldown.
+                        pending.TargetPositionTicks = targetPositionTicks;
+                        pending.CommandedAt = nowUtc;
+                        pending.ExpiresAt = nowUtc + SeekCooldown;
+                        pending.HasConfirmedTarget = false;
+                        return true;
+                    }
+                }
+
+                _pendingSeeks[sessionId] = new PendingSeekState
+                {
+                    TargetPositionTicks = targetPositionTicks,
+                    CommandedAt = nowUtc,
+                    ExpiresAt = nowUtc + SeekCooldown
+                };
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Marks a pending seek as confirmed once the client reports a position at or near
+        /// the requested target. Confirmation deliberately does not end the quiet period:
+        /// Emby iOS can briefly echo the commanded UI position before its native player
+        /// snaps back to the old position. Keeping the pending state prevents periodic
+        /// calibration from turning that transient echo into a seek loop.
+        /// </summary>
+        public bool ConfirmSeekTarget(string sessionId, long positionTicks, DateTime nowUtc)
+        {
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                return false;
+            }
+
+            lock (_syncRoot)
+            {
+                if (!_pendingSeeks.TryGetValue(sessionId, out var pending))
                 {
                     return false;
                 }
 
-                _seekSettlingUntil[sessionId] = nowUtc + SeekCooldown;
-                return true;
+                if (nowUtc >= pending.ExpiresAt)
+                {
+                    _pendingSeeks.Remove(sessionId);
+                    return false;
+                }
+
+                if (Math.Abs(positionTicks - pending.TargetPositionTicks) <= SeekConfirmTolerance.Ticks)
+                {
+                    if (!pending.HasConfirmedTarget)
+                    {
+                        pending.HasConfirmedTarget = true;
+                        return true;
+                    }
+                }
+
+                return false;
             }
         }
 
@@ -42,18 +126,38 @@ namespace WatchPartyForEmby
 
             lock (_syncRoot)
             {
-                if (!_seekSettlingUntil.TryGetValue(sessionId, out var settlingUntil))
+                if (!_pendingSeeks.TryGetValue(sessionId, out var pending))
                 {
                     return false;
                 }
 
-                if (nowUtc < settlingUntil)
+                if (nowUtc < pending.ExpiresAt)
                 {
                     return true;
                 }
 
-                _seekSettlingUntil.Remove(sessionId);
+                _pendingSeeks.Remove(sessionId);
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Returns true only during the short interval in which a seek may make a client
+        /// emit synthetic pause/unpause transitions. This is intentionally much shorter
+        /// than the buffering cooldown so real user pause input is not ignored for 30s.
+        /// </summary>
+        public bool IsSeekStateEchoExpected(string sessionId, DateTime nowUtc)
+        {
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                return false;
+            }
+
+            lock (_syncRoot)
+            {
+                return _pendingSeeks.TryGetValue(sessionId, out var pending)
+                    && nowUtc >= pending.CommandedAt
+                    && nowUtc < pending.CommandedAt + SeekStateEchoWindow;
             }
         }
 
@@ -173,7 +277,7 @@ namespace WatchPartyForEmby
 
             lock (_syncRoot)
             {
-                _seekSettlingUntil.Remove(sessionId);
+                _pendingSeeks.Remove(sessionId);
                 _expectedPauseStates.Remove(sessionId);
             }
         }
@@ -191,22 +295,6 @@ namespace WatchPartyForEmby
             }
         }
 
-        public static bool ShouldSynchronizeParticipant(
-            bool isActive,
-            bool isPlaying,
-            bool isWaitingRoom,
-            bool isMaster,
-            long sessionPositionTicks,
-            long partyPositionTicks,
-            long toleranceTicks)
-        {
-            return isActive
-                && isPlaying
-                && !isWaitingRoom
-                && !isMaster
-                && Math.Abs(sessionPositionTicks - partyPositionTicks) > Math.Max(0, toleranceTicks);
-        }
-
         private static long EstimatePosition(MasterClockState clock, DateTime nowUtc)
         {
             if (!clock.IsPlaying || nowUtc <= clock.UpdatedAt)
@@ -221,6 +309,14 @@ namespace WatchPartyForEmby
         {
             public bool IsPaused { get; set; }
             public DateTime ExpiresAt { get; set; }
+        }
+
+        private sealed class PendingSeekState
+        {
+            public long TargetPositionTicks { get; set; }
+            public DateTime CommandedAt { get; set; }
+            public DateTime ExpiresAt { get; set; }
+            public bool HasConfirmedTarget { get; set; }
         }
 
         private sealed class MasterClockState
