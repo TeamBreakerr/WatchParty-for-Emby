@@ -1,29 +1,34 @@
 using System;
+using System.Collections.Generic;
 
 namespace WatchPartyForEmby
 {
     /// <summary>
-    /// Decides whether a session can receive pause-state commands. Official Emby
-    /// clients transiently clear SupportsRemoteControl while their player is being
-    /// recreated, even though their server command channel remains usable. Third-party
-    /// clients must still explicitly advertise support to avoid false-positive control.
+    /// Decides whether a session can receive playback commands. A command is only
+    /// considered deliverable when the session advertises both remote-control support
+    /// and video playback capability. This avoids treating a server-accepted command as
+    /// proof that a real player could execute it.
     /// </summary>
     public static class PlaybackControlCapabilities
     {
-        public static bool CanReceivePauseState(string client, bool supportsRemoteControl)
+        public static bool CanReceivePlaybackCommand(
+            bool supportsRemoteControl,
+            IEnumerable<string> playableMediaTypes)
         {
-            if (supportsRemoteControl)
-            {
-                return true;
-            }
-
-            if (string.IsNullOrWhiteSpace(client))
+            if (!supportsRemoteControl || playableMediaTypes == null)
             {
                 return false;
             }
 
-            return string.Equals(client, "Emby", StringComparison.OrdinalIgnoreCase)
-                || client.StartsWith("Emby ", StringComparison.OrdinalIgnoreCase);
+            foreach (var mediaType in playableMediaTypes)
+            {
+                if (string.Equals(mediaType, "Video", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }

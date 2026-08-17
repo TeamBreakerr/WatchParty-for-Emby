@@ -173,7 +173,7 @@ namespace WatchPartyForEmby
             AutoStartWhenReady = true;
             MinReadyCount = 1;
             PauseControl = "Anyone";
-            SyncToleranceSeconds = 10;
+            SyncToleranceSeconds = 2;
             MaxBufferThresholdSeconds = 30;
             AutoKickInactiveMinutes = true;
             InactiveTimeoutMinutes = 15;

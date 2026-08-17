@@ -251,6 +251,36 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void PositionedPauseDuringSeekWindowRemainsUserInput()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 17, 10, 0, 0, DateTimeKind.Utc);
+            Assert.True(coordinator.TryBeginSeek(
+                "ios-session",
+                TimeSpan.FromMinutes(10).Ticks,
+                now,
+                allowReplace: true));
+
+            var positionedPause = coordinator.ClassifyInboundPauseState(
+                "ios-session",
+                previousIsPaused: false,
+                reportedIsPaused: true,
+                reportedPositionTicks: TimeSpan.FromMinutes(10).Ticks,
+                now.AddSeconds(2));
+            var positionlessReloadEcho = coordinator.ClassifyInboundPauseState(
+                "ios-session",
+                previousIsPaused: false,
+                reportedIsPaused: true,
+                reportedPositionTicks: null,
+                now.AddSeconds(3));
+
+            Assert.True(positionedPause.IsTransition);
+            Assert.False(positionedPause.IsSyntheticEcho);
+            Assert.True(positionlessReloadEcho.IsSeekCommandEcho);
+            Assert.False(positionlessReloadEcho.IsSyntheticEcho);
+        }
+
+        [Fact]
         public void PauseSyncCanForceOneSeekEvenWhenTheSameTargetIsPending()
         {
             var coordinator = new PlaybackSyncCoordinator();

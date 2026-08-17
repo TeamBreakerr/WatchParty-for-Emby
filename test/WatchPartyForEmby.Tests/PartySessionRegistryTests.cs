@@ -276,7 +276,7 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
-        public void FirstUnseenProgressPlaybackCanReplaceCurrentWhenStartWasMissing()
+        public void RepeatedUnknownProgressNeverReplacesAKnownPlayback()
         {
             var registry = new PartySessionRegistry();
             var now = new DateTime(2026, 8, 17, 0, 45, 0, DateTimeKind.Utc);
@@ -285,6 +285,85 @@ namespace WatchPartyForEmby.Tests
                 "web-session",
                 Participant("master", "web-session", now, "old-playback"));
 
+            // One unknown report is not trustworthy: it may be a delayed callback from
+            // another Web playback instance sharing this SessionId.
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "new-playback",
+                TimeSpan.FromSeconds(1).Ticks,
+                now.AddMilliseconds(100),
+                out var adopted,
+                out var previousPlayback));
+            Assert.False(adopted);
+            Assert.Equal("old-playback", previousPlayback);
+            Assert.True(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                "old-playback"));
+
+            // A second delayed callback is still not proof of a replacement playback.
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "new-playback",
+                TimeSpan.FromSeconds(2).Ticks,
+                now.AddSeconds(1),
+                out adopted,
+                out previousPlayback));
+            Assert.False(adopted);
+            Assert.Equal("old-playback", previousPlayback);
+            Assert.True(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                "old-playback"));
+        }
+
+        [Fact]
+        public void SustainedProgressRecoversAfterTheKnownPlaybackFallsSilent()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 0, 45, 30, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "web-session",
+                Participant("master", "web-session", now, "old-playback"));
+
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "new-playback",
+                TimeSpan.FromSeconds(100).Ticks,
+                now.AddSeconds(1),
+                out var adopted,
+                out _));
+            Assert.True(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "new-playback",
+                TimeSpan.FromSeconds(109).Ticks,
+                now.AddSeconds(10),
+                out adopted,
+                out var previousPlayback));
+
+            Assert.True(adopted);
+            Assert.Equal("old-playback", previousPlayback);
+            Assert.True(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                "new-playback"));
+        }
+
+        [Fact]
+        public void ProgressEstablishesIdentityWhenStartWasMissingAndNoPlaybackIsKnown()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 0, 46, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "web-session",
+                Participant("master", "web-session", now, playSessionId: null));
+
             Assert.True(registry.TryAcceptPlaybackProgress(
                 "party",
                 "web-session",
@@ -292,18 +371,56 @@ namespace WatchPartyForEmby.Tests
                 out var adopted,
                 out var previousPlayback));
             Assert.True(adopted);
-            Assert.Equal("old-playback", previousPlayback);
+            Assert.Null(previousPlayback);
             Assert.True(registry.IsCurrentPlaybackSession(
                 "party",
                 "web-session",
                 "new-playback"));
+        }
+
+        [Fact]
+        public void InterleavedLatePlaybackCannotTakeOverTheCurrentInstance()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 0, 47, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "web-session",
+                Participant("master", "web-session", now, "current-playback"));
+
             Assert.False(registry.TryAcceptPlaybackProgress(
                 "party",
                 "web-session",
-                "old-playback",
+                "late-playback",
+                TimeSpan.FromSeconds(400).Ticks,
+                now.AddSeconds(1),
+                out var adopted,
+                out _));
+            Assert.False(adopted);
+
+            Assert.True(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "current-playback",
+                TimeSpan.FromSeconds(70).Ticks,
+                now.AddSeconds(2),
                 out adopted,
                 out _));
             Assert.False(adopted);
+
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "late-playback",
+                TimeSpan.FromSeconds(409).Ticks,
+                now.AddSeconds(10),
+                out adopted,
+                out _));
+            Assert.False(adopted);
+            Assert.True(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                "current-playback"));
         }
 
         [Fact]
@@ -409,10 +526,10 @@ namespace WatchPartyForEmby.Tests
                 "party", "session-3", "playback-3", out _, out _));
 
             registry.UpsertSession(
-                "party", "session-2", "viewer-2", "Viewer 2", "playback-4", now.AddSeconds(3),
+                "party", "session-2", "viewer-2", "Viewer 2", null, now.AddSeconds(3),
                 out _, out _);
             registry.UpsertSession(
-                "party", "session-1", "viewer-1", "Viewer 1", "playback-5", now.AddSeconds(3),
+                "party", "session-1", "viewer-1", "Viewer 1", null, now.AddSeconds(3),
                 out _, out _);
 
             Assert.False(registry.TryAcceptPlaybackProgress(
@@ -435,7 +552,7 @@ namespace WatchPartyForEmby.Tests
 
             registry.ClearParty("party");
             registry.UpsertSession(
-                "party", "ios-session", "viewer", "Viewer", "playback-2", now.AddSeconds(1),
+                "party", "ios-session", "viewer", "Viewer", null, now.AddSeconds(1),
                 out _, out _);
 
             Assert.True(registry.TryAcceptPlaybackProgress(

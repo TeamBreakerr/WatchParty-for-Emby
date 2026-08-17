@@ -41,7 +41,10 @@ namespace WatchPartyForEmby
 
         public bool IsSeekCommandEcho { get; }
 
-        public bool IsSyntheticEcho => IsExpectedCommandEcho || IsSeekCommandEcho;
+        // A seek marker is diagnostic only: unlike an explicit Pause/Unpause command,
+        // it cannot prove that a state transition was synthetic. Suppressing it would
+        // also suppress a real position-less user action during the same window.
+        public bool IsSyntheticEcho => IsExpectedCommandEcho;
     }
 
     public sealed class PlaybackSyncCoordinator
@@ -384,6 +387,27 @@ namespace WatchPartyForEmby
             bool reportedIsPaused,
             DateTime nowUtc)
         {
+            return ClassifyInboundPauseState(
+                sessionId,
+                previousIsPaused,
+                reportedIsPaused,
+                reportedPositionTicks: null,
+                nowUtc);
+        }
+
+        /// <summary>
+        /// A position-less transition inside the short seek window is marked as a
+        /// possible player-reload echo for diagnostics. It is not treated as a proven
+        /// synthetic command: viewers may also issue legitimate position-less pause or
+        /// unpause actions during the same window.
+        /// </summary>
+        public InboundPauseStateClassification ClassifyInboundPauseState(
+            string sessionId,
+            bool previousIsPaused,
+            bool reportedIsPaused,
+            long? reportedPositionTicks,
+            DateTime nowUtc)
+        {
             var isTransition = reportedIsPaused != previousIsPaused;
             if (string.IsNullOrEmpty(sessionId))
             {
@@ -400,7 +424,8 @@ namespace WatchPartyForEmby
                     reportedIsPaused,
                     nowUtc,
                     clearOnMismatch: isTransition);
-                var isSeekCommandEcho = _pendingSeeks.TryGetValue(sessionId, out var pending)
+                var isSeekCommandEcho = !reportedPositionTicks.HasValue
+                    && _pendingSeeks.TryGetValue(sessionId, out var pending)
                     && nowUtc >= pending.CommandedAt
                     && nowUtc < pending.CommandedAt + SeekStateEchoWindow;
 

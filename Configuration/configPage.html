@@ -292,9 +292,9 @@
 
                         <div class="inputContainer" style="margin-top: 1em;">
                             <label class="inputLabel inputLabelUnfocused" for="syncToleranceSeconds">主控跳转识别阈值（秒）</label>
-                            <input is="emby-input" type="number" id="syncToleranceSeconds" min="1" max="60" step="1" value="10" />
+                            <input is="emby-input" type="number" id="syncToleranceSeconds" min="1" max="60" step="1" value="2" />
                             <div class="fieldDescription">
-                                主控上报位置偏离服务器投影时间超过该值时，视为人工拖动并立即同步。普通播放仍使用内置安全容差，避免 115/小雅流被反复 seek。
+                                主控上报位置偏离服务器投影时间超过该值时，视为人工拖动并立即同步。默认 2 秒可避免小幅漂移被误判；普通播放仍使用安全校准策略，避免 115/小雅流被反复 seek。
                             </div>
                         </div>
 

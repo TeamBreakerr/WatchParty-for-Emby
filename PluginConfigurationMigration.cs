@@ -6,7 +6,12 @@ namespace WatchPartyForEmby
     {
         public const int DirectItemBindingVersion = 2;
 
-        public static int ResetLegacyRooms(PluginConfiguration configuration)
+        /// <summary>
+        /// Marks the direct-item binding migration complete without deleting the
+        /// persisted rooms. Room records already contain the original Emby ItemId;
+        /// deleting them on startup was an irreversible data-loss bug.
+        /// </summary>
+        public static int UpgradeLegacyRooms(PluginConfiguration configuration)
         {
             if (configuration == null)
             {
@@ -18,10 +23,16 @@ namespace WatchPartyForEmby
                 return 0;
             }
 
-            var removedRoomCount = configuration.WatchParties?.Count ?? 0;
-            configuration.WatchParties?.Clear();
+            var preservedRoomCount = configuration.WatchParties?.Count ?? 0;
+            configuration.WatchParties ??= new System.Collections.Generic.List<WatchPartyItem>();
             configuration.ConfigurationVersion = DirectItemBindingVersion;
-            return removedRoomCount;
+            return preservedRoomCount;
+        }
+
+        [Obsolete("Use UpgradeLegacyRooms; legacy rooms are preserved during migration.")]
+        public static int ResetLegacyRooms(PluginConfiguration configuration)
+        {
+            return UpgradeLegacyRooms(configuration);
         }
     }
 }

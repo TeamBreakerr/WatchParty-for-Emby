@@ -982,7 +982,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             view.querySelector('#autoStartWhenReady').checked = true;
             view.querySelector('#minReadyCount').value = 1;
             view.querySelector('#pauseControl').value = 'Anyone';
-            view.querySelector('#syncToleranceSeconds').value = 10;
+            view.querySelector('#syncToleranceSeconds').value = 2;
             view.querySelector('#maxBufferThresholdSeconds').value = 30;
             view.querySelector('#autoKickInactive').checked = true;
             view.querySelector('#inactiveTimeoutMinutes').value = 15;
@@ -1209,7 +1209,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 view.querySelector('#autoStartWhenReady').disabled = false;
                 view.querySelector('#minReadyCount').value = 1;
                 view.querySelector('#pauseControl').value = 'Anyone';
-                view.querySelector('#syncToleranceSeconds').value = 10;
+                view.querySelector('#syncToleranceSeconds').value = 2;
                 view.querySelector('#maxBufferThresholdSeconds').value = 30;
                 view.querySelector('#autoKickInactive').checked = true;
                 view.querySelector('#inactiveTimeoutMinutes').value = 15;

@@ -1254,7 +1254,7 @@ namespace WatchPartyForEmby
                     PauseControl = request.ContainsKey("pauseControl") && ValidateInput(request["pauseControl"]?.ToString(), 20)
                         ? request["pauseControl"]?.ToString() : "Anyone",
                     SyncToleranceSeconds = request.ContainsKey("syncToleranceSeconds") ?
-                        Math.Max(Convert.ToInt32(request["syncToleranceSeconds"]), 1) : 10,
+                        Math.Max(Convert.ToInt32(request["syncToleranceSeconds"]), 1) : 2,
                     MaxBufferThresholdSeconds = request.ContainsKey("maxBufferThresholdSeconds") ?
                         Math.Max(Convert.ToInt32(request["maxBufferThresholdSeconds"]), 1) : 30,
                     AutoKickInactiveMinutes = request.ContainsKey("autoKickInactiveMinutes") ? Convert.ToBoolean(request["autoKickInactiveMinutes"]) : false,

@@ -82,7 +82,7 @@ namespace WatchPartyForEmby.Tests
             Assert.True(WatchPartyConfigurationPolicy.Normalize(party));
             Assert.Equal(50, party.MaxParticipants);
             Assert.Equal(1, party.MinReadyCount);
-            Assert.Equal(10, party.SyncToleranceSeconds);
+            Assert.Equal(2, party.SyncToleranceSeconds);
             Assert.Equal(30, party.MaxBufferThresholdSeconds);
             Assert.Equal(15, party.InactiveTimeoutMinutes);
         }

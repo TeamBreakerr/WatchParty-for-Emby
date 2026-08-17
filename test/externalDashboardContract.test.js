@@ -74,6 +74,7 @@ test('external Dashboard has unique IDs and only exposes implemented playback po
     assert.doesNotMatch(html, /joinParty|join chat|chat\.html|usernameModal/);
     assert.match(html, /id="newMaxParticipants" value="50" min="2" max="100"/);
     assert.match(html, /id="newMinReady" value="1" min="1"/);
+    assert.match(html, /id="newSyncTolerance" value="2" min="1" max="60"/);
 });
 
 test('external Dashboard uses the same clear Chinese room and control terms as the embedded page', () => {

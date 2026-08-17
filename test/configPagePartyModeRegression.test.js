@@ -508,6 +508,7 @@ test('embedded page exposes one ready-count input, accessible comboboxes, and mo
     assert.equal((html.match(/role="listbox"/g) || []).length, 3);
     assert.match(html, /@media \(max-width: 480px\)/);
     assert.match(html, /value="Anyone"[\s\S]*value="Host"[\s\S]*value="Vote"/);
+    assert.match(html, /id="syncToleranceSeconds"[^>]+value="2"/);
     assert.match(html, /id="autoStartWhenReadyContainer"[\s\S]*?id="autoStartWhenReady"/);
     assert.match(html, /id="inactiveTimeoutContainer"[\s\S]*?id="inactiveTimeoutMinutes"/);
     assert.doesNotMatch(script, /(?:itemSelect|itemInput)\.innerHTML/);

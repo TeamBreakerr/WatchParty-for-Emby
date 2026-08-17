@@ -4,34 +4,28 @@ namespace WatchPartyForEmby.Tests
 {
     public sealed class PlaybackControlCapabilitiesTests
     {
-        [Theory]
-        [InlineData("Emby Web")]
-        [InlineData("Emby for iOS")]
-        [InlineData("Emby Theater")]
-        public void OfficialEmbyClientsAllowPauseDuringTransientCapabilityReload(string client)
+        [Fact]
+        public void MissingRemoteControlNeverReportsACommandAsDeliverable()
         {
-            Assert.True(PlaybackControlCapabilities.CanReceivePauseState(
-                client,
-                supportsRemoteControl: false));
-        }
-
-        [Theory]
-        [InlineData("VidHub")]
-        [InlineData("Conflux")]
-        [InlineData(null)]
-        public void ThirdPartyClientsMustExplicitlySupportRemoteControl(string client)
-        {
-            Assert.False(PlaybackControlCapabilities.CanReceivePauseState(
-                client,
-                supportsRemoteControl: false));
+            Assert.False(PlaybackControlCapabilities.CanReceivePlaybackCommand(
+                supportsRemoteControl: false,
+                playableMediaTypes: new[] { "Video" }));
         }
 
         [Fact]
-        public void ExplicitRemoteControlSupportAlwaysAllowsPause()
+        public void MissingVideoCapabilityNeverReportsACommandAsDeliverable()
         {
-            Assert.True(PlaybackControlCapabilities.CanReceivePauseState(
-                "Conflux",
-                supportsRemoteControl: true));
+            Assert.False(PlaybackControlCapabilities.CanReceivePlaybackCommand(
+                supportsRemoteControl: true,
+                playableMediaTypes: new[] { "Audio" }));
+        }
+
+        [Fact]
+        public void RemoteVideoCapabilityAllowsPlaybackCommands()
+        {
+            Assert.True(PlaybackControlCapabilities.CanReceivePlaybackCommand(
+                supportsRemoteControl: true,
+                playableMediaTypes: new[] { "Audio", "video" }));
         }
     }
 }

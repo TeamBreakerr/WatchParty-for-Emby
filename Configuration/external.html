@@ -549,8 +549,8 @@
             <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">同步与性能</h3>
             <div style="margin: 15px 0;">
                 <label for="newSyncTolerance" style="display: block; margin-bottom: 5px;">主控跳转识别阈值（秒）</label>
-                <input type="number" id="newSyncTolerance" value="10" min="1" max="60" step="1" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-                <div class="field-help">主控上报位置偏离服务器投影时间超过该值时，视为人工拖动并立即同步。普通播放仍使用内置安全容差，避免 115/小雅流被反复 seek。</div>
+                <input type="number" id="newSyncTolerance" value="2" min="1" max="60" step="1" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                <div class="field-help">主控上报位置偏离服务器投影时间超过该值时，视为人工拖动并立即同步。默认 2 秒可避免小幅漂移被误判；普通播放仍使用安全校准策略，避免 115/小雅流被反复 seek。</div>
             </div>
             <div style="margin: 15px 0;">
                 <label for="newMaxBuffer" style="display: block; margin-bottom: 5px;">缓冲判定阈值（秒）</label>
@@ -1573,7 +1573,7 @@
             document.getElementById('newAutoStart').checked = true;
             document.getElementById('newMinReady').value = 1;
             document.getElementById('newPauseControl').value = 'Anyone';
-            document.getElementById('newSyncTolerance').value = 10;
+            document.getElementById('newSyncTolerance').value = 2;
             document.getElementById('newMaxBuffer').value = 30;
             document.getElementById('newAutoKick').checked = true;
             document.getElementById('newInactiveTimeout').value = 15;

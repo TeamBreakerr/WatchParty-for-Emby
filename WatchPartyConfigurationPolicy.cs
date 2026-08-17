@@ -44,7 +44,7 @@ namespace WatchPartyForEmby
                 value => party.MinReadyCount = value);
             changed |= SetIfDifferent(
                 party.SyncToleranceSeconds,
-                NormalizeBounded(party.SyncToleranceSeconds, 1, 60, 10),
+                NormalizeBounded(party.SyncToleranceSeconds, 1, 60, 2),
                 value => party.SyncToleranceSeconds = value);
             changed |= SetIfDifferent(
                 party.MaxBufferThresholdSeconds,

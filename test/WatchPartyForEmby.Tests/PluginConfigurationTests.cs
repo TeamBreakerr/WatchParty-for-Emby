@@ -21,17 +21,25 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
-        public void DirectItemUpgradeDeletesLegacyRoomsAndIsIdempotent()
+        public void NewRoomsUseTheTwoSecondSeekTolerance()
+        {
+            Assert.Equal(2, new WatchPartyItem().SyncToleranceSeconds);
+        }
+
+        [Fact]
+        public void DirectItemUpgradePreservesLegacyRoomsAndIsIdempotent()
         {
             var configuration = new PluginConfiguration();
-            configuration.WatchParties.Add(new WatchPartyItem { ItemId = "1234" });
+            var room = new WatchPartyItem { ItemId = "1234" };
+            configuration.WatchParties.Add(room);
 
-            var removedRoomCount = PluginConfigurationMigration.ResetLegacyRooms(configuration);
+            var preservedRoomCount = PluginConfigurationMigration.UpgradeLegacyRooms(configuration);
 
-            Assert.Equal(1, removedRoomCount);
-            Assert.Empty(configuration.WatchParties);
+            Assert.Equal(1, preservedRoomCount);
+            Assert.Single(configuration.WatchParties);
+            Assert.Same(room, configuration.WatchParties[0]);
             Assert.Equal(PluginConfigurationMigration.DirectItemBindingVersion, configuration.ConfigurationVersion);
-            Assert.Equal(0, PluginConfigurationMigration.ResetLegacyRooms(configuration));
+            Assert.Equal(0, PluginConfigurationMigration.UpgradeLegacyRooms(configuration));
         }
     }
 }
