@@ -72,6 +72,219 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void TransientNearZeroMasterReportPreservesTheAuthoritativeClock()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 17, 15, 27, 0, DateTimeKind.Utc);
+            var originalPosition = TimeSpan.FromMinutes(20).Ticks;
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                originalPosition,
+                isPlaying: true,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+
+            // Production trace from Emby Web: a position-less report is followed by a
+            // synthetic ~1s value, then the real continuously-advanced position. The
+            // ~1s sample must not replace the authoritative clock.
+            var transient = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(1).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            Assert.True(transient.IsDeferredReloadArtifact);
+            Assert.False(transient.IsSeek);
+            Assert.Equal(
+                originalPosition + TimeSpan.FromSeconds(30).Ticks,
+                transient.AuthoritativePositionTicks);
+
+            var recovered = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                originalPosition + TimeSpan.FromSeconds(32).Ticks,
+                isPlaying: true,
+                now.AddSeconds(32),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            Assert.False(recovered.IsDeferredReloadArtifact);
+            Assert.False(recovered.IsSeek);
+            Assert.Equal(
+                originalPosition + TimeSpan.FromSeconds(33).Ticks,
+                coordinator.GetEstimatedPartyPosition(
+                    "party",
+                    fallbackPositionTicks: 0,
+                    now.AddSeconds(33)));
+        }
+
+        [Fact]
+        public void RealSeekNearTheBeginningIsAcceptedWhenPlaybackAdvancesPastTheArtifactBand()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 17, 15, 27, 0, DateTimeKind.Utc);
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                TimeSpan.FromMinutes(20).Ticks,
+                isPlaying: true,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+
+            var staged = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(1).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+            var realTarget = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(7).Ticks,
+                isPlaying: true,
+                now.AddSeconds(32),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            Assert.True(staged.IsDeferredReloadArtifact);
+            Assert.False(realTarget.IsDeferredReloadArtifact);
+            Assert.True(realTarget.IsSeek);
+            Assert.Equal(TimeSpan.FromSeconds(7).Ticks, realTarget.AuthoritativePositionTicks);
+        }
+
+        [Fact]
+        public void DeferredNearZeroCommitIsRejectedAfterAuthoritativePositionRecovers()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 0, 0, 0, DateTimeKind.Utc);
+            var originalPosition = TimeSpan.FromMinutes(20).Ticks;
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                originalPosition,
+                isPlaying: true,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+            var staged = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(1).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                originalPosition + TimeSpan.FromSeconds(32).Ticks,
+                isPlaying: true,
+                now.AddSeconds(32),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            Assert.False(coordinator.TryCommitDeferredMasterPosition(
+                "party",
+                staged.AuthoritativeRevision,
+                TimeSpan.FromSeconds(11).Ticks,
+                staged.AuthoritativePositionTicks,
+                now.AddSeconds(40),
+                out _));
+            Assert.Equal(
+                originalPosition + TimeSpan.FromSeconds(33).Ticks,
+                coordinator.GetEstimatedPartyPosition(
+                    "party",
+                    fallbackPositionTicks: 0,
+                    now.AddSeconds(33)));
+        }
+
+        [Fact]
+        public void DeferredNearZeroCommitSucceedsWithoutANewerAuthoritativeReport()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 0, 0, 0, DateTimeKind.Utc);
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                TimeSpan.FromMinutes(20).Ticks,
+                isPlaying: true,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+            var staged = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(1).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            Assert.True(coordinator.TryCommitDeferredMasterPosition(
+                "party",
+                staged.AuthoritativeRevision,
+                TimeSpan.FromSeconds(1).Ticks,
+                staged.AuthoritativePositionTicks,
+                now.AddSeconds(40),
+                out var committedPosition));
+            Assert.Equal(TimeSpan.FromSeconds(11).Ticks, committedPosition);
+            Assert.Equal(
+                TimeSpan.FromSeconds(12).Ticks,
+                coordinator.GetEstimatedPartyPosition(
+                    "party",
+                    fallbackPositionTicks: 0,
+                    now.AddSeconds(41)));
+        }
+
+        [Fact]
+        public void PositionlessPauseDoesNotInvalidateADeferredNearZeroSeek()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 0, 0, 0, DateTimeKind.Utc);
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                TimeSpan.FromMinutes(20).Ticks,
+                isPlaying: true,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+            var staged = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(1).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            coordinator.SetMasterPlaybackState(
+                "party",
+                isPlaying: false,
+                fallbackPositionTicks: 0,
+                now.AddSeconds(31));
+
+            Assert.True(coordinator.TryCommitDeferredMasterPosition(
+                "party",
+                staged.AuthoritativeRevision,
+                TimeSpan.FromSeconds(1).Ticks,
+                staged.AuthoritativePositionTicks,
+                now.AddSeconds(40),
+                out var committedPosition));
+            Assert.Equal(TimeSpan.FromSeconds(2).Ticks, committedPosition);
+            Assert.Equal(
+                TimeSpan.FromSeconds(2).Ticks,
+                coordinator.GetEstimatedPartyPosition(
+                    "party",
+                    fallbackPositionTicks: 0,
+                    now.AddSeconds(41)));
+        }
+
+        [Fact]
         public void ConfirmedSeekKeepsTheQuietPeriodButAllowsANewMasterSeek()
         {
             var coordinator = new PlaybackSyncCoordinator();

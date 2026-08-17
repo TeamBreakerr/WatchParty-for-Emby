@@ -2048,13 +2048,31 @@ namespace WatchPartyForEmby
 
                         if (reportedPosition.HasValue)
                         {
-                            var priorPartyPosition = party.CurrentPositionTicks;
-                            var masterSeeked = _playbackSyncCoordinator.UpdateMasterPosition(
+                            var masterPositionUpdate = _playbackSyncCoordinator.UpdateMasterPositionGuardingReloadArtifact(
                                 party.Id,
                                 currentPosition,
                                 !e.IsPaused && !party.IsWaitingRoom,
                                 nowUtc,
-                                TimeSpan.FromSeconds(party.SyncToleranceSeconds).Ticks);
+                                TimeSpan.FromSeconds(party.SyncToleranceSeconds).Ticks,
+                                MasterSeekNearZeroThreshold.Ticks,
+                                MasterSeekDrasticFromThreshold.Ticks);
+
+                            if (masterPositionUpdate.IsDeferredReloadArtifact)
+                            {
+                                party.CurrentPositionTicks = masterPositionUpdate.AuthoritativePositionTicks;
+                                _logger.Debug(
+                                    $"[Party {party.Id}] Staged transient near-zero master position " +
+                                    $"{TimeSpan.FromTicks(currentPosition).TotalSeconds:F1}s while preserving " +
+                                    $"{TimeSpan.FromTicks(party.CurrentPositionTicks).TotalSeconds:F1}s");
+                                ScheduleMasterSeekSync(
+                                    party,
+                                    e.Session.Id,
+                                    currentPosition,
+                                    isReloadArtifact: true,
+                                    authoritativeRevision: masterPositionUpdate.AuthoritativeRevision,
+                                    stagedAuthoritativePositionTicks: masterPositionUpdate.AuthoritativePositionTicks);
+                                return;
+                            }
 
                             party.CurrentPositionTicks = currentPosition;
 
@@ -2064,7 +2082,7 @@ namespace WatchPartyForEmby
                             // A transition into pause already performed one explicit,
                             // offset-free sync above. Do not classify the same pause report
                             // as a second seek. Timeline drags while already paused still sync.
-                            if (masterSeeked && !(e.IsPaused && !wasPaused))
+                            if (masterPositionUpdate.IsSeek && !(e.IsPaused && !wasPaused))
                             {
                                 _logger.Info(
                                     $"[Party {party.Id}] Master seeked to " +
@@ -2072,8 +2090,14 @@ namespace WatchPartyForEmby
                                 ScheduleMasterSeekSync(
                                     party,
                                     e.Session.Id,
-                                    currentPosition,
-                                    priorPartyPosition);
+                                    currentPosition);
+                            }
+                            else if (!masterPositionUpdate.IsSeek
+                                && CancelPendingMasterReloadArtifact(party.Id))
+                            {
+                                _logger.Debug(
+                                    $"[Party {party.Id}] Discarded transient near-zero master position " +
+                                    "after the continuous position recovered");
                             }
                         }
                         else
@@ -2107,17 +2131,19 @@ namespace WatchPartyForEmby
             WatchPartyItem party,
             string masterSessionId,
             long positionTicks,
-            long priorPartyPositionTicks)
+            bool isReloadArtifact = false,
+            long authoritativeRevision = 0,
+            long stagedAuthoritativePositionTicks = 0)
         {
-            var debounce = GetMasterSeekDebounce(priorPartyPositionTicks, positionTicks);
+            var debounce = isReloadArtifact
+                ? MasterSeekDrasticDebounce
+                : MasterSeekDebounce;
 
             lock (_masterSeekSyncLock)
             {
                 if (_pendingMasterSeeks.TryGetValue(party.Id, out var pending))
                 {
-                    var newIsDrastic = debounce > MasterSeekDebounce;
-                    var pendingIsDrastic = pending.Debounce > MasterSeekDebounce;
-                    if (newIsDrastic && pendingIsDrastic)
+                    if (isReloadArtifact && pending.IsReloadArtifact)
                     {
                         // Both reports are transient near-zero positions from the same
                         // stream reload: keep the original hold deadline and just track
@@ -2125,6 +2151,8 @@ namespace WatchPartyForEmby
                         // reload report would defer the sync indefinitely.
                         pending.MasterSessionId = masterSessionId;
                         pending.PositionTicks = positionTicks;
+                        pending.AuthoritativeRevision = authoritativeRevision;
+                        pending.StagedAuthoritativePositionTicks = stagedAuthoritativePositionTicks;
                         return;
                     }
 
@@ -2134,6 +2162,9 @@ namespace WatchPartyForEmby
                     pending.MasterSessionId = masterSessionId;
                     pending.PositionTicks = positionTicks;
                     pending.Debounce = debounce;
+                    pending.IsReloadArtifact = isReloadArtifact;
+                    pending.AuthoritativeRevision = authoritativeRevision;
+                    pending.StagedAuthoritativePositionTicks = stagedAuthoritativePositionTicks;
                     pending.WindowCts.Cancel();
                     pending.WindowCts.Dispose();
                     pending.WindowCts = new CancellationTokenSource();
@@ -2146,21 +2177,14 @@ namespace WatchPartyForEmby
                     MasterSessionId = masterSessionId,
                     PositionTicks = positionTicks,
                     Debounce = debounce,
+                    IsReloadArtifact = isReloadArtifact,
+                    AuthoritativeRevision = authoritativeRevision,
+                    StagedAuthoritativePositionTicks = stagedAuthoritativePositionTicks,
                     WindowCts = new CancellationTokenSource()
                 };
                 _pendingMasterSeeks[party.Id] = pending;
                 _ = CompleteMasterSeekSyncAsync(party, pending, pending.WindowCts.Token);
             }
-        }
-
-        private static TimeSpan GetMasterSeekDebounce(long priorPositionTicks, long positionTicks)
-        {
-            // Emby Web resets its video element to ~1s while reloading the stream after a
-            // seek. If the master was well ahead and suddenly reports a near-zero position,
-            // hold for the reload to settle instead of bouncing participants to 0 and back.
-            var looksLikeReloadArtifact = positionTicks <= MasterSeekNearZeroThreshold.Ticks
-                && priorPositionTicks > MasterSeekDrasticFromThreshold.Ticks;
-            return looksLikeReloadArtifact ? MasterSeekDrasticDebounce : MasterSeekDebounce;
         }
 
         private void CancelPendingMasterSeekSync(string partyId)
@@ -2173,6 +2197,23 @@ namespace WatchPartyForEmby
                     pending.WindowCts.Dispose();
                     _pendingMasterSeeks.Remove(partyId);
                 }
+            }
+        }
+
+        private bool CancelPendingMasterReloadArtifact(string partyId)
+        {
+            lock (_masterSeekSyncLock)
+            {
+                if (!_pendingMasterSeeks.TryGetValue(partyId, out var pending)
+                    || !pending.IsReloadArtifact)
+                {
+                    return false;
+                }
+
+                pending.WindowCts.Cancel();
+                pending.WindowCts.Dispose();
+                _pendingMasterSeeks.Remove(partyId);
+                return true;
             }
         }
 
@@ -2193,6 +2234,9 @@ namespace WatchPartyForEmby
 
             string masterSessionId;
             long positionTicks;
+            bool isReloadArtifact;
+            long authoritativeRevision;
+            long stagedAuthoritativePositionTicks;
             lock (_masterSeekSyncLock)
             {
                 if (!_pendingMasterSeeks.TryGetValue(party.Id, out var current)
@@ -2203,15 +2247,47 @@ namespace WatchPartyForEmby
 
                 _pendingMasterSeeks.Remove(party.Id);
                 masterSessionId = pending.MasterSessionId;
+                isReloadArtifact = pending.IsReloadArtifact;
+                authoritativeRevision = pending.AuthoritativeRevision;
+                stagedAuthoritativePositionTicks = pending.StagedAuthoritativePositionTicks;
             }
 
-            // Sync to where the master clock projects to at fire time, so a near-zero
-            // hold that expires without a real target still lands participants at the
-            // master's actual (advanced) position.
-            positionTicks = _playbackSyncCoordinator.GetEstimatedPartyPosition(
-                party.Id,
-                pending.PositionTicks,
-                DateTime.UtcNow);
+            var nowUtc = DateTime.UtcNow;
+            if (isReloadArtifact)
+            {
+                // No continuous position replaced the candidate within the hold window,
+                // so this was a genuine seek to the beginning rather than Web's reload
+                // artifact. Commit it only now; until this point the authoritative clock
+                // remained untouched.
+                if (!_playbackSyncCoordinator.TryCommitDeferredMasterPosition(
+                    party.Id,
+                    authoritativeRevision,
+                    pending.PositionTicks,
+                    stagedAuthoritativePositionTicks,
+                    nowUtc,
+                    out positionTicks))
+                {
+                    _logger.Debug(
+                        $"[Party {party.Id}] Discarded expired near-zero master position " +
+                        "because a newer authoritative report already recovered");
+                    return;
+                }
+                party.CurrentPositionTicks = positionTicks;
+                CheckpointPartyProgress(party);
+                _logger.Info(
+                    $"[Party {party.Id}] Confirmed near-zero master seek at " +
+                    $"{TimeSpan.FromTicks(positionTicks).TotalSeconds:F1}s after reload hold");
+            }
+            else
+            {
+                // Sync to where the master clock projects to at fire time so a drag
+                // lands participants at the master's current, continuously advancing
+                // position rather than the stale sample that opened the debounce window.
+                positionTicks = _playbackSyncCoordinator.GetEstimatedPartyPosition(
+                    party.Id,
+                    pending.PositionTicks,
+                    nowUtc);
+            }
 
             try
             {
@@ -2662,6 +2738,9 @@ namespace WatchPartyForEmby
             public string MasterSessionId { get; set; }
             public long PositionTicks { get; set; }
             public TimeSpan Debounce { get; set; }
+            public bool IsReloadArtifact { get; set; }
+            public long AuthoritativeRevision { get; set; }
+            public long StagedAuthoritativePositionTicks { get; set; }
             public CancellationTokenSource WindowCts { get; set; }
         }
     }

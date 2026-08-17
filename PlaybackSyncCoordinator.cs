@@ -64,6 +64,7 @@ namespace WatchPartyForEmby
         private static readonly TimeSpan PauseEchoWindow = TimeSpan.FromSeconds(30);
 
         private readonly object _syncRoot = new object();
+        private long _nextMasterClockRevision;
         private readonly Dictionary<string, PendingSeekState> _pendingSeeks = new Dictionary<string, PendingSeekState>();
         private readonly Dictionary<string, List<ExpectedPauseState>> _expectedPauseStates =
             new Dictionary<string, List<ExpectedPauseState>>();
@@ -462,9 +463,115 @@ namespace WatchPartyForEmby
                 {
                     PositionTicks = positionTicks,
                     IsPlaying = isPlaying,
-                    UpdatedAt = nowUtc
+                    UpdatedAt = nowUtc,
+                    Revision = NextMasterClockRevision()
                 };
                 return isSeek;
+            }
+        }
+
+        /// <summary>
+        /// Updates the authoritative master clock while leaving a drastic near-zero
+        /// report staged for caller-side debounce. Emby Web can emit a synthetic ~1s
+        /// position while its video element is being recreated; committing that sample
+        /// makes the following real position look like another seek and causes a command
+        /// on every reload cycle.
+        /// </summary>
+        public MasterPositionUpdateResult UpdateMasterPositionGuardingReloadArtifact(
+            string partyId,
+            long positionTicks,
+            bool isPlaying,
+            DateTime nowUtc,
+            long seekThresholdTicks,
+            long nearZeroThresholdTicks,
+            long priorPositionThresholdTicks)
+        {
+            if (string.IsNullOrEmpty(partyId))
+            {
+                return new MasterPositionUpdateResult(
+                    MasterPositionUpdateKind.Continuous,
+                    Math.Max(0, positionTicks),
+                    authoritativeRevision: 0);
+            }
+
+            positionTicks = Math.Max(0, positionTicks);
+            nearZeroThresholdTicks = Math.Max(0, nearZeroThresholdTicks);
+            priorPositionThresholdTicks = Math.Max(0, priorPositionThresholdTicks);
+
+            lock (_syncRoot)
+            {
+                var hasPrevious = _masterClocks.TryGetValue(partyId, out var previous);
+                var expectedPosition = hasPrevious
+                    ? EstimatePosition(previous, nowUtc)
+                    : positionTicks;
+                var isDeferredReloadArtifact = hasPrevious
+                    && positionTicks <= nearZeroThresholdTicks
+                    && expectedPosition > priorPositionThresholdTicks;
+
+                if (isDeferredReloadArtifact)
+                {
+                    return new MasterPositionUpdateResult(
+                        MasterPositionUpdateKind.DeferredReloadArtifact,
+                        expectedPosition,
+                        previous.Revision);
+                }
+
+                var isSeek = hasPrevious
+                    && Math.Abs(positionTicks - expectedPosition) > Math.Max(0, seekThresholdTicks);
+                _masterClocks[partyId] = new MasterClockState
+                {
+                    PositionTicks = positionTicks,
+                    IsPlaying = isPlaying,
+                    UpdatedAt = nowUtc,
+                    Revision = NextMasterClockRevision()
+                };
+
+                return new MasterPositionUpdateResult(
+                    isSeek ? MasterPositionUpdateKind.Seek : MasterPositionUpdateKind.Continuous,
+                    positionTicks,
+                    _masterClocks[partyId].Revision);
+            }
+        }
+
+        /// <summary>
+        /// Commits a deferred near-zero report only if no newer authoritative master
+        /// update arrived while the caller's debounce window was open.
+        /// </summary>
+        public bool TryCommitDeferredMasterPosition(
+            string partyId,
+            long expectedAuthoritativeRevision,
+            long deferredPositionTicks,
+            long stagedAuthoritativePositionTicks,
+            DateTime nowUtc,
+            out long committedPositionTicks)
+        {
+            committedPositionTicks = Math.Max(0, deferredPositionTicks);
+            if (string.IsNullOrEmpty(partyId))
+            {
+                return false;
+            }
+
+            lock (_syncRoot)
+            {
+                if (!_masterClocks.TryGetValue(partyId, out var current)
+                    || current.Revision != expectedAuthoritativeRevision)
+                {
+                    return false;
+                }
+
+                var currentAuthoritativePosition = EstimatePosition(current, nowUtc);
+                var playedSinceStaging = Math.Max(
+                    0,
+                    currentAuthoritativePosition - Math.Max(0, stagedAuthoritativePositionTicks));
+                committedPositionTicks = Math.Max(0, deferredPositionTicks) + playedSinceStaging;
+                _masterClocks[partyId] = new MasterClockState
+                {
+                    PositionTicks = committedPositionTicks,
+                    IsPlaying = current.IsPlaying,
+                    UpdatedAt = nowUtc,
+                    Revision = NextMasterClockRevision()
+                };
+                return true;
             }
         }
 
@@ -498,14 +605,19 @@ namespace WatchPartyForEmby
 
             lock (_syncRoot)
             {
-                var preservedPosition = _masterClocks.TryGetValue(partyId, out var clock)
+                var hasClock = _masterClocks.TryGetValue(partyId, out var clock);
+                var preservedPosition = hasClock
                     ? EstimatePosition(clock, nowUtc)
                     : fallbackPositionTicks;
                 _masterClocks[partyId] = new MasterClockState
                 {
                     PositionTicks = preservedPosition,
                     IsPlaying = isPlaying,
-                    UpdatedAt = nowUtc
+                    UpdatedAt = nowUtc,
+                    // A position-less state report changes pause/play projection but
+                    // is not a newer positional sample. Keep the position revision so
+                    // a genuine deferred seek to the beginning can still be confirmed.
+                    Revision = hasClock ? clock.Revision : NextMasterClockRevision()
                 };
                 return preservedPosition;
             }
@@ -524,7 +636,8 @@ namespace WatchPartyForEmby
                 {
                     PositionTicks = Math.Max(0, positionTicks),
                     IsPlaying = false,
-                    UpdatedAt = nowUtc
+                    UpdatedAt = nowUtc,
+                    Revision = NextMasterClockRevision()
                 };
             }
         }
@@ -564,6 +677,16 @@ namespace WatchPartyForEmby
             }
 
             return ++_nextPauseExpectationId;
+        }
+
+        private long NextMasterClockRevision()
+        {
+            if (_nextMasterClockRevision == long.MaxValue)
+            {
+                _nextMasterClockRevision = 0;
+            }
+
+            return ++_nextMasterClockRevision;
         }
 
         private bool ConsumeExpectedPauseStateCore(
@@ -637,6 +760,33 @@ namespace WatchPartyForEmby
             public long PositionTicks { get; set; }
             public bool IsPlaying { get; set; }
             public DateTime UpdatedAt { get; set; }
+            public long Revision { get; set; }
         }
+    }
+
+    public enum MasterPositionUpdateKind
+    {
+        Continuous,
+        Seek,
+        DeferredReloadArtifact
+    }
+
+    public readonly struct MasterPositionUpdateResult
+    {
+        public MasterPositionUpdateResult(
+            MasterPositionUpdateKind kind,
+            long authoritativePositionTicks,
+            long authoritativeRevision)
+        {
+            Kind = kind;
+            AuthoritativePositionTicks = authoritativePositionTicks;
+            AuthoritativeRevision = authoritativeRevision;
+        }
+
+        public MasterPositionUpdateKind Kind { get; }
+        public bool IsSeek => Kind == MasterPositionUpdateKind.Seek;
+        public bool IsDeferredReloadArtifact => Kind == MasterPositionUpdateKind.DeferredReloadArtifact;
+        public long AuthoritativePositionTicks { get; }
+        public long AuthoritativeRevision { get; }
     }
 }
