@@ -1,0 +1,10 @@
+[Unit]
+Description=Apply the WatchParty explicit seek progress patch to Emby Web
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/teambreaker/emby/watchparty-progress-patch/install_emby_watchparty_progress_patch.sh
+Nice=10
+IOSchedulingClass=idle

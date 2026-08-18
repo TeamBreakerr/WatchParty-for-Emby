@@ -279,6 +279,22 @@ namespace WatchPartyForEmby
         }
 
         /// <summary>
+        /// Returns true when a playback id was retired after the same Emby SessionId
+        /// moved on to a newer playback. A delayed PlaybackStart for that old id must
+        /// be ignored rather than replacing the current registry entry.
+        /// </summary>
+        public bool IsRetiredPlaybackId(
+            string partyId,
+            string sessionId,
+            string playSessionId)
+        {
+            lock (_syncRoot)
+            {
+                return IsRetiredPlayback(partyId, sessionId, playSessionId);
+            }
+        }
+
+        /// <summary>
         /// Accepts progress for the current playback, or establishes the playback id when
         /// the participant has no identity because PlaybackStart was omitted. Once a
         /// playback id is known, an unseen id must provide multiple position-bearing

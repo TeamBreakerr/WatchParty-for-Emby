@@ -540,6 +540,27 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void DelayedStartForRetiredPlaybackIsRecognizedAsStale()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 17, 3, 0, 0, DateTimeKind.Utc);
+
+            registry.UpsertSession(
+                "party", "web-session", "master", "Master", "old-playback", now,
+                out _, out _);
+            registry.UpsertSession(
+                "party", "web-session", "master", "Master", "new-playback", now.AddSeconds(1),
+                out _, out _);
+
+            Assert.True(registry.IsRetiredPlaybackId(
+                "party", "web-session", "old-playback"));
+            Assert.False(registry.IsRetiredPlaybackId(
+                "party", "web-session", "new-playback"));
+            Assert.False(registry.IsRetiredPlaybackId(
+                "party", "web-session", "unknown-playback"));
+        }
+
+        [Fact]
         public void ClearPartyClearsPlaybackTombstonesBeforeThePartyIsRecreated()
         {
             var registry = new PartySessionRegistry();

@@ -123,6 +123,226 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void ImmediateNonZeroReportAfterNearZeroReloadIsIgnored()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 15, 0, 0, DateTimeKind.Utc);
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                TimeSpan.FromMinutes(20).Ticks,
+                isPlaying: true,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+
+            var staged = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(1).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+            var stale = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(20).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30).AddMilliseconds(80),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            Assert.True(staged.IsDeferredReloadArtifact);
+            Assert.True(stale.IsIgnoredReloadArtifactReport);
+            Assert.Equal(staged.AuthoritativeRevision, stale.AuthoritativeRevision);
+            Assert.Equal(
+                TimeSpan.FromMinutes(20).Ticks
+                    + (TimeSpan.FromSeconds(30) + TimeSpan.FromMilliseconds(80)).Ticks,
+                coordinator.GetEstimatedPartyPosition(
+                    "party",
+                    fallbackPositionTicks: 0,
+                    now.AddSeconds(30).AddMilliseconds(80)));
+        }
+
+        [Fact]
+        public void MonotonicHeartbeatChainAfterReloadIsIgnoredAsOneStaleGeneration()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 15, 30, 0, DateTimeKind.Utc);
+            var originalPosition = TimeSpan.FromMinutes(20).Ticks;
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                originalPosition,
+                isPlaying: true,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+            coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(1).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            var stale19 = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(19.924).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30).AddMilliseconds(80),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+            var stale25 = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(24.924).Ticks,
+                isPlaying: true,
+                now.AddSeconds(34).AddMilliseconds(900),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+            var stale30 = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(29.924).Ticks,
+                isPlaying: true,
+                now.AddSeconds(39).AddMilliseconds(900),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            Assert.True(stale19.IsIgnoredReloadArtifactReport);
+            Assert.True(stale25.IsIgnoredReloadArtifactReport);
+            Assert.True(stale30.IsIgnoredReloadArtifactReport);
+            Assert.Equal(
+                originalPosition + TimeSpan.FromSeconds(39.9).Ticks,
+                coordinator.GetEstimatedPartyPosition(
+                    "party",
+                    fallbackPositionTicks: 0,
+                now.AddSeconds(39).AddMilliseconds(900)));
+        }
+
+        [Fact]
+        public void ClearlyNewDistantMasterTargetBreaksReloadGenerationImmediately()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 16, 0, 0, DateTimeKind.Utc);
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                TimeSpan.FromMinutes(20).Ticks,
+                isPlaying: true,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+            coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(1).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            var newTarget = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(100).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30).AddMilliseconds(100),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            Assert.True(newTarget.IsSeek);
+            Assert.False(newTarget.IsIgnoredReloadArtifactReport);
+            Assert.Equal(TimeSpan.FromSeconds(100).Ticks, newTarget.AuthoritativePositionTicks);
+        }
+
+        [Fact]
+        public void PositionReportFarFromPendingSeekTargetIsIgnoredUntilItSettles()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 15, 0, 0, DateTimeKind.Utc);
+            var target = TimeSpan.FromSeconds(2).Ticks;
+
+            Assert.True(coordinator.TryBeginSeek("ios-session", target, now));
+            Assert.True(coordinator.ShouldIgnorePositionReport(
+                "ios-session",
+                TimeSpan.FromSeconds(75).Ticks,
+                now.AddSeconds(1),
+                out var expectedTarget));
+            Assert.Equal(target, expectedTarget);
+
+            Assert.False(coordinator.ShouldIgnorePositionReport(
+                "ios-session",
+                TimeSpan.FromSeconds(3).Ticks,
+                now.AddSeconds(1),
+                out expectedTarget));
+        }
+
+        [Fact]
+        public void ExplicitMasterSeekBecomesAuthoritativeImmediately()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 17, 0, 0, DateTimeKind.Utc);
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                TimeSpan.FromMinutes(20).Ticks,
+                isPlaying: true,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+
+            var result = coordinator.ApplyExplicitMasterSeek(
+                "party",
+                TimeSpan.FromSeconds(1).Ticks,
+                isPlaying: false,
+                now.AddSeconds(1));
+
+            Assert.True(result.IsSeek);
+            Assert.Equal(TimeSpan.FromSeconds(1).Ticks, result.AuthoritativePositionTicks);
+            Assert.Equal(
+                TimeSpan.FromSeconds(1).Ticks,
+                coordinator.GetEstimatedPartyPosition(
+                    "party",
+                    fallbackPositionTicks: 0,
+                    now.AddSeconds(10)));
+        }
+
+        [Fact]
+        public void WebHeartbeatDiscontinuityCanBeIgnoredWithoutChangingTheMasterClock()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 17, 30, 0, DateTimeKind.Utc);
+            var originalPosition = TimeSpan.FromMinutes(20).Ticks;
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                originalPosition,
+                isPlaying: false,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+
+            var result = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(1).Ticks,
+                isPlaying: false,
+                now.AddSeconds(1),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks,
+                acceptInferredSeek: false);
+
+            Assert.True(result.IsIgnoredUnexpectedDiscontinuity);
+            Assert.Equal(originalPosition, result.AuthoritativePositionTicks);
+            Assert.Equal(
+                originalPosition,
+                coordinator.GetEstimatedPartyPosition(
+                    "party",
+                    fallbackPositionTicks: 0,
+                    now.AddSeconds(2)));
+        }
+
+        [Fact]
         public void RealSeekNearTheBeginningIsAcceptedWhenPlaybackAdvancesPastTheArtifactBand()
         {
             var coordinator = new PlaybackSyncCoordinator();
@@ -464,7 +684,7 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
-        public void PositionedPauseDuringSeekWindowRemainsUserInput()
+        public void PositionlessPauseDuringSeekWindowIsClassifiedAsReloadEcho()
         {
             var coordinator = new PlaybackSyncCoordinator();
             var now = new DateTime(2026, 8, 17, 10, 0, 0, DateTimeKind.Utc);
@@ -490,7 +710,7 @@ namespace WatchPartyForEmby.Tests
             Assert.True(positionedPause.IsTransition);
             Assert.False(positionedPause.IsSyntheticEcho);
             Assert.True(positionlessReloadEcho.IsSeekCommandEcho);
-            Assert.False(positionlessReloadEcho.IsSyntheticEcho);
+            Assert.True(positionlessReloadEcho.IsSyntheticEcho);
         }
 
         [Fact]

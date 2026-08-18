@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -126,6 +127,57 @@ namespace WatchPartyForEmby.Tests
             await firstCompletion;
 
             Assert.Equal(0, queue.ActiveKeyCount);
+        }
+
+        [Fact]
+        public async Task LatestCoalescedWorkReplacesQueuedOlderWork()
+        {
+            var queue = new KeyedAsyncSerialQueue<string>(capacityPerKey: 8);
+            var firstStarted = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseFirst = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var observed = new List<string>();
+
+            Assert.True(queue.TryEnqueue(
+                "ios-session",
+                async _ =>
+                {
+                    observed.Add("running");
+                    firstStarted.TrySetResult(true);
+                    await releaseFirst.Task;
+                },
+                CancellationToken.None,
+                out var firstCompletion));
+            await firstStarted.Task;
+
+            Assert.True(queue.TryEnqueueLatest(
+                "ios-session",
+                "seek",
+                _ =>
+                {
+                    observed.Add("old-seek");
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                out var oldSeekCompletion));
+            Assert.True(queue.TryEnqueueLatest(
+                "ios-session",
+                "seek",
+                _ =>
+                {
+                    observed.Add("new-seek");
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                out var newSeekCompletion));
+
+            releaseFirst.TrySetResult(true);
+            await Task.WhenAll(firstCompletion, newSeekCompletion);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => oldSeekCompletion);
+            Assert.Equal(new[] { "running", "new-seek" }, observed);
         }
     }
 }

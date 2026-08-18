@@ -51,6 +51,48 @@ namespace WatchPartyForEmby
             CancellationToken cancellationToken,
             out Task completion)
         {
+            return TryEnqueueCore(
+                key,
+                operation,
+                cancellationToken,
+                coalescingKey: null,
+                out completion);
+        }
+
+        /// <summary>
+        /// Enqueues work in order, replacing older queued work with the same
+        /// coalescing key. Work that is already running is never interrupted; only
+        /// work that has not started is removed. This is used for seek commands,
+        /// where the newest target supersedes every older target still waiting for
+        /// the same player.
+        /// </summary>
+        public bool TryEnqueueLatest(
+            TKey key,
+            object coalescingKey,
+            Func<CancellationToken, Task> operation,
+            CancellationToken cancellationToken,
+            out Task completion)
+        {
+            if (coalescingKey == null)
+            {
+                throw new ArgumentNullException(nameof(coalescingKey));
+            }
+
+            return TryEnqueueCore(
+                key,
+                operation,
+                cancellationToken,
+                coalescingKey,
+                out completion);
+        }
+
+        private bool TryEnqueueCore(
+            TKey key,
+            Func<CancellationToken, Task> operation,
+            CancellationToken cancellationToken,
+            object coalescingKey,
+            out Task completion)
+        {
             if (key is null)
             {
                 throw new ArgumentNullException(nameof(key));
@@ -67,7 +109,7 @@ namespace WatchPartyForEmby
                 return true;
             }
 
-            var item = new WorkItem(operation, cancellationToken);
+            var item = new WorkItem(operation, cancellationToken, coalescingKey);
             KeyQueue queue;
             var startProcessor = false;
 
@@ -77,6 +119,29 @@ namespace WatchPartyForEmby
                 {
                     queue = new KeyQueue();
                     _queues.Add(key, queue);
+                }
+
+                if (coalescingKey != null && queue.Items.Count > 0)
+                {
+                    var retained = new Queue<WorkItem>(queue.Items.Count);
+                    while (queue.Items.Count > 0)
+                    {
+                        var queued = queue.Items.Dequeue();
+                        if (Equals(queued.CoalescingKey, coalescingKey))
+                        {
+                            queue.OutstandingCount--;
+                            queued.Completion.TrySetCanceled();
+                        }
+                        else
+                        {
+                            retained.Enqueue(queued);
+                        }
+                    }
+
+                    while (retained.Count > 0)
+                    {
+                        queue.Items.Enqueue(retained.Dequeue());
+                    }
                 }
 
                 if (queue.OutstandingCount >= _capacityPerKey)
@@ -179,10 +244,12 @@ namespace WatchPartyForEmby
         {
             public WorkItem(
                 Func<CancellationToken, Task> operation,
-                CancellationToken cancellationToken)
+                CancellationToken cancellationToken,
+                object coalescingKey)
             {
                 Operation = operation;
                 CancellationToken = cancellationToken;
+                CoalescingKey = coalescingKey;
                 Completion = new TaskCompletionSource<bool>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
             }
@@ -190,6 +257,8 @@ namespace WatchPartyForEmby
             public Func<CancellationToken, Task> Operation { get; }
 
             public CancellationToken CancellationToken { get; }
+
+            public object CoalescingKey { get; }
 
             public TaskCompletionSource<bool> Completion { get; }
         }

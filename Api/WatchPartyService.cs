@@ -118,6 +118,25 @@ namespace WatchPartyForEmby.Api
         public string Name { get; set; }
     }
 
+    [Route("/WatchParty/Playback/Seek", "POST", Summary = "Apply an explicit master seek")]
+    [Authenticated]
+    public class ExplicitMasterSeekRequest : IReturn<ExplicitMasterSeekResponse>
+    {
+        [ApiMember(Name = "PositionTicks", Description = "Requested playback position", IsRequired = true)]
+        public long PositionTicks { get; set; }
+
+        [ApiMember(Name = "ItemId", Description = "Item currently being played by the master", IsRequired = false)]
+        public string ItemId { get; set; }
+
+        [ApiMember(Name = "DeviceId", Description = "Emby Web device identifier", IsRequired = false)]
+        public string DeviceId { get; set; }
+    }
+
+    public class ExplicitMasterSeekResponse
+    {
+        public bool Accepted { get; set; }
+    }
+
     [Route("/WatchPartyForEmby/Images/{ImageName}", "GET", Summary = "Gets a plugin image resource")]
     public class GetImageRequest : IReturn<Stream>
     {
@@ -308,6 +327,21 @@ namespace WatchPartyForEmby.Api
             }
 
             await plugin.WaitingRoomStarts.StartAsync(request.Id).ConfigureAwait(false);
+        }
+
+        public async Task<object> Post(ExplicitMasterSeekRequest request)
+        {
+            var currentUser = GetAuthenticatedUser();
+            var handler = ServerEntryPoint.Current;
+            var accepted = handler != null
+                && request != null
+                && await handler.HandleExplicitMasterSeekAsync(
+                    currentUser.Id.ToString(),
+                    request.DeviceId,
+                    request.ItemId,
+                    request.PositionTicks).ConfigureAwait(false);
+
+            return new ExplicitMasterSeekResponse { Accepted = accepted };
         }
 
         public object Get(GetUsersRequest request)

@@ -41,10 +41,11 @@ namespace WatchPartyForEmby
 
         public bool IsSeekCommandEcho { get; }
 
-        // A seek marker is diagnostic only: unlike an explicit Pause/Unpause command,
-        // it cannot prove that a state transition was synthetic. Suppressing it would
-        // also suppress a real position-less user action during the same window.
-        public bool IsSyntheticEcho => IsExpectedCommandEcho;
+        // A position-less transition inside the short seek window is treated as a
+        // synthetic reload echo. This prevents a delayed buffer-induced Pause/Unpause
+        // from becoming a new room-wide control event; intentional input is accepted
+        // again as soon as the short window expires.
+        public bool IsSyntheticEcho => IsExpectedCommandEcho || IsSeekCommandEcho;
     }
 
     public sealed class PlaybackSyncCoordinator
@@ -62,6 +63,24 @@ namespace WatchPartyForEmby
         // iOS client has taken 9.37s to report the commanded paused state, so this echo
         // lifetime must cover the same slow-buffering envelope as seek settlement.
         private static readonly TimeSpan PauseEchoWindow = TimeSpan.FromSeconds(30);
+        // Web can emit an old position immediately after the near-zero sample produced
+        // while rebuilding its video element. Keep the authoritative clock untouched
+        // for this short handoff window; a later report is evaluated normally.
+        private static readonly TimeSpan ReloadArtifactReportWindow =
+            TimeSpan.FromMilliseconds(500);
+        // Once the first delayed non-zero sample is identified as stale, Web can
+        // continue sending that old element's 5-second heartbeat for a few seconds.
+        // Keep the same logical seek generation open long enough to discard that
+        // monotonic stale chain as well.
+        private static readonly TimeSpan ReloadArtifactSequenceWindow =
+            TimeSpan.FromSeconds(12);
+        private static readonly TimeSpan ReloadArtifactProgressTolerance =
+            TimeSpan.FromSeconds(2);
+        // A clearly new, distant target must win immediately even if Web has just
+        // emitted the near-zero reload sample. This keeps a quick 1s -> 100s drag
+        // responsive instead of waiting for the stale-heartbeat window.
+        private static readonly TimeSpan ImmediateMasterTargetThreshold =
+            TimeSpan.FromSeconds(30);
 
         private readonly object _syncRoot = new object();
         private long _nextMasterClockRevision;
@@ -69,6 +88,8 @@ namespace WatchPartyForEmby
         private readonly Dictionary<string, List<ExpectedPauseState>> _expectedPauseStates =
             new Dictionary<string, List<ExpectedPauseState>>();
         private readonly Dictionary<string, MasterClockState> _masterClocks = new Dictionary<string, MasterClockState>();
+        private readonly Dictionary<string, ReloadArtifactState> _reloadArtifacts =
+            new Dictionary<string, ReloadArtifactState>();
         private long _nextPauseExpectationId;
 
         /// <summary>
@@ -196,6 +217,44 @@ namespace WatchPartyForEmby
                 }
 
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Returns true when a participant report is still an old player position
+        /// rather than an acknowledgement of the latest server seek. A controlled
+        /// client may report its old timeline for several seconds while buffering;
+        /// accepting that report would overwrite the participant checkpoint and make
+        /// periodic calibration pull it back to the old position.
+        /// </summary>
+        public bool ShouldIgnorePositionReport(
+            string sessionId,
+            long positionTicks,
+            DateTime nowUtc,
+            out long expectedTargetTicks)
+        {
+            expectedTargetTicks = Math.Max(0, positionTicks);
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                return false;
+            }
+
+            lock (_syncRoot)
+            {
+                if (!_pendingSeeks.TryGetValue(sessionId, out var pending))
+                {
+                    return false;
+                }
+
+                if (nowUtc >= pending.ExpiresAt)
+                {
+                    _pendingSeeks.Remove(sessionId);
+                    return false;
+                }
+
+                expectedTargetTicks = pending.TargetPositionTicks;
+                return Math.Abs(Math.Max(0, positionTicks) - pending.TargetPositionTicks)
+                    > SeekConfirmTolerance.Ticks;
             }
         }
 
@@ -398,9 +457,8 @@ namespace WatchPartyForEmby
 
         /// <summary>
         /// A position-less transition inside the short seek window is marked as a
-        /// possible player-reload echo for diagnostics. It is not treated as a proven
-        /// synthetic command: viewers may also issue legitimate position-less pause or
-        /// unpause actions during the same window.
+        /// player-reload echo. The server suppresses it so a delayed buffer-induced
+        /// Pause/Unpause cannot become a new room-wide control event.
         /// </summary>
         public InboundPauseStateClassification ClassifyInboundPauseState(
             string sessionId,
@@ -452,6 +510,7 @@ namespace WatchPartyForEmby
             positionTicks = Math.Max(0, positionTicks);
             lock (_syncRoot)
             {
+                _reloadArtifacts.Remove(partyId);
                 var isSeek = false;
                 if (_masterClocks.TryGetValue(partyId, out var previous))
                 {
@@ -471,6 +530,44 @@ namespace WatchPartyForEmby
         }
 
         /// <summary>
+        /// Applies an explicit seek notification from a patched master client. Unlike a
+        /// normal progress report, this is authoritative even when the target is near
+        /// zero or far from the projected clock; the client explicitly told us that the
+        /// user moved the timeline.
+        /// </summary>
+        public MasterPositionUpdateResult ApplyExplicitMasterSeek(
+            string partyId,
+            long positionTicks,
+            bool isPlaying,
+            DateTime nowUtc)
+        {
+            if (string.IsNullOrEmpty(partyId))
+            {
+                return new MasterPositionUpdateResult(
+                    MasterPositionUpdateKind.Seek,
+                    Math.Max(0, positionTicks),
+                    authoritativeRevision: 0);
+            }
+
+            positionTicks = Math.Max(0, positionTicks);
+            lock (_syncRoot)
+            {
+                _reloadArtifacts.Remove(partyId);
+                _masterClocks[partyId] = new MasterClockState
+                {
+                    PositionTicks = positionTicks,
+                    IsPlaying = isPlaying,
+                    UpdatedAt = nowUtc,
+                    Revision = NextMasterClockRevision()
+                };
+                return new MasterPositionUpdateResult(
+                    MasterPositionUpdateKind.Seek,
+                    positionTicks,
+                    _masterClocks[partyId].Revision);
+            }
+        }
+
+        /// <summary>
         /// Updates the authoritative master clock while leaving a drastic near-zero
         /// report staged for caller-side debounce. Emby Web can emit a synthetic ~1s
         /// position while its video element is being recreated; committing that sample
@@ -484,7 +581,8 @@ namespace WatchPartyForEmby
             DateTime nowUtc,
             long seekThresholdTicks,
             long nearZeroThresholdTicks,
-            long priorPositionThresholdTicks)
+            long priorPositionThresholdTicks,
+            bool acceptInferredSeek = true)
         {
             if (string.IsNullOrEmpty(partyId))
             {
@@ -504,12 +602,87 @@ namespace WatchPartyForEmby
                 var expectedPosition = hasPrevious
                     ? EstimatePosition(previous, nowUtc)
                     : positionTicks;
-                var isDeferredReloadArtifact = hasPrevious
+
+                if (_reloadArtifacts.TryGetValue(partyId, out var reloadArtifact))
+                {
+                    if (!acceptInferredSeek)
+                    {
+                        _reloadArtifacts.Remove(partyId);
+                        return new MasterPositionUpdateResult(
+                            MasterPositionUpdateKind.IgnoredUnexpectedDiscontinuity,
+                            expectedPosition,
+                            reloadArtifact.AuthoritativeRevision);
+                    }
+
+                    if (positionTicks <= nearZeroThresholdTicks)
+                    {
+                        return new MasterPositionUpdateResult(
+                            MasterPositionUpdateKind.DeferredReloadArtifact,
+                            expectedPosition,
+                            reloadArtifact.AuthoritativeRevision);
+                    }
+
+                    if (!reloadArtifact.HasStaleSample
+                        && positionTicks >= ImmediateMasterTargetThreshold.Ticks)
+                    {
+                        _reloadArtifacts.Remove(partyId);
+                    }
+                    else if (!reloadArtifact.HasStaleSample
+                        && nowUtc - reloadArtifact.FirstObservedAt < ReloadArtifactReportWindow)
+                    {
+                        reloadArtifact.HasStaleSample = true;
+                        reloadArtifact.LastStalePositionTicks = positionTicks;
+                        reloadArtifact.LastStaleReportAt = nowUtc;
+                        return new MasterPositionUpdateResult(
+                            MasterPositionUpdateKind.IgnoredReloadArtifactReport,
+                            expectedPosition,
+                            reloadArtifact.AuthoritativeRevision);
+                    }
+
+                    if (reloadArtifact.HasStaleSample
+                        && nowUtc - reloadArtifact.FirstObservedAt < ReloadArtifactSequenceWindow)
+                    {
+                        var elapsedTicks = Math.Max(
+                            0,
+                            (nowUtc - reloadArtifact.LastStaleReportAt).Ticks);
+                        var positionDeltaTicks = positionTicks - reloadArtifact.LastStalePositionTicks;
+                        var expectedDeltaTicks = previous != null && previous.IsPlaying
+                            ? elapsedTicks
+                            : 0;
+                        var isMonotonicStaleHeartbeat = positionDeltaTicks >= 0
+                            && Math.Abs(positionDeltaTicks - expectedDeltaTicks)
+                                <= ReloadArtifactProgressTolerance.Ticks;
+                        if (isMonotonicStaleHeartbeat)
+                        {
+                            reloadArtifact.LastStalePositionTicks = positionTicks;
+                            reloadArtifact.LastStaleReportAt = nowUtc;
+                            return new MasterPositionUpdateResult(
+                                MasterPositionUpdateKind.IgnoredReloadArtifactReport,
+                                expectedPosition,
+                                reloadArtifact.AuthoritativeRevision);
+                        }
+                    }
+
+                    _reloadArtifacts.Remove(partyId);
+                }
+
+                // Patched Web clients report user seeks through the dedicated
+                // WatchParty endpoint. A discontinuous regular Web heartbeat is
+                // therefore stale/reload noise, including a near-zero sample; do not
+                // stage it as a possible seek. Unpatched clients retain the legacy
+                // near-zero inference path below.
+                var isDeferredReloadArtifact = acceptInferredSeek
+                    && hasPrevious
                     && positionTicks <= nearZeroThresholdTicks
                     && expectedPosition > priorPositionThresholdTicks;
 
                 if (isDeferredReloadArtifact)
                 {
+                    _reloadArtifacts[partyId] = new ReloadArtifactState
+                    {
+                        FirstObservedAt = nowUtc,
+                        AuthoritativeRevision = previous.Revision
+                    };
                     return new MasterPositionUpdateResult(
                         MasterPositionUpdateKind.DeferredReloadArtifact,
                         expectedPosition,
@@ -518,6 +691,14 @@ namespace WatchPartyForEmby
 
                 var isSeek = hasPrevious
                     && Math.Abs(positionTicks - expectedPosition) > Math.Max(0, seekThresholdTicks);
+                if (isSeek && !acceptInferredSeek)
+                {
+                    return new MasterPositionUpdateResult(
+                        MasterPositionUpdateKind.IgnoredUnexpectedDiscontinuity,
+                        expectedPosition,
+                        hasPrevious ? previous.Revision : 0);
+                }
+
                 _masterClocks[partyId] = new MasterClockState
                 {
                     PositionTicks = positionTicks,
@@ -571,6 +752,7 @@ namespace WatchPartyForEmby
                     UpdatedAt = nowUtc,
                     Revision = NextMasterClockRevision()
                 };
+                _reloadArtifacts.Remove(partyId);
                 return true;
             }
         }
@@ -632,6 +814,7 @@ namespace WatchPartyForEmby
 
             lock (_syncRoot)
             {
+                _reloadArtifacts.Remove(partyId);
                 _masterClocks[partyId] = new MasterClockState
                 {
                     PositionTicks = Math.Max(0, positionTicks),
@@ -666,6 +849,7 @@ namespace WatchPartyForEmby
             lock (_syncRoot)
             {
                 _masterClocks.Remove(partyId);
+                _reloadArtifacts.Remove(partyId);
             }
         }
 
@@ -762,13 +946,24 @@ namespace WatchPartyForEmby
             public DateTime UpdatedAt { get; set; }
             public long Revision { get; set; }
         }
+
+        private sealed class ReloadArtifactState
+        {
+            public DateTime FirstObservedAt { get; set; }
+            public long AuthoritativeRevision { get; set; }
+            public bool HasStaleSample { get; set; }
+            public long LastStalePositionTicks { get; set; }
+            public DateTime LastStaleReportAt { get; set; }
+        }
     }
 
     public enum MasterPositionUpdateKind
     {
         Continuous,
         Seek,
-        DeferredReloadArtifact
+        DeferredReloadArtifact,
+        IgnoredReloadArtifactReport,
+        IgnoredUnexpectedDiscontinuity
     }
 
     public readonly struct MasterPositionUpdateResult
@@ -786,6 +981,10 @@ namespace WatchPartyForEmby
         public MasterPositionUpdateKind Kind { get; }
         public bool IsSeek => Kind == MasterPositionUpdateKind.Seek;
         public bool IsDeferredReloadArtifact => Kind == MasterPositionUpdateKind.DeferredReloadArtifact;
+        public bool IsIgnoredReloadArtifactReport =>
+            Kind == MasterPositionUpdateKind.IgnoredReloadArtifactReport;
+        public bool IsIgnoredUnexpectedDiscontinuity =>
+            Kind == MasterPositionUpdateKind.IgnoredUnexpectedDiscontinuity;
         public long AuthoritativePositionTicks { get; }
         public long AuthoritativeRevision { get; }
     }

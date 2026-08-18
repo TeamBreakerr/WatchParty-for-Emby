@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep the WatchParty explicit seek progress patch applied
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+RandomizedDelaySec=15s
+Persistent=true
+Unit=emby-watchparty-progress-patch.service
+
+[Install]
+WantedBy=timers.target
