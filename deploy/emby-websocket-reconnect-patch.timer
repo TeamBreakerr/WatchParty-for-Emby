@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep Emby Web foreground WebSocket reconnect patch applied
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+RandomizedDelaySec=15s
+Persistent=true
+Unit=emby-websocket-reconnect-patch.service
+
+[Install]
+WantedBy=timers.target

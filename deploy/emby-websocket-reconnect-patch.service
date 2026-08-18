@@ -1,0 +1,10 @@
+[Unit]
+Description=Reapply Emby Web foreground WebSocket reconnect patch
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/teambreaker/emby/websocket-reconnect-patch/install_emby_websocket_reconnect_patch.sh
+Nice=10
+IOSchedulingClass=idle
