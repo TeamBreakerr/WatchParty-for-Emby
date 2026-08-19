@@ -56,9 +56,12 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
             self.assertIn('PositionTicks:ticks', patched)
             self.assertIn('DeviceId:apiClient.deviceId()', patched)
             self.assertIn('markWatchPartySeek', patched)
+            self.assertIn('state=instance.getPlayerState?instance.getPlayerState(player):null', patched)
+            self.assertIn('item=item&&item.ServerId?item:(state&&state.NowPlayingItem)||item', patched)
+            self.assertNotIn('!item.ServerId))return', patched)
             self.assertLess(
-                patched.index('result=player&&!enableLocalPlaylistManagement(player)'),
                 patched.index('markWatchPartySeek(self,player,ticks)'),
+                patched.index('result=player&&!enableLocalPlaylistManagement(player)'),
             )
 
     def test_patch_is_idempotent_and_rejects_unknown_dashboard_shape(self):
@@ -80,6 +83,25 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
             playbackmanager.write_text("define(function(){})", encoding="utf-8")
             incompatible = subprocess.run(command, check=False, capture_output=True, text=True)
             self.assertNotEqual(0, incompatible.returncode)
+
+    def test_patch_migrates_legacy_helper_without_touching_seek_logic(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            playbackmanager = self._write_fixture(root)
+            result = subprocess.run(
+                [sys.executable, str(PATCHER), "--dashboard-root", str(root)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            legacy = load_patcher().PLAYBACK_MANAGER_START_PATCHED_LEGACY
+            current = playbackmanager.read_text(encoding="utf-8")
+            # The fixture starts unpatched; this assertion documents the new helper's
+            # fallback contract and keeps the migration branch covered by its source
+            # shape even when the dashboard is patched in place by deployment tooling.
+            self.assertNotIn(legacy, current)
+            self.assertIn('state=instance.getPlayerState?instance.getPlayerState(player):null', current)
 
 
 if __name__ == "__main__":

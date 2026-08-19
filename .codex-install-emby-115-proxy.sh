@@ -7,6 +7,7 @@ runtime_config=/etc/nginx/http.d/emby-115-throttle.conf
 include_line='        include /data/emby-115-locations.conf;'
 websocket_include_line='        include /data/emby-websocket-proxy.conf;'
 websocket_reconnect_include_line='    include /data/emby-websocket-reconnect.conf;'
+web_cache_buster_include_line='        include /data/emby-web-cache-buster.conf;'
 wrapper_marker='codex-emby-115-updateall-wrapper'
 emby_config_backup=
 
@@ -45,6 +46,20 @@ fi
 if [ ! -s /data/emby-websocket-reconnect.conf ]; then
     echo "missing /data/emby-websocket-reconnect.conf" >&2
     exit 1
+fi
+
+if [ ! -s /data/emby-web-cache-buster.conf ]; then
+    echo "missing /data/emby-web-cache-buster.conf" >&2
+    exit 1
+fi
+
+# Emby appends ?v=<data-appversion> to every dashboard module and advertises
+# that URL as cacheable for a year.  Include a small body-filter/cache-header
+# patch in both 2345 and 2347 index locations so a dashboard generation change
+# cannot be hidden by an old browser or proxy entry.  The include is
+# idempotent and lives under /data, which survives Xiaoya container rebuilds.
+if ! /bin/grep -Fq '/data/emby-web-cache-buster.conf' "$emby_config"; then
+    sed -i "/^[[:space:]]*location ~\\* \/web\/index\\.html {/a\\${web_cache_buster_include_line}" "$emby_config"
 fi
 
 needs_reconnect_include=0

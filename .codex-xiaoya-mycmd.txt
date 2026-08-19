@@ -1,0 +1,7 @@
+
+#tag:10012027，命令只能写在以下begin和end之间，否则不会被执行
+#xiaoyakeeper-xiaoya-begin
+#update_xiaoya是一个内置命令，如果小雅镜像有更新则更新小雅容器，否则重启小雅容器。可以替换成你自己的命令，如果不懂则不建议修改。
+update_xiaoya
+docker exec xiaoya /data/install-emby-115-proxy.sh --reload
+#xiaoyakeeper-xiaoya-end

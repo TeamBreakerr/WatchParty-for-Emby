@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace WatchPartyForEmby
 {
@@ -63,6 +64,11 @@ namespace WatchPartyForEmby
         // iOS client has taken 9.37s to report the commanded paused state, so this echo
         // lifetime must cover the same slow-buffering envelope as seek settlement.
         private static readonly TimeSpan PauseEchoWindow = TimeSpan.FromSeconds(30);
+        // Some native players acknowledge the commanded Pause and then emit one
+        // opposite Unpause at the seek target while their video element is rebuilt.
+        // That reversal is still command plumbing, not viewer input. Keep this window
+        // deliberately short so a real pause/unpause remains responsive.
+        private static readonly TimeSpan ReversePauseEchoWindow = TimeSpan.FromSeconds(3);
         // Web can emit an old position immediately after the near-zero sample produced
         // while rebuilding its video element. Keep the authoritative clock untouched
         // for this short handoff window; a later report is evaluated normally.
@@ -81,12 +87,21 @@ namespace WatchPartyForEmby
         // responsive instead of waiting for the stale-heartbeat window.
         private static readonly TimeSpan ImmediateMasterTargetThreshold =
             TimeSpan.FromSeconds(30);
+        // Some third-party masters (notably Conflux after a player reload) keep
+        // sending the exact position of the old playback instance while the clock
+        // continues to advance. That report is not a second seek. Treat a position
+        // that is effectively unchanged from the last accepted target as stale
+        // heartbeat noise, otherwise every heartbeat re-queues a remote seek.
+        private static readonly TimeSpan StationaryMasterReportTolerance =
+            TimeSpan.FromSeconds(1);
 
         private readonly object _syncRoot = new object();
         private long _nextMasterClockRevision;
         private readonly Dictionary<string, PendingSeekState> _pendingSeeks = new Dictionary<string, PendingSeekState>();
         private readonly Dictionary<string, List<ExpectedPauseState>> _expectedPauseStates =
             new Dictionary<string, List<ExpectedPauseState>>();
+        private readonly Dictionary<string, LastPauseEchoState> _lastPauseEchoStates =
+            new Dictionary<string, LastPauseEchoState>();
         private readonly Dictionary<string, MasterClockState> _masterClocks = new Dictionary<string, MasterClockState>();
         private readonly Dictionary<string, ReloadArtifactState> _reloadArtifacts =
             new Dictionary<string, ReloadArtifactState>();
@@ -141,10 +156,12 @@ namespace WatchPartyForEmby
                         pending.CommandedAt = nowUtc;
                         pending.ExpiresAt = nowUtc + SeekCooldown;
                         pending.HasConfirmedTarget = false;
+                        _lastPauseEchoStates.Remove(sessionId);
                         return true;
                     }
                 }
 
+                _lastPauseEchoStates.Remove(sessionId);
                 _pendingSeeks[sessionId] = new PendingSeekState
                 {
                     TargetPositionTicks = targetPositionTicks,
@@ -371,6 +388,39 @@ namespace WatchPartyForEmby
         }
 
         /// <summary>
+        /// Returns whether a pause/play command still lacks a matching client state
+        /// report. This lets the transport issue a small idempotent retry when a
+        /// WebSocket frame is lost, while stopping immediately after the first echo.
+        /// </summary>
+        public bool IsPauseStateExpectationPending(
+            string sessionId,
+            PauseStateExpectationToken token,
+            DateTime nowUtc)
+        {
+            if (string.IsNullOrEmpty(sessionId) || token.IsEmpty)
+            {
+                return false;
+            }
+
+            lock (_syncRoot)
+            {
+                if (!_expectedPauseStates.TryGetValue(sessionId, out var expectedStates))
+                {
+                    return false;
+                }
+
+                expectedStates.RemoveAll(expected => nowUtc >= expected.ExpiresAt);
+                if (expectedStates.Count == 0)
+                {
+                    _expectedPauseStates.Remove(sessionId);
+                    return false;
+                }
+
+                return expectedStates.Any(expected => expected.TokenIds.Contains(token.Value));
+            }
+        }
+
+        /// <summary>
         /// Revokes one command's expected echo. Other commands, including a newer
         /// command for the same session and state, remain eligible for consumption.
         /// </summary>
@@ -483,10 +533,34 @@ namespace WatchPartyForEmby
                     reportedIsPaused,
                     nowUtc,
                     clearOnMismatch: isTransition);
-                var isSeekCommandEcho = !reportedPositionTicks.HasValue
-                    && _pendingSeeks.TryGetValue(sessionId, out var pending)
+                var isSeekCommandEcho = false;
+                if (_pendingSeeks.TryGetValue(sessionId, out var pending)
                     && nowUtc >= pending.CommandedAt
-                    && nowUtc < pending.CommandedAt + SeekStateEchoWindow;
+                    && nowUtc < pending.CommandedAt + SeekStateEchoWindow)
+                {
+                    // A rebuffering player can report the old position together with
+                    // the opposite pause state after a remote seek. Treat that as the
+                    // same synthetic reload echo as a position-less report, but keep a
+                    // positioned report at the commanded target eligible as real input.
+                    isSeekCommandEcho = !reportedPositionTicks.HasValue
+                        || Math.Abs(
+                            Math.Max(0, reportedPositionTicks.Value)
+                            - pending.TargetPositionTicks) > SeekConfirmTolerance.Ticks;
+
+                    if (!isSeekCommandEcho
+                        && isTransition
+                        && _lastPauseEchoStates.TryGetValue(sessionId, out var lastEcho)
+                        && lastEcho.IsPaused != reportedIsPaused
+                        && nowUtc >= lastEcho.EchoedAt
+                        && nowUtc < lastEcho.EchoedAt + ReversePauseEchoWindow)
+                    {
+                        // Pause(target) -> Unpause(target) is the characteristic iOS
+                        // seek acknowledgement sequence. The first state consumed an
+                        // expected command echo above; suppress only this immediate
+                        // opposite transition, never an arbitrary target-position state.
+                        isSeekCommandEcho = true;
+                    }
+                }
 
                 return new InboundPauseStateClassification(
                     isTransition,
@@ -661,16 +735,31 @@ namespace WatchPartyForEmby
                                 expectedPosition,
                                 reloadArtifact.AuthoritativeRevision);
                         }
+
+                        // A cached Web tab can interleave an older heartbeat after a
+                        // newer one (for example 1s -> 19.9s -> 1s -> 29.9s). Small,
+                        // non-monotonic samples in the same reload generation are still
+                        // stale timeline noise. Keep the near-zero candidate alive;
+                        // only a clearly distant target is allowed to break the
+                        // generation immediately.
+                        if (positionTicks < ImmediateMasterTargetThreshold.Ticks)
+                        {
+                            reloadArtifact.LastStalePositionTicks = positionTicks;
+                            reloadArtifact.LastStaleReportAt = nowUtc;
+                            return new MasterPositionUpdateResult(
+                                MasterPositionUpdateKind.IgnoredReloadArtifactReport,
+                                expectedPosition,
+                                reloadArtifact.AuthoritativeRevision);
+                        }
                     }
 
                     _reloadArtifacts.Remove(partyId);
                 }
 
-                // Patched Web clients report user seeks through the dedicated
-                // WatchParty endpoint. A discontinuous regular Web heartbeat is
-                // therefore stale/reload noise, including a near-zero sample; do not
-                // stage it as a possible seek. Unpatched clients retain the legacy
-                // near-zero inference path below.
+                // Once the caller has observed the dedicated Web seek endpoint it can
+                // safely reject every discontinuous regular heartbeat as reload noise.
+                // Before that first explicit notification, the caller may opt into the
+                // hardened legacy near-zero inference path below for an old cached tab.
                 var isDeferredReloadArtifact = acceptInferredSeek
                     && hasPrevious
                     && positionTicks <= nearZeroThresholdTicks
@@ -691,6 +780,20 @@ namespace WatchPartyForEmby
 
                 var isSeek = hasPrevious
                     && Math.Abs(positionTicks - expectedPosition) > Math.Max(0, seekThresholdTicks);
+
+                if (isSeek
+                    && hasPrevious
+                    && previous.IsPlaying
+                    && Math.Abs(positionTicks - previous.PositionTicks)
+                        <= StationaryMasterReportTolerance.Ticks
+                    && expectedPosition > positionTicks)
+                {
+                    return new MasterPositionUpdateResult(
+                        MasterPositionUpdateKind.IgnoredStaleHeartbeat,
+                        expectedPosition,
+                        previous.Revision);
+                }
+
                 if (isSeek && !acceptInferredSeek)
                 {
                     return new MasterPositionUpdateResult(
@@ -836,6 +939,7 @@ namespace WatchPartyForEmby
             {
                 _pendingSeeks.Remove(sessionId);
                 _expectedPauseStates.Remove(sessionId);
+                _lastPauseEchoStates.Remove(sessionId);
             }
         }
 
@@ -906,6 +1010,11 @@ namespace WatchPartyForEmby
             // Native players may acknowledge Pause and Unpause commands out of order
             // while a stream is settling. Remove only the matching command so every
             // other outstanding echo can still be recognized when it arrives.
+            _lastPauseEchoStates[sessionId] = new LastPauseEchoState
+            {
+                IsPaused = isPaused,
+                EchoedAt = nowUtc
+            };
             expectedStates.RemoveAt(matchingIndex);
             if (expectedStates.Count == 0)
             {
@@ -929,6 +1038,12 @@ namespace WatchPartyForEmby
             public bool IsPaused { get; set; }
             public DateTime ExpiresAt { get; set; }
             public HashSet<long> TokenIds { get; } = new HashSet<long>();
+        }
+
+        private sealed class LastPauseEchoState
+        {
+            public bool IsPaused { get; set; }
+            public DateTime EchoedAt { get; set; }
         }
 
         private sealed class PendingSeekState
@@ -963,7 +1078,8 @@ namespace WatchPartyForEmby
         Seek,
         DeferredReloadArtifact,
         IgnoredReloadArtifactReport,
-        IgnoredUnexpectedDiscontinuity
+        IgnoredUnexpectedDiscontinuity,
+        IgnoredStaleHeartbeat
     }
 
     public readonly struct MasterPositionUpdateResult
@@ -985,6 +1101,8 @@ namespace WatchPartyForEmby
             Kind == MasterPositionUpdateKind.IgnoredReloadArtifactReport;
         public bool IsIgnoredUnexpectedDiscontinuity =>
             Kind == MasterPositionUpdateKind.IgnoredUnexpectedDiscontinuity;
+        public bool IsIgnoredStaleHeartbeat =>
+            Kind == MasterPositionUpdateKind.IgnoredStaleHeartbeat;
         public long AuthoritativePositionTicks { get; }
         public long AuthoritativeRevision { get; }
     }

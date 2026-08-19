@@ -44,6 +44,25 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void PauseRetryStopsAfterTheExpectedEchoIsConsumed()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 16, 0, 0, DateTimeKind.Utc);
+            var token = coordinator.ExpectPauseState("ios-session", true, now);
+
+            Assert.True(coordinator.IsPauseStateExpectationPending("ios-session", token, now.AddMilliseconds(300)));
+            var classification = coordinator.ClassifyInboundPauseState(
+                "ios-session",
+                previousIsPaused: false,
+                reportedIsPaused: true,
+                reportedPositionTicks: TimeSpan.FromSeconds(10).Ticks,
+                now.AddSeconds(1));
+
+            Assert.True(classification.IsExpectedCommandEcho);
+            Assert.False(coordinator.IsPauseStateExpectationPending("ios-session", token, now.AddSeconds(1)));
+        }
+
+        [Fact]
         public void PeriodicCorrectionCannotReplacePendingMasterSeek()
         {
             var coordinator = new PlaybackSyncCoordinator();
@@ -69,6 +88,48 @@ namespace WatchPartyForEmby.Tests
                 TimeSpan.FromMinutes(12).Ticks,
                 now.AddSeconds(3),
                 allowReplace: true));
+        }
+
+        [Fact]
+        public void RepeatedStationaryMasterHeartbeatAfterSeekIsNotAnotherSeek()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 19, 0, 0, 0, DateTimeKind.Utc);
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                TimeSpan.FromSeconds(685.8).Ticks,
+                isPlaying: true,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+
+            var firstTarget = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(724.5).Ticks,
+                isPlaying: true,
+                now.AddSeconds(10),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            var repeatedTarget = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(724.5).Ticks,
+                isPlaying: true,
+                now.AddSeconds(20),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            Assert.True(firstTarget.IsSeek);
+            Assert.True(repeatedTarget.IsIgnoredStaleHeartbeat);
+            Assert.False(repeatedTarget.IsSeek);
+            Assert.Equal(
+                TimeSpan.FromSeconds(734.5).Ticks,
+                coordinator.GetEstimatedPartyPosition(
+                    "party",
+                    fallbackPositionTicks: 0,
+                    now.AddSeconds(20)));
         }
 
         [Fact]
@@ -255,6 +316,54 @@ namespace WatchPartyForEmby.Tests
             Assert.True(newTarget.IsSeek);
             Assert.False(newTarget.IsIgnoredReloadArtifactReport);
             Assert.Equal(TimeSpan.FromSeconds(100).Ticks, newTarget.AuthoritativePositionTicks);
+        }
+
+        [Fact]
+        public void NonMonotonicSmallTailAfterReloadDoesNotReplaceNearZeroCandidate()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 16, 30, 0, DateTimeKind.Utc);
+
+            coordinator.UpdateMasterPosition(
+                "party",
+                TimeSpan.FromMinutes(20).Ticks,
+                isPlaying: true,
+                now,
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks);
+            var staged = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(1).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+            var stale19 = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(19.9).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30).AddMilliseconds(80),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+            var stale29 = coordinator.UpdateMasterPositionGuardingReloadArtifact(
+                "party",
+                TimeSpan.FromSeconds(29.9).Ticks,
+                isPlaying: true,
+                now.AddSeconds(30).AddMilliseconds(180),
+                seekThresholdTicks: TimeSpan.FromSeconds(2).Ticks,
+                nearZeroThresholdTicks: TimeSpan.FromSeconds(5).Ticks,
+                priorPositionThresholdTicks: TimeSpan.FromSeconds(30).Ticks);
+
+            Assert.True(staged.IsDeferredReloadArtifact);
+            Assert.True(stale19.IsIgnoredReloadArtifactReport);
+            Assert.True(stale29.IsIgnoredReloadArtifactReport);
+            Assert.Equal(
+                TimeSpan.FromMinutes(20).Ticks + TimeSpan.FromSeconds(30.18).Ticks,
+                coordinator.GetEstimatedPartyPosition(
+                    "party",
+                    fallbackPositionTicks: 0,
+                    now.AddSeconds(30).AddMilliseconds(180)));
         }
 
         [Fact]
@@ -714,6 +823,41 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void StalePositionOppositeStateDuringSeekWindowIsClassifiedAsReloadEcho()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 11, 0, 0, DateTimeKind.Utc);
+            var target = TimeSpan.FromSeconds(12).Ticks;
+
+            Assert.True(coordinator.TryBeginSeek(
+                "ios-session",
+                target,
+                now,
+                allowReplace: true));
+
+            // iOS can report its old position together with an automatic Unpause while
+            // the remote seek rebuilds the stream. It must not become a viewer command.
+            var staleState = coordinator.ClassifyInboundPauseState(
+                "ios-session",
+                previousIsPaused: true,
+                reportedIsPaused: false,
+                reportedPositionTicks: TimeSpan.FromSeconds(64).Ticks,
+                now.AddSeconds(1));
+
+            // A state report at the commanded position remains eligible for real input.
+            var targetState = coordinator.ClassifyInboundPauseState(
+                "ios-session",
+                previousIsPaused: true,
+                reportedIsPaused: false,
+                reportedPositionTicks: target,
+                now.AddSeconds(2));
+
+            Assert.True(staleState.IsSyntheticEcho);
+            Assert.True(targetState.IsTransition);
+            Assert.False(targetState.IsSyntheticEcho);
+        }
+
+        [Fact]
         public void PauseSyncCanForceOneSeekEvenWhenTheSameTargetIsPending()
         {
             var coordinator = new PlaybackSyncCoordinator();
@@ -873,6 +1017,45 @@ namespace WatchPartyForEmby.Tests
             Assert.True(inbound.IsTransition);
             Assert.False(inbound.IsExpectedCommandEcho);
             Assert.False(inbound.IsSeekCommandEcho);
+        }
+
+        [Fact]
+        public void OppositeStateAtSeekTargetAfterPauseEchoIsStillSynthetic()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 18, 10, 0, 0, DateTimeKind.Utc);
+            var target = TimeSpan.FromSeconds(9.1).Ticks;
+
+            coordinator.ExpectPauseState("ios-session", true, now);
+            Assert.True(coordinator.TryBeginSeek("ios-session", target, now));
+
+            var pauseEcho = coordinator.ClassifyInboundPauseState(
+                "ios-session",
+                previousIsPaused: false,
+                reportedIsPaused: true,
+                reportedPositionTicks: target,
+                now.AddMilliseconds(100));
+            Assert.True(pauseEcho.IsExpectedCommandEcho);
+
+            // iOS can immediately report Unpause at the target while rebuilding its
+            // player. It is the reverse acknowledgement of the same Pause+Seek, not a
+            // viewer command that should resume the master.
+            var reverseEcho = coordinator.ClassifyInboundPauseState(
+                "ios-session",
+                previousIsPaused: true,
+                reportedIsPaused: false,
+                reportedPositionTicks: target,
+                now.AddMilliseconds(250));
+            Assert.True(reverseEcho.IsSeekCommandEcho);
+            Assert.True(reverseEcho.IsSyntheticEcho);
+
+            var realUnpause = coordinator.ClassifyInboundPauseState(
+                "ios-session",
+                previousIsPaused: true,
+                reportedIsPaused: false,
+                reportedPositionTicks: target,
+                now.AddSeconds(4));
+            Assert.False(realUnpause.IsSyntheticEcho);
         }
 
         [Fact]
