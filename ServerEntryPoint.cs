@@ -35,16 +35,15 @@ namespace WatchPartyForEmby
         private readonly PlaybackSyncCoordinator _playbackSyncCoordinator = new PlaybackSyncCoordinator();
         private readonly MasterSeekSourceTracker _masterSeekSources =
             new MasterSeekSourceTracker();
-        private readonly ParticipantStopGraceTracker _participantStopGraces =
-            new ParticipantStopGraceTracker(ParticipantStopRetentionPeriod);
+        private readonly ParticipantDormancyTracker _participantDormancies =
+            new ParticipantDormancyTracker(ParticipantDormancyRetentionPeriod);
         private readonly CancellationTokenSource _lifetimeCts = new CancellationTokenSource();
         private readonly KeyedAsyncSerialQueue<string> _playbackEventQueue =
             new KeyedAsyncSerialQueue<string>(capacityPerKey: 128);
         // All remote-control commands for one Emby SessionId share this queue. The
         // inbound event queue serializes reports, but seek/pause/resume can originate
         // from its debounce tasks and the periodic calibration timer concurrently.
-        private readonly KeyedAsyncSerialQueue<string> _playbackCommandQueue =
-            new KeyedAsyncSerialQueue<string>(capacityPerKey: 256);
+        private readonly DormancyAwarePlaybackCommandQueue _playbackCommandQueue;
         private readonly MasterPlaybackStateDebouncer _masterPlaybackStateDebouncer =
             new MasterPlaybackStateDebouncer(TimeSpan.FromMilliseconds(750));
         private readonly object _masterPauseCommitLock = new object();
@@ -56,7 +55,7 @@ namespace WatchPartyForEmby
         // Emby emits PlaybackStopped after roughly one minute when iOS backgrounds a
         // player. Retain the participant for the lifetime of the active master clock;
         // the returning client can then reuse its SessionId and rejoin immediately.
-        private static readonly TimeSpan ParticipantStopRetentionPeriod =
+        private static readonly TimeSpan ParticipantDormancyRetentionPeriod =
             Timeout.InfiniteTimeSpan;
         // Emby's command endpoint can acknowledge a WebSocket command even when the
         // client drops that frame while reconnecting. A small idempotent retry window
@@ -112,6 +111,9 @@ namespace WatchPartyForEmby
             _libraryManager = libraryManager;
             _logger = logManager.GetLogger(GetType().Name);
             _plugin = Plugin.Instance;
+            _playbackCommandQueue = new DormancyAwarePlaybackCommandQueue(
+                _participantDormancies,
+                capacityPerSession: 256);
             Current = this;
         }
 
@@ -328,7 +330,7 @@ namespace WatchPartyForEmby
             string sessionId,
             PartyParticipant participant)
         {
-            _participantStopGraces.Cancel(partyId, sessionId);
+            _participantDormancies.Cancel(partyId, sessionId);
             _playbackSyncCoordinator.ClearSession(sessionId);
             _seriesEpisodeTransitions.ClearSession(sessionId);
             ClearSessionEpisodeMarkers(partyId, sessionId);
@@ -460,6 +462,10 @@ namespace WatchPartyForEmby
                     party.Id,
                     session.Id,
                     out var participant)
+                || !_participantDormancies.CanReceiveCommand(
+                    party.Id,
+                    session.Id,
+                    ParticipantRoomCommand.PlayNow)
                 || string.IsNullOrEmpty(participant.PlaySessionId)
                 || !string.Equals(
                     participant.UserId,
@@ -632,7 +638,6 @@ namespace WatchPartyForEmby
                 pauseStates.Clear();
             }
             _plugin.PartyReadyUsers.ClearParty(party.Id);
-            _participantStopGraces.ClearParty(party.Id);
             _logger.Info(
                 $"[Party {party.Id}] Master user {userId} left ({reason}); " +
                 "stopped the authoritative clock");
@@ -719,7 +724,9 @@ namespace WatchPartyForEmby
                 }
             }
 
-            var sessions = GetRegisteredPartySessions(party.Id);
+            var sessions = GetRegisteredPartySessions(
+                party.Id,
+                ParticipantRoomCommand.Resume);
             foreach (var session in sessions)
             {
                 if (!_plugin.PartyParticipants.TryGetSession(party.Id, session.Id, out _)
@@ -739,7 +746,7 @@ namespace WatchPartyForEmby
 
                 try
                 {
-                    if (await SendPauseStateCommand(session, false))
+                    if (await SendPauseStateCommand(party, session, false))
                     {
                         _logger.Info($"[Party {party.Id}] Started playback for {session.UserName}");
                     }
@@ -823,7 +830,9 @@ namespace WatchPartyForEmby
                 $"actively syncing participants to master position " +
                 $"{TimeSpan.FromTicks(targetPosition).TotalSeconds:F1}s");
 
-            var sessions = GetRegisteredPartySessions(party.Id);
+            var sessions = GetRegisteredPartySessions(
+                party.Id,
+                ParticipantRoomCommand.Seek);
             foreach (var session in sessions)
             {
                 // The registered master defines the pause position and is never seeked
@@ -850,6 +859,7 @@ namespace WatchPartyForEmby
                 }
 
                 await SyncUserToPosition(
+                    party,
                     session,
                     item,
                     targetPosition,
@@ -890,7 +900,9 @@ namespace WatchPartyForEmby
                 $"{TimeSpan.FromTicks(targetPosition).TotalSeconds:F1}s " +
                 $"(clock {TimeSpan.FromTicks(estimatedPosition).TotalSeconds:F1}s)");
 
-            var sessions = GetRegisteredPartySessions(party.Id);
+            var sessions = GetRegisteredPartySessions(
+                party.Id,
+                ParticipantRoomCommand.Seek);
             foreach (var participantSession in sessions)
             {
                 if (IsMasterSession(party, participantSession)
@@ -910,6 +922,7 @@ namespace WatchPartyForEmby
                         out _))
                 {
                     await SyncUserToPosition(
+                        party,
                         participantSession,
                         item,
                         targetPosition,
@@ -948,7 +961,7 @@ namespace WatchPartyForEmby
             // the native client rebuilt its player while reconnecting.
             if (isMasterPaused)
             {
-                await SendPauseStateCommand(participantSession, isPaused: true);
+                await SendPauseStateCommand(party, participantSession, isPaused: true);
             }
 
             if (drift > TimeSpan.FromSeconds(2).Ticks)
@@ -965,6 +978,7 @@ namespace WatchPartyForEmby
                 else
                 {
                     positionReconciled = await SyncUserToPosition(
+                        party,
                         participantSession,
                         item,
                         targetPosition,
@@ -982,7 +996,7 @@ namespace WatchPartyForEmby
 
             if (!isMasterPaused)
             {
-                await SendPauseStateCommand(participantSession, isPaused: false);
+                await SendPauseStateCommand(party, participantSession, isPaused: false);
             }
 
             return positionReconciled;
@@ -1017,7 +1031,7 @@ namespace WatchPartyForEmby
                 $"[Party {party.Id}] Ignoring playback-state change from participant " +
                 $"{session.UserName}; restoring master " +
                 $"{(authoritativeIsPaused ? "pause" : "play")} state");
-            await SendPauseStateCommand(session, authoritativeIsPaused);
+            await SendPauseStateCommand(party, session, authoritativeIsPaused);
         }
 
         private async Task UnpauseAllUsers(WatchPartyItem party, string excludeSessionId)
@@ -1032,7 +1046,11 @@ namespace WatchPartyForEmby
         {
             try
             {
-                var sessions = GetRegisteredPartySessions(party.Id);
+                var sessions = GetRegisteredPartySessions(
+                    party.Id,
+                    isPaused
+                        ? ParticipantRoomCommand.Pause
+                        : ParticipantRoomCommand.Resume);
 
                 foreach (var otherSession in sessions)
                 {
@@ -1058,7 +1076,7 @@ namespace WatchPartyForEmby
                             $"(Session: {otherSession.Id})");
                         try
                         {
-                            await SendPauseStateCommand(otherSession, isPaused);
+                            await SendPauseStateCommand(party, otherSession, isPaused);
                         }
                         catch (Exception ex)
                         {
@@ -1082,7 +1100,9 @@ namespace WatchPartyForEmby
             WatchPartyItem party,
             string stoppedMasterSessionId)
         {
-            var sessions = GetRegisteredPartySessions(party.Id);
+            var sessions = GetRegisteredPartySessions(
+                party.Id,
+                ParticipantRoomCommand.Stop);
             foreach (var session in sessions)
             {
                 if (session == null
@@ -1109,6 +1129,7 @@ namespace WatchPartyForEmby
                 try
                 {
                     await SendPlaystateCommandSerialAsync(
+                        party.Id,
                         stoppedMasterSessionId,
                         session.Id,
                         new PlaystateRequest { Command = PlaystateCommand.Stop });
@@ -1125,7 +1146,10 @@ namespace WatchPartyForEmby
             }
         }
 
-        private async Task<bool> SendPauseStateCommand(SessionInfo session, bool isPaused)
+        private async Task<bool> SendPauseStateCommand(
+            WatchPartyItem party,
+            SessionInfo session,
+            bool isPaused)
         {
             if (session == null
                 || !SupportsRemoteControlledPlayback(session))
@@ -1151,10 +1175,18 @@ namespace WatchPartyForEmby
                 {
                     try
                     {
-                        await SendPlaystateCommandSerialAsync(
+                        var commandSent = await SendPlaystateCommandSerialAsync(
+                            party?.Id,
                             session.Id,
                             session.Id,
                             request);
+                        if (!commandSent)
+                        {
+                            _playbackSyncCoordinator.CancelExpectedPauseState(
+                                session.Id,
+                                expectation);
+                            return false;
+                        }
                     }
                     catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
                     {
@@ -1205,54 +1237,74 @@ namespace WatchPartyForEmby
             }
         }
 
-        private async Task SendPlaystateCommandSerialAsync(
+        private async Task<bool> SendPlaystateCommandSerialAsync(
+            string partyId,
             string controllingSessionId,
             string targetSessionId,
             PlaystateRequest request)
         {
             if (string.IsNullOrEmpty(targetSessionId) || request == null)
             {
-                return;
+                return false;
             }
 
-            Task completion;
-            bool enqueue;
-            if (request.Command == PlaystateCommand.Seek)
-            {
-                enqueue = _playbackCommandQueue.TryEnqueueLatest(
+            var command = ToParticipantRoomCommand(request.Command);
+            if (!CanDispatchParticipantCommand(
+                    partyId,
                     targetSessionId,
-                    coalescingKey: "seek",
-                    cancellationToken => _sessionManager.SendPlaystateCommand(
-                        controllingSessionId,
-                        targetSessionId,
-                        request,
-                        cancellationToken),
-                    _lifetimeCts.Token,
-                    out completion);
-            }
-            else
+                    command,
+                    queued: false))
             {
-                enqueue = _playbackCommandQueue.TryEnqueue(
+                return false;
+            }
+
+            var commandSent = await _playbackCommandQueue.EnqueueAsync(
+                partyId,
+                targetSessionId,
+                command,
+                request.Command == PlaystateCommand.Seek
+                    ? ParticipantCommandQueueMode.Latest
+                    : ParticipantCommandQueueMode.Ordered,
+                cancellationToken => _sessionManager.SendPlaystateCommand(
+                    controllingSessionId,
                     targetSessionId,
-                    cancellationToken => _sessionManager.SendPlaystateCommand(
-                        controllingSessionId,
-                        targetSessionId,
-                        request,
-                        cancellationToken),
-                    _lifetimeCts.Token,
-                    out completion);
-            }
-
-            if (!enqueue)
+                    request,
+                    cancellationToken),
+                _lifetimeCts.Token).ConfigureAwait(false);
+            if (!commandSent)
             {
-                throw new InvalidOperationException(
-                    $"Remote playback command queue is full for session {targetSessionId}");
+                CanDispatchParticipantCommand(
+                    partyId,
+                    targetSessionId,
+                    command,
+                    queued: true);
             }
-
-            await completion.ConfigureAwait(false);
+            return commandSent;
         }
 
-        private async Task SendPlayCommandSerialAsync(
+        private static ParticipantRoomCommand ToParticipantRoomCommand(
+            PlaystateCommand command)
+        {
+            switch (command)
+            {
+                case PlaystateCommand.Pause:
+                    return ParticipantRoomCommand.Pause;
+                case PlaystateCommand.Unpause:
+                    return ParticipantRoomCommand.Resume;
+                case PlaystateCommand.Seek:
+                    return ParticipantRoomCommand.Seek;
+                case PlaystateCommand.Stop:
+                    return ParticipantRoomCommand.Stop;
+                default:
+                    throw new ArgumentOutOfRangeException(
+                        nameof(command),
+                        command,
+                        "Unsupported participant playstate command");
+            }
+        }
+
+        private async Task<bool> SendPlayCommandSerialAsync(
+            string partyId,
             string controllingSessionId,
             string targetSessionId,
             PlayRequest request,
@@ -1260,30 +1312,67 @@ namespace WatchPartyForEmby
         {
             if (string.IsNullOrEmpty(targetSessionId) || request == null)
             {
-                return;
+                return false;
+            }
+
+            if (!CanDispatchParticipantCommand(
+                    partyId,
+                    targetSessionId,
+                    ParticipantRoomCommand.PlayNow,
+                    queued: false))
+            {
+                return false;
             }
 
             var commandToken = cancellationToken.CanBeCanceled
                 ? cancellationToken
                 : _lifetimeCts.Token;
-            if (!_playbackCommandQueue.TryEnqueue(
+            var commandSent = await _playbackCommandQueue.EnqueueAsync(
+                partyId,
+                targetSessionId,
+                ParticipantRoomCommand.PlayNow,
+                ParticipantCommandQueueMode.Ordered,
+                queuedToken => _sessionManager.SendPlayCommand(
+                    controllingSessionId,
                     targetSessionId,
-                    queuedToken => _sessionManager.SendPlayCommand(
-                        controllingSessionId,
-                        targetSessionId,
-                        request,
-                        queuedToken),
-                    commandToken,
-                    out var completion))
+                    request,
+                    queuedToken),
+                commandToken).ConfigureAwait(false);
+            if (!commandSent)
             {
-                throw new InvalidOperationException(
-                    $"Remote playback command queue is full for session {targetSessionId}");
+                CanDispatchParticipantCommand(
+                    partyId,
+                    targetSessionId,
+                    ParticipantRoomCommand.PlayNow,
+                    queued: true);
             }
-
-            await completion.ConfigureAwait(false);
+            return commandSent;
         }
 
-        private List<SessionInfo> GetRegisteredPartySessions(string partyId)
+        private bool CanDispatchParticipantCommand(
+            string partyId,
+            string sessionId,
+            ParticipantRoomCommand command,
+            bool queued)
+        {
+            if (_participantDormancies.CanReceiveCommand(
+                    partyId,
+                    sessionId,
+                    command))
+            {
+                return true;
+            }
+
+            _logger.Info(
+                $"[Party {partyId}] {(queued ? "Dropping queued" : "Skipping")} " +
+                $"{command} for dormant session {sessionId}; waiting for client " +
+                "Start/Progress");
+            return false;
+        }
+
+        private List<SessionInfo> GetRegisteredPartySessions(
+            string partyId,
+            ParticipantRoomCommand command)
         {
             var activeSessions = _sessionManager.Sessions
                 .Where(session => session != null && !string.IsNullOrEmpty(session.Id))
@@ -1291,7 +1380,12 @@ namespace WatchPartyForEmby
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
 
             return _plugin.PartyParticipants.GetSessions(partyId)
-                .Select(participant => participant?.SessionId)
+                .Where(participant => participant != null
+                    && _participantDormancies.CanReceiveCommand(
+                        partyId,
+                        participant.SessionId,
+                        command))
+                .Select(participant => participant.SessionId)
                 .Where(sessionId => !string.IsNullOrEmpty(sessionId))
                 .Distinct(StringComparer.Ordinal)
                 .Where(activeSessions.ContainsKey)
@@ -1449,7 +1543,7 @@ namespace WatchPartyForEmby
             _partySyncedSessions.TryRemove(partyId, out _);
             _partySessionPauseState.TryRemove(partyId, out _);
             _lastProgressCheckpoint.TryRemove(partyId, out _);
-            _participantStopGraces.ClearParty(partyId);
+            _participantDormancies.ClearParty(partyId);
             _seriesSelections.ClearParty(partyId);
             _plugin.PartyParticipants.ClearParty(partyId);
             _plugin.PartyReadyUsers.ClearParty(partyId);
@@ -1846,16 +1940,6 @@ namespace WatchPartyForEmby
 
                 if (party != null && party.IsActive)
                 {
-                    if (!CanUserJoinParty(party, e.Session.UserId))
-                    {
-                        _logger.Warn($"[Party {party.Id}] Access denied for user {e.Session.UserId}");
-                        await SendPlaystateCommandSerialAsync(
-                            e.Session.Id,
-                            e.Session.Id,
-                            new PlaystateRequest { Command = PlaystateCommand.Stop });
-                        return;
-                    }
-
                     var nowUtc = DateTime.UtcNow;
                     var masterWasInactiveBeforeStart = IsMasterSelectionSession(party, e.Session)
                         && !HasActiveMasterSession(party);
@@ -1871,6 +1955,17 @@ namespace WatchPartyForEmby
                         return;
                     }
 
+                    if (!CanUserJoinParty(party, e.Session.UserId))
+                    {
+                        _logger.Warn($"[Party {party.Id}] Access denied for user {e.Session.UserId}");
+                        await SendPlaystateCommandSerialAsync(
+                            party.Id,
+                            e.Session.Id,
+                            e.Session.Id,
+                            new PlaystateRequest { Command = PlaystateCommand.Stop });
+                        return;
+                    }
+
                     var userStartPosition = e.PlaybackPositionTicks ?? 0;
                     if (GetOrCreateParticipant(
                         party.Id,
@@ -1880,10 +1975,22 @@ namespace WatchPartyForEmby
                         party.MaxParticipants) == null)
                     {
                         await SendPlaystateCommandSerialAsync(
+                            party.Id,
                             e.Session.Id,
                             e.Session.Id,
                             new PlaystateRequest { Command = PlaystateCommand.Stop });
                         return;
+                    }
+                    if (_participantDormancies.TryReactivate(
+                            party.Id,
+                            e.Session.Id,
+                            nowUtc,
+                            out var resumedFromStart))
+                    {
+                        resumedFromStart.Dispose();
+                        _logger.Info(
+                            $"[Party {party.Id}] Participant session {e.Session.Id} " +
+                            "left dormancy after its accepted PlaybackStart");
                     }
                     var isMaster = TryResolveMasterSession(party, e.Session);
                     var startedEpisodeId = FindSeriesEpisodeId(party, e.Item);
@@ -2075,7 +2182,7 @@ namespace WatchPartyForEmby
                         _plugin.PartyReadyUsers.SetReady(party.Id, e.Session.UserId, true);
 
                         _logger.Info($"[Party {party.Id}] Pausing user in waiting room");
-                        await SendPauseStateCommand(e.Session, true);
+                        await SendPauseStateCommand(party, e.Session, true);
                         pauseState[e.Session.Id] = true;
 
                         await CheckWaitingRoomReadiness(party);
@@ -2117,6 +2224,7 @@ namespace WatchPartyForEmby
                             $"(user at {TimeSpan.FromTicks(userStartPosition).TotalSeconds:F1}s, " +
                             $"party at {TimeSpan.FromTicks(targetPosition).TotalSeconds:F1}s)");
                         await SyncUserToPosition(
+                            party,
                             e.Session,
                             e.Item,
                             targetPosition,
@@ -2198,7 +2306,9 @@ namespace WatchPartyForEmby
                         nowUtc);
                     _logger.Debug($"[Party {party.Id}] Periodic sync check at estimated position {estimatedPartyPosition} ticks");
 
-                    var sessions = GetRegisteredPartySessions(party.Id);
+                    var sessions = GetRegisteredPartySessions(
+                        party.Id,
+                        ParticipantRoomCommand.Seek);
                     var maxBufferThreshold = TimeSpan.FromSeconds(party.MaxBufferThresholdSeconds).Ticks;
 
                     foreach (var session in sessions)
@@ -2322,6 +2432,7 @@ namespace WatchPartyForEmby
                                     $"(diff {TimeSpan.FromTicks(positionDifference).TotalSeconds:F1}s)");
                                 var controllingSession = GetMasterSessionForCommand(party);
                                 await SyncUserToPosition(
+                                    party,
                                     session,
                                     item,
                                     estimatedPartyPosition,
@@ -2343,6 +2454,7 @@ namespace WatchPartyForEmby
         }
 
         private async Task<bool> SyncUserToPosition(
+            WatchPartyItem party,
             SessionInfo session,
             BaseItem item,
             long positionTicks,
@@ -2392,7 +2504,8 @@ namespace WatchPartyForEmby
 
                 try
                 {
-                    await SendPlaystateCommandSerialAsync(
+                    var commandSent = await SendPlaystateCommandSerialAsync(
+                        party?.Id,
                         controllingSessionId,
                         session.Id,
                         new PlaystateRequest
@@ -2401,6 +2514,13 @@ namespace WatchPartyForEmby
                             SeekPositionTicks = adjustedPosition,
                             ControllingUserId = controllingSession?.UserId
                         });
+                    if (!commandSent)
+                    {
+                        _playbackSyncCoordinator.CancelPendingSeek(
+                            session.Id,
+                            adjustedPosition);
+                        return false;
+                    }
                 }
                 catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
                 {
@@ -2593,14 +2713,14 @@ namespace WatchPartyForEmby
                         party.Id,
                         _ => new ConcurrentDictionary<string, bool>());
                     var isMaster = TryResolveMasterSession(party, e.Session);
-                    ParticipantStopGraceTracker.Registration resumedRegistration = null;
-                    var resumedAfterStopGrace = !isMaster
-                        && _participantStopGraces.TryMarkResumed(
+                    ParticipantDormancyTracker.Registration resumedRegistration = null;
+                    var resumedFromDormancy = !isMaster
+                        && _participantDormancies.TryReactivate(
                             party.Id,
                             e.Session.Id,
                             nowUtc,
                             out resumedRegistration);
-                    if (resumedAfterStopGrace)
+                    if (resumedFromDormancy)
                     {
                         resumedRegistration.Dispose();
                         _logger.Info(
@@ -2723,11 +2843,11 @@ namespace WatchPartyForEmby
                         var syncedSessions = _partySyncedSessions.GetOrAdd(
                             party.Id,
                             _ => new ConcurrentDictionary<string, byte>());
-                        if ((resumedAfterStopGrace
+                        if ((resumedFromDormancy
                                 || participantReturnedAfterGap
                                 || !syncedSessions.ContainsKey(e.Session.Id))
                             && HasActiveMasterSession(party)
-                            && (resumedAfterStopGrace
+                            && (resumedFromDormancy
                                 || !_playbackSyncCoordinator.IsSeekSettling(e.Session.Id, nowUtc)))
                         {
                             var targetPosition = _playbackSyncCoordinator.GetEstimatedPartyPosition(
@@ -2778,7 +2898,7 @@ namespace WatchPartyForEmby
                             _logger.Info(
                                 $"[Party {party.Id}] Ignoring resume from session {e.Session.Id} " +
                                 "while the waiting room owns playback state");
-                            await SendPauseStateCommand(e.Session, true);
+                            await SendPauseStateCommand(party, e.Session, true);
                         }
                     }
                     else if (inboundPauseState.IsTransition
@@ -3294,7 +3414,9 @@ namespace WatchPartyForEmby
             string masterSessionId,
             long positionTicks)
         {
-            var sessions = GetRegisteredPartySessions(party.Id);
+            var sessions = GetRegisteredPartySessions(
+                party.Id,
+                ParticipantRoomCommand.Seek);
             foreach (var session in sessions)
             {
                 if (session.Id == masterSessionId || IsMasterSession(party, session))
@@ -3331,6 +3453,7 @@ namespace WatchPartyForEmby
                         string.Equals(candidate.Id, masterSessionId, StringComparison.Ordinal))
                         ?? GetMasterSessionForCommand(party);
                     await SyncUserToPosition(
+                        party,
                         session,
                         item,
                         positionTicks,
@@ -3369,7 +3492,11 @@ namespace WatchPartyForEmby
 
             foreach (var participant in _plugin.PartyParticipants.GetSessions(party.Id))
             {
-                if (!string.IsNullOrEmpty(participant.SessionId))
+                if (!string.IsNullOrEmpty(participant.SessionId)
+                    && _participantDormancies.CanReceiveCommand(
+                        party.Id,
+                        participant.SessionId,
+                        ParticipantRoomCommand.PlayNow))
                 {
                     sessionIds.Add(participant.SessionId);
                 }
@@ -3433,6 +3560,19 @@ namespace WatchPartyForEmby
 
             foreach (var session in sessions)
             {
+                if (session != null
+                    && !CanDispatchParticipantCommand(
+                        party.Id,
+                        session.Id,
+                        ParticipantRoomCommand.PlayNow,
+                        queued: false))
+                {
+                    _seriesEpisodeTransitions.CancelExpectedStart(
+                        session.Id,
+                        episode.ItemId);
+                    continue;
+                }
+
                 if (session == null || !SupportsRemoteControlledPlayback(session))
                 {
                     if (session != null)
@@ -3473,11 +3613,19 @@ namespace WatchPartyForEmby
                             episode.ItemId,
                             session.Id);
                     }
-                    await SendPlayCommandSerialAsync(
+                    var commandSent = await SendPlayCommandSerialAsync(
+                        party.Id,
                         session.Id,
                         session.Id,
                         playRequest,
                         commandCancellationToken);
+                    if (!commandSent)
+                    {
+                        _seriesEpisodeTransitions.CancelExpectedStart(
+                            session.Id,
+                            episode.ItemId);
+                        continue;
+                    }
                     _logger.Info(
                         $"[Party {party.Id}] Episode command sent to {session.UserName} " +
                         $"for {episode.ItemName} (attempt {attempt}/{SeriesCommandMaxAttempts}); " +
@@ -3554,6 +3702,18 @@ namespace WatchPartyForEmby
                         return;
                     }
 
+                    if (!CanDispatchParticipantCommand(
+                            partyId,
+                            sessionId,
+                            ParticipantRoomCommand.PlayNow,
+                            queued: false))
+                    {
+                        _seriesEpisodeTransitions.CancelExpectedStart(
+                            sessionId,
+                            episodeItemId);
+                        return;
+                    }
+
                     var session = _sessionManager.Sessions.FirstOrDefault(candidate =>
                         string.Equals(candidate.Id, sessionId, StringComparison.Ordinal));
                     if (session == null || !SupportsRemoteControlledPlayback(session))
@@ -3616,14 +3776,14 @@ namespace WatchPartyForEmby
                 () => HandlePlaybackStoppedAsync(e));
         }
 
-        private void ScheduleParticipantStopGrace(
+        private void MarkParticipantDormant(
             WatchPartyItem party,
             string sessionId,
             string playSessionId,
             string userName,
             DateTime stoppedAtUtc)
         {
-            _participantStopGraces.Schedule(
+            _participantDormancies.MarkDormant(
                 party.Id,
                 sessionId,
                 playSessionId,
@@ -3677,7 +3837,21 @@ namespace WatchPartyForEmby
 
                     if (!isMaster)
                     {
-                        ScheduleParticipantStopGrace(
+                        if (party.IsSeriesParty
+                            && _seriesEpisodeTransitions.ShouldRetainSessionOnStop(
+                                e.Session.Id,
+                                stoppedEpisodeId,
+                                currentEpisode?.ItemId,
+                                DateTime.UtcNow))
+                        {
+                            _logger.Info(
+                                $"[Party {party.Id}] Keeping participant session " +
+                                $"{e.Session.Id} commandable while it switches from " +
+                                $"episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
+                            return;
+                        }
+
+                        MarkParticipantDormant(
                             party,
                             e.Session.Id,
                             e.PlaySessionId,
@@ -3760,7 +3934,7 @@ namespace WatchPartyForEmby
             _waitingRoomStartRegistration = null;
 
             _lifetimeCts.Cancel();
-            _participantStopGraces.Dispose();
+            _participantDormancies.Dispose();
             _syncTimer?.Dispose();
             lock (_masterSeekSyncLock)
             {

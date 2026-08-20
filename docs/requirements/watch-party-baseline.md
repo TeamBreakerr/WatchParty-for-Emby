@@ -22,7 +22,7 @@
 - R10. 每个会话还必须跟踪 `PlaySessionId`；旧播放实例的 Progress/Stop 不得覆盖或移除新播放实例。
 - R11. 客户端快速退出、重播、换集、复用 `SessionId` 或遗漏 `PlaybackStart` 时，应能从可信的 Start/Progress 自动恢复，不要求用户退出房间重进。
 - R12. 同一 Emby Web `SessionId` 并发残留多个 `PlaySessionId` 时，只允许当前实例更新 master 时间轴，旧实例不得造成进度来回跳。
-- R13. inactive/Stop 清理只移除对应会话或对应播放实例，不得误删同账号的其他设备；master 会话离开时，应按明确规则晋升同用户的其他活跃会话或暂停房间时钟。
+- R13. inactive/Stop 清理只移除对应会话或对应播放实例，不得误删同账号的其他设备；保留的观众 Stop 会话必须进入休眠，禁止接收 PlayNow/Pause/Resume/Seek，只有该会话自己的可信 Start/Progress 才能恢复控制；master 会话离开时，应按明确规则晋升同用户的其他活跃会话或暂停房间时钟。
 
 ## 4. 位置与 seek 同步
 

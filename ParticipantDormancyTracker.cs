@@ -5,31 +5,40 @@ using System.Threading;
 namespace WatchPartyForEmby
 {
     /// <summary>
-    /// Keeps a participant's membership alive across the Stop event Emby emits when
-    /// iOS backgrounds a player. The registration is identity-bound, so an old stop
-    /// cannot cancel or remove a replacement PlaySessionId. The caller decides when
-    /// retention ends (normally when the master leaves); there is intentionally no
-    /// wall-clock expiry while the master is still active.
+    /// Keeps a participant's membership while separating it from command eligibility
+    /// after Emby reports Stop. The registration is identity-bound, so another session
+    /// cannot reactivate the stopped player. Stop remains available for teardown; all
+    /// commands that can start, resume, pause, or seek playback stay blocked until the
+    /// client reports its own accepted Start/Progress.
     /// </summary>
-    public sealed class ParticipantStopGraceTracker : IDisposable
+    public enum ParticipantRoomCommand
+    {
+        PlayNow,
+        Pause,
+        Resume,
+        Seek,
+        Stop
+    }
+
+    public sealed class ParticipantDormancyTracker : IDisposable
     {
         private readonly object _syncRoot = new object();
-        private readonly TimeSpan _gracePeriod;
+        private readonly TimeSpan _retentionPeriod;
         private readonly Dictionary<string, Registration> _registrations =
             new Dictionary<string, Registration>(StringComparer.Ordinal);
 
-        public ParticipantStopGraceTracker(TimeSpan gracePeriod)
+        public ParticipantDormancyTracker(TimeSpan retentionPeriod)
         {
-            if (gracePeriod <= TimeSpan.Zero
-                && gracePeriod != Timeout.InfiniteTimeSpan)
+            if (retentionPeriod <= TimeSpan.Zero
+                && retentionPeriod != Timeout.InfiniteTimeSpan)
             {
-                throw new ArgumentOutOfRangeException(nameof(gracePeriod));
+                throw new ArgumentOutOfRangeException(nameof(retentionPeriod));
             }
 
-            _gracePeriod = gracePeriod;
+            _retentionPeriod = retentionPeriod;
         }
 
-        public Registration Schedule(
+        public Registration MarkDormant(
             string partyId,
             string sessionId,
             string playSessionId,
@@ -46,7 +55,7 @@ namespace WatchPartyForEmby
                 sessionId,
                 playSessionId,
                 stoppedAtUtc,
-                _gracePeriod);
+                _retentionPeriod);
 
             lock (_syncRoot)
             {
@@ -61,7 +70,7 @@ namespace WatchPartyForEmby
             return registration;
         }
 
-        public bool TryMarkResumed(
+        public bool TryReactivate(
             string partyId,
             string sessionId,
             DateTime activityAtUtc,
@@ -81,6 +90,29 @@ namespace WatchPartyForEmby
                 current.Cancel();
                 registration = current;
                 return true;
+            }
+        }
+
+        /// <summary>
+        /// Returns whether a room command may target this retained participant. A Stop
+        /// registration is also a dormancy marker: membership stays intact, but the
+        /// player cannot be restarted or controlled until its own Start/Progress report
+        /// claims the registration through <see cref="TryReactivate"/>.
+        /// </summary>
+        public bool CanReceiveCommand(
+            string partyId,
+            string sessionId,
+            ParticipantRoomCommand command)
+        {
+            if (command == ParticipantRoomCommand.Stop)
+            {
+                return true;
+            }
+
+            var key = Key(partyId, sessionId);
+            lock (_syncRoot)
+            {
+                return !_registrations.ContainsKey(key);
             }
         }
 
@@ -175,14 +207,14 @@ namespace WatchPartyForEmby
                 string sessionId,
                 string playSessionId,
                 DateTime stoppedAtUtc,
-                TimeSpan gracePeriod)
+                TimeSpan retentionPeriod)
             {
                 Key = key;
                 PartyId = partyId;
                 SessionId = sessionId;
                 PlaySessionId = playSessionId;
                 StoppedAtUtc = stoppedAtUtc;
-                GracePeriod = gracePeriod;
+                RetentionPeriod = retentionPeriod;
             }
 
             internal string Key { get; }
@@ -190,7 +222,7 @@ namespace WatchPartyForEmby
             public string SessionId { get; }
             public string PlaySessionId { get; }
             public DateTime StoppedAtUtc { get; }
-            public TimeSpan GracePeriod { get; }
+            public TimeSpan RetentionPeriod { get; }
             public CancellationToken CancellationToken => _cancellation.Token;
 
             internal void Cancel()

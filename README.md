@@ -14,7 +14,7 @@ A synchronized watch party plugin for Emby Media Server. Create watch parties th
 - **Original Item Binding** — Controls the existing Emby item directly, preserving its subtitles, media streams, artwork, and metadata
 - **Series Parties** — Matches every original episode in an ordered multi-season queue, follows manual episode changes by the master, and advances everyone after natural completion
 - **Auto-Kick** — Optionally remove inactive participants after a configurable timeout
-- **Session-Safe Recovery** — Multiple devices per account, delayed stop/progress events, missing start events, and episode changes are isolated by session and playback ID
+- **Session-Safe Recovery** — Multiple devices per account, delayed stop/progress events, missing start events, and episode changes are isolated by session and playback ID; stopped followers remain dormant until they report their own playback activity
 
 ## How It Works
 
