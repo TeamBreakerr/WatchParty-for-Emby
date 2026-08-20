@@ -66,9 +66,9 @@ namespace WatchPartyForEmby
         private const int PauseCommandMaxAttempts = 3;
         private static readonly TimeSpan PauseCommandRetryDelay =
             TimeSpan.FromMilliseconds(350);
-        private const int SeriesCommandMaxAttempts = 2;
-        private static readonly TimeSpan SeriesCommandRetryDelay =
-            TimeSpan.FromMilliseconds(500);
+        private const int SeriesCommandMaxAttempts = 3;
+        private static readonly TimeSpan SeriesCommandConfirmationRetryInterval =
+            TimeSpan.FromSeconds(6);
         // A participant receives Unpause after the master has already resumed. The
         // normal sync offset compensates for this one-way delay; this extra small
         // allowance covers the command queue and the iOS playback-start callback.
@@ -405,7 +405,7 @@ namespace WatchPartyForEmby
                         session.Id,
                         candidateSessionId => _sessionManager.Sessions.Any(candidate =>
                             string.Equals(candidate.Id, candidateSessionId, StringComparison.Ordinal)
-                            && IsCurrentPartyPlayback(party, candidate))))
+                            && IsRegisteredPartyPlayback(party, candidate))))
                 {
                     return false;
                 }
@@ -451,33 +451,41 @@ namespace WatchPartyForEmby
                 ? null
                 : _sessionManager.Sessions.FirstOrDefault(s =>
                     string.Equals(s.Id, masterSessionId, StringComparison.Ordinal)
-                    && IsCurrentPartyPlayback(party, s));
+                    && IsRegisteredPartyPlayback(party, s));
         }
 
-        private bool IsCurrentPartyPlayback(WatchPartyItem party, SessionInfo session)
+        private bool IsRegisteredPartyPlayback(WatchPartyItem party, SessionInfo session)
         {
-            if (party == null || session?.NowPlayingItem == null)
+            if (party == null || session == null)
+            {
+                return false;
+            }
+
+            // Emby's SessionInfo is shared by every PlaySessionId in one browser
+            // session. A zombie reporter from an older episode can overwrite
+            // NowPlayingItem/PlayState even though the plugin correctly rejected that
+            // report. The registry is the playback-generation boundary, while the
+            // live item still has to belong to this party. For a series, any queued
+            // episode is accepted here; requiring the current episode would reintroduce
+            // the stale-old-episode takeover bug.
+            if (!_plugin.PartyParticipants.TryGetSession(
+                    party.Id,
+                    session.Id,
+                    out var participant)
+                || string.IsNullOrEmpty(participant.PlaySessionId)
+                || !string.Equals(
+                    participant.UserId,
+                    session.UserId,
+                    StringComparison.OrdinalIgnoreCase)
+                || session.NowPlayingItem == null)
             {
                 return false;
             }
 
             var item = _libraryManager.GetItemById(session.NowPlayingItem.Id);
             var matchingParty = FindPartyForItem(item);
-            if (matchingParty == null || !string.Equals(matchingParty.Id, party.Id, StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            if (!party.IsSeriesParty)
-            {
-                return true;
-            }
-
-            var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
-            var episodeId = FindSeriesEpisodeId(party, item);
-            return currentEpisode != null
-                && !string.IsNullOrEmpty(episodeId)
-                && string.Equals(episodeId, currentEpisode.ItemId, StringComparison.OrdinalIgnoreCase);
+            return matchingParty != null
+                && string.Equals(matchingParty.Id, party.Id, StringComparison.Ordinal);
         }
 
         private bool TryPromoteActiveMasterSession(
@@ -496,7 +504,7 @@ namespace WatchPartyForEmby
                 userId,
                 sessionId => _sessionManager.Sessions.Any(current =>
                     string.Equals(current.Id, sessionId, StringComparison.Ordinal)
-                    && IsCurrentPartyPlayback(party, current)));
+                    && IsRegisteredPartyPlayback(party, current)));
             if (!string.IsNullOrEmpty(candidateSessionId)
                 && _plugin.PartyParticipants.SetMasterSession(party.Id, candidateSessionId))
             {
@@ -1140,6 +1148,53 @@ namespace WatchPartyForEmby
                 _logger.ErrorException(
                     $"[Party {party.Id}] Error broadcasting {(isPaused ? "pause" : "resume")}",
                     ex);
+            }
+        }
+
+        private async Task StopParticipantsAfterMasterStop(
+            WatchPartyItem party,
+            string stoppedMasterSessionId)
+        {
+            var sessions = GetRegisteredPartySessions(party.Id);
+            foreach (var session in sessions)
+            {
+                if (session == null
+                    || string.Equals(
+                        session.Id,
+                        stoppedMasterSessionId,
+                        StringComparison.Ordinal)
+                    || !_plugin.PartyParticipants.TryGetSession(
+                        party.Id,
+                        session.Id,
+                        out _))
+                {
+                    continue;
+                }
+
+                if (!SupportsRemoteControlledPlayback(session))
+                {
+                    _logger.Info(
+                        $"[Party {party.Id}] Cannot mirror master Stop to " +
+                        $"{session.UserName} ({session.Client}): remote playback is unsupported");
+                    continue;
+                }
+
+                try
+                {
+                    await SendPlaystateCommandSerialAsync(
+                        stoppedMasterSessionId,
+                        session.Id,
+                        new PlaystateRequest { Command = PlaystateCommand.Stop });
+                    _logger.Info(
+                        $"[Party {party.Id}] Mirrored master Stop to {session.UserName} " +
+                        $"(Session: {session.Id})");
+                }
+                catch (Exception ex)
+                {
+                    _logger.ErrorException(
+                        $"[Party {party.Id}] Error mirroring master Stop to session {session.Id}",
+                        ex);
+                }
             }
         }
 
@@ -1850,7 +1905,7 @@ namespace WatchPartyForEmby
                     activeSession.Id,
                     registeredMasterSessionId,
                     StringComparison.Ordinal)
-                && activeSession.NowPlayingItem != null);
+                && IsRegisteredPartyPlayback(party, activeSession));
         }
 
         private async Task HandlePlaybackStartAsync(
@@ -1876,6 +1931,8 @@ namespace WatchPartyForEmby
                     }
 
                     var nowUtc = DateTime.UtcNow;
+                    var masterWasInactiveBeforeStart = IsMasterSelectionSession(party, e.Session)
+                        && !HasActiveMasterSession(party);
                     if (_plugin.PartyParticipants.IsRetiredPlaybackId(
                             party.Id,
                             e.Session.Id,
@@ -2024,6 +2081,39 @@ namespace WatchPartyForEmby
                             _logger.Debug(
                                 $"[Party {party.Id}] Skipping superseded episode selection {startedEpisodeId}");
                             return;
+                        }
+                    }
+
+                    if (party.IsSeriesParty
+                        && isMaster
+                        && masterWasInactiveBeforeStart
+                        && masterSeriesSelection == null
+                        && currentEpisode != null
+                        && string.Equals(
+                            startedEpisodeId,
+                            currentEpisode.ItemId,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        // A clean Stop followed by replaying the same episode is still
+                        // a new authoritative playback generation. Followers were
+                        // stopped with the old master, so Unpause/seek cannot revive
+                        // them; mirror the new Start with PlayNow just like a cross-
+                        // episode transition.
+                        var restartSessions = GetSeriesTransitionSessions(party, e.Session)
+                            .Where(session => !IsMasterSession(party, session))
+                            .ToList();
+                        if (restartSessions.Count > 0)
+                        {
+                            ResetSeriesEpisodeSyncState(party);
+                            _logger.Info(
+                                $"[Party {party.Id}] Master started a new playback generation " +
+                                $"for {currentEpisode.ItemId}; restarting {restartSessions.Count} " +
+                                "participant session(s)");
+                            await PlaySeriesEpisodeForSessions(
+                                party,
+                                currentEpisode,
+                                restartSessions,
+                                userStartPosition);
                         }
                     }
 
@@ -2234,24 +2324,21 @@ namespace WatchPartyForEmby
 
                             if (party.IsSeriesParty && !isMaster)
                             {
-                                var episodeSwitchTarget = GetSeriesEpisodeSwitchTarget(party, item);
+                                var episodeSwitchTarget = GetSeriesEpisodeCommandTarget(
+                                    party,
+                                    session.Id,
+                                    item,
+                                    nowUtc);
                                 if (episodeSwitchTarget != null)
                                 {
-                                    if (!_seriesEpisodeTransitions.IsExpectedStart(
-                                            session.Id,
-                                            episodeSwitchTarget.ItemId,
-                                            nowUtc))
-                                    {
-                                        var playingEpisodeId = FindSeriesEpisodeId(party, item);
-                                        _logger.Info(
-                                            $"[Party {party.Id}] Session {session.Id} is on episode {playingEpisodeId}; " +
-                                            $"switching to current episode {episodeSwitchTarget.ItemId}");
-                                        await PlaySeriesEpisodeForSessions(
-                                            party,
-                                            episodeSwitchTarget,
-                                            new[] { session },
-                                            estimatedPartyPosition);
-                                    }
+                                    // The transition tracker decides whether this is the
+                                    // first command, a due confirmation retry, or a
+                                    // duplicate periodic pass that must be suppressed.
+                                    await PlaySeriesEpisodeForSessions(
+                                        party,
+                                        episodeSwitchTarget,
+                                        new[] { session },
+                                        estimatedPartyPosition);
                                     continue;
                                 }
                             }
@@ -2473,6 +2560,29 @@ namespace WatchPartyForEmby
                     StringComparison.OrdinalIgnoreCase)
                 ? currentEpisode
                 : null;
+        }
+
+        private WatchPartyEpisode GetSeriesEpisodeCommandTarget(
+            WatchPartyItem party,
+            string sessionId,
+            BaseItem item,
+            DateTime nowUtc)
+        {
+            var switchTarget = GetSeriesEpisodeSwitchTarget(party, item);
+            if (switchTarget != null)
+            {
+                return switchTarget;
+            }
+
+            var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+            return item == null
+                && currentEpisode != null
+                && _seriesEpisodeTransitions.IsExpectedStart(
+                    sessionId,
+                    currentEpisode.ItemId,
+                    nowUtc)
+                    ? currentEpisode
+                    : null;
         }
 
         private void OnPlaybackProgress(object sender, PlaybackProgressEventArgs e)
@@ -3298,7 +3408,11 @@ namespace WatchPartyForEmby
                         session.Id,
                         out _))
                 {
-                    var episodeSwitchTarget = GetSeriesEpisodeSwitchTarget(party, item);
+                    var episodeSwitchTarget = GetSeriesEpisodeCommandTarget(
+                        party,
+                        session.Id,
+                        item,
+                        DateTime.UtcNow);
                     if (episodeSwitchTarget != null)
                     {
                         await PlaySeriesEpisodeForSessions(
@@ -3413,54 +3527,57 @@ namespace WatchPartyForEmby
                 return;
             }
 
-            var nowUtc = DateTime.UtcNow;
-            _seriesEpisodeTransitions.RemoveExpired(nowUtc);
-            var expectedStartExpiration = nowUtc.AddSeconds(30);
-
             foreach (var session in sessions)
             {
                 if (session == null || !SupportsRemoteControlledPlayback(session))
                 {
+                    if (session != null)
+                    {
+                        _seriesEpisodeTransitions.CancelExpectedStart(
+                            session.Id,
+                            episode.ItemId);
+                    }
                     _logger.Info($"[Party {party.Id}] Skipping {session?.UserName} ({session?.Client}): session does not support remote-controlled playback");
                     continue;
                 }
 
                 try
                 {
-                    _seriesEpisodeTransitions.ExpectStart(
+                    var nowUtc = DateTime.UtcNow;
+                    _seriesEpisodeTransitions.RemoveExpired(nowUtc);
+                    if (!_seriesEpisodeTransitions.TryBeginCommandAttempt(
                         session.Id,
                         episode.ItemId,
-                        expectedStartExpiration);
+                        nowUtc,
+                        SeriesCommandConfirmationRetryInterval,
+                        SeriesCommandMaxAttempts,
+                        out var attempt))
+                    {
+                        continue;
+                    }
+
                     var playRequest = new PlayRequest
                     {
                         ItemIds = new[] { episodeItem.InternalId },
                         PlayCommand = PlayCommand.PlayNow,
                         StartPositionTicks = Math.Max(0, startPositionTicks)
                     };
-                    for (var attempt = 1; attempt <= SeriesCommandMaxAttempts; attempt++)
+                    if (attempt == 1)
                     {
-                        try
-                        {
-                            await SendPlayCommandSerialAsync(
-                                session.Id,
-                                session.Id,
-                                playRequest,
-                                commandCancellationToken);
-                            _logger.Info(
-                                $"[Party {party.Id}] Sent episode {episode.ItemName} " +
-                                $"to {session.UserName} (attempt {attempt})");
-                            break;
-                        }
-                        catch (Exception ex) when (attempt < SeriesCommandMaxAttempts)
-                        {
-                            _logger.Warn(
-                                $"[Party {party.Id}] Episode command attempt " +
-                                $"{attempt}/{SeriesCommandMaxAttempts} failed for " +
-                                $"session {session.Id}: {ex.Message}; retrying");
-                            await Task.Delay(SeriesCommandRetryDelay, commandCancellationToken)
-                                .ConfigureAwait(false);
-                        }
+                        _ = RetrySeriesEpisodeUntilConfirmedAsync(
+                            party.Id,
+                            episode.ItemId,
+                            session.Id);
                     }
+                    await SendPlayCommandSerialAsync(
+                        session.Id,
+                        session.Id,
+                        playRequest,
+                        commandCancellationToken);
+                    _logger.Info(
+                        $"[Party {party.Id}] Episode command sent to {session.UserName} " +
+                        $"for {episode.ItemName} (attempt {attempt}/{SeriesCommandMaxAttempts}); " +
+                        "waiting for PlaybackStart confirmation");
                 }
                 catch (OperationCanceledException) when (commandCancellationToken.IsCancellationRequested)
                 {
@@ -3476,13 +3593,94 @@ namespace WatchPartyForEmby
                 }
                 catch (Exception ex)
                 {
-                    _seriesEpisodeTransitions.CancelExpectedStart(
-                        session.Id,
-                        episode.ItemId);
                     _logger.ErrorException(
-                        $"[Party {party.Id}] Client {session.Client} did not accept episode {episode.ItemName}",
+                        $"[Party {party.Id}] Episode command for {episode.ItemName} was not " +
+                        $"accepted by session {session.Id}; a bounded retry remains pending",
                         ex);
                 }
+            }
+        }
+
+        private async Task RetrySeriesEpisodeUntilConfirmedAsync(
+            string partyId,
+            string episodeItemId,
+            string sessionId)
+        {
+            try
+            {
+                while (!_lifetimeCts.IsCancellationRequested)
+                {
+                    await Task.Delay(
+                            SeriesCommandConfirmationRetryInterval,
+                            _lifetimeCts.Token)
+                        .ConfigureAwait(false);
+
+                    var nowUtc = DateTime.UtcNow;
+                    if (!_seriesEpisodeTransitions.IsExpectedStart(
+                            sessionId,
+                            episodeItemId,
+                            nowUtc))
+                    {
+                        return;
+                    }
+
+                    WatchPartyItem party;
+                    lock (_plugin.ConfigurationSyncRoot)
+                    {
+                        party = _plugin.Configuration.WatchParties.FirstOrDefault(candidate =>
+                            candidate.IsActive
+                            && string.Equals(candidate.Id, partyId, StringComparison.Ordinal));
+                    }
+
+                    var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+                    if (currentEpisode == null
+                        || !string.Equals(
+                            currentEpisode.ItemId,
+                            episodeItemId,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+
+                    if (!_plugin.PartyParticipants.TryGetSession(
+                            partyId,
+                            sessionId,
+                            out _))
+                    {
+                        return;
+                    }
+
+                    var session = _sessionManager.Sessions.FirstOrDefault(candidate =>
+                        string.Equals(candidate.Id, sessionId, StringComparison.Ordinal));
+                    if (session == null || !SupportsRemoteControlledPlayback(session))
+                    {
+                        // The iOS session may temporarily disappear while rebuilding
+                        // its player. Keep the bounded confirmation window alive and
+                        // retry if it returns before expiration.
+                        continue;
+                    }
+
+                    var targetPosition = _playbackSyncCoordinator.GetEstimatedPartyPosition(
+                        party.Id,
+                        party.CurrentPositionTicks,
+                        nowUtc);
+                    await PlaySeriesEpisodeForSessions(
+                        party,
+                        currentEpisode,
+                        new[] { session },
+                        targetPosition,
+                        _lifetimeCts.Token);
+                }
+            }
+            catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+            {
+                // Plugin shutdown cancels pending confirmation retries.
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorException(
+                    $"[Party {partyId}] Episode confirmation retry loop failed for session {sessionId}",
+                    ex);
             }
         }
 
@@ -3502,25 +3700,9 @@ namespace WatchPartyForEmby
             foreach (var participant in _plugin.PartyParticipants.GetSessions(party.Id))
             {
                 _playbackSyncCoordinator.ClearSession(participant.SessionId);
+                _seriesEpisodeTransitions.ClearSession(participant.SessionId);
             }
             _plugin.PartyParticipants.ResetEpisodeState(party.Id);
-        }
-
-        private long GetLastKnownPosition(WatchPartyItem party, SessionInfo session)
-        {
-            if (session?.PlayState?.PositionTicks is long sessionPosition && sessionPosition > 0)
-            {
-                return sessionPosition;
-            }
-
-            if (session != null
-                && _plugin.PartyParticipants.TryGetSession(party.Id, session.Id, out var participant)
-                && participant.CurrentPositionTicks > 0)
-            {
-                return participant.CurrentPositionTicks;
-            }
-
-            return party.CurrentPositionTicks;
         }
 
         private void OnPlaybackStopped(object sender, PlaybackStopEventArgs e)
@@ -3558,15 +3740,21 @@ namespace WatchPartyForEmby
 
                 if (party != null && party.IsActive)
                 {
-                    if (_plugin.PartyParticipants.TryGetSession(
+                    if (!_plugin.PartyParticipants.TryGetSession(
                             party.Id,
                             e.Session.Id,
-                            out var currentParticipant)
-                        && !string.IsNullOrEmpty(currentParticipant.PlaySessionId)
-                        && !string.Equals(
-                            e.PlaySessionId,
-                            currentParticipant.PlaySessionId,
-                            StringComparison.Ordinal))
+                            out var currentParticipant))
+                    {
+                        _logger.Info(
+                            $"[Party {party.Id}] Ignoring Stop for unregistered playback " +
+                            $"{e.PlaySessionId} on session {e.Session.Id}");
+                        return;
+                    }
+
+                    if (!_plugin.PartyParticipants.IsCurrentPlaybackSession(
+                            party.Id,
+                            e.Session.Id,
+                            e.PlaySessionId))
                     {
                         _logger.Info(
                             $"[Party {party.Id}] Ignoring delayed Stop for playback " +
@@ -3575,12 +3763,14 @@ namespace WatchPartyForEmby
                         return;
                     }
 
-                    var isMaster = TryResolveMasterSession(party, e.Session);
-                    var stoppedPosition = GetLastKnownPosition(party, e.Session);
+                    // Never promote or recreate a master from Stop. The participant
+                    // snapshot was updated only by the accepted PlaySessionId, whereas
+                    // Emby's shared SessionInfo.PlayState can have been overwritten by
+                    // a zombie reporter from another episode.
+                    var isMaster = IsMasterSession(party, e.Session);
+                    var stoppedPosition = Math.Max(0, currentParticipant.CurrentPositionTicks);
                     var stoppedEpisodeId = FindSeriesEpisodeId(party, e.Item);
                     var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
-                    var sourceItem = currentEpisode == null ? null : _libraryManager.GetItemById(currentEpisode.ItemId);
-                    var runtimeTicks = e.Item?.RunTimeTicks ?? sourceItem?.RunTimeTicks ?? 0;
 
                     if (!isMaster)
                     {
@@ -3604,81 +3794,6 @@ namespace WatchPartyForEmby
                             _logger.Info(
                                 $"[Party {party.Id}] Retaining session {e.Session.Id} while it switches " +
                                 $"from episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
-                            return;
-                        }
-
-                        var completedEpisodeId = stoppedEpisodeId;
-                        var completionResult = SeriesPartyAdvanceResult.NotCompleted;
-                        var transitionAlreadyInProgress = false;
-
-                        lock (_seriesTransitionLock)
-                        {
-                            transitionAlreadyInProgress = _partiesTransitioning.Contains(party.Id);
-                            if (isMaster && !transitionAlreadyInProgress)
-                            {
-                                completionResult = SeriesPartyQueue.TryAdvanceAfterStop(
-                                    party,
-                                    completedEpisodeId,
-                                    stoppedPosition,
-                                    runtimeTicks);
-
-                                if (completionResult == SeriesPartyAdvanceResult.Advanced)
-                                {
-                                    _partiesTransitioning.Add(party.Id);
-                                }
-                            }
-                        }
-
-                        if (transitionAlreadyInProgress)
-                        {
-                            _logger.Debug($"[Party {party.Id}] Ignoring duplicate stop while the next episode is starting");
-                            return;
-                        }
-
-                        if (completionResult == SeriesPartyAdvanceResult.Advanced)
-                        {
-                            try
-                            {
-                                var transitionSessions = GetSeriesTransitionSessions(party, e.Session);
-                                var nextEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
-                                _logger.Info(
-                                    $"[Party {party.Id}] Master completed {completedEpisodeId}; advancing to {nextEpisode?.ItemName}");
-
-                                _plugin.SaveConfigurationSafely();
-                                _lastProgressCheckpoint[party.Id] = DateTime.UtcNow;
-                                ResetSeriesEpisodeSyncState(party);
-                                await PlaySeriesEpisodeForSessions(party, nextEpisode, transitionSessions);
-                            }
-                            finally
-                            {
-                                ExitSeriesTransition(party.Id);
-                            }
-                            return;
-                        }
-
-                        if (completionResult == SeriesPartyAdvanceResult.EndOfQueue)
-                        {
-                            _logger.Info($"[Party {party.Id}] Series queue completed at {party.CurrentEpisodeId}");
-                            _playbackSyncCoordinator.StopMasterClock(
-                                party.Id,
-                                stoppedPosition,
-                                DateTime.UtcNow);
-                            _pauseControlCoordinator.ObserveAuthoritativeState(
-                                party.Id,
-                                isPaused: true);
-                            _plugin.SaveConfigurationSafely();
-                            _lastProgressCheckpoint[party.Id] = DateTime.UtcNow;
-                        }
-                        else if (isMaster && completionResult == SeriesPartyAdvanceResult.ItemMismatch)
-                        {
-                            _logger.Debug(
-                                $"[Party {party.Id}] Ignoring delayed stop for previous episode {stoppedEpisodeId}");
-                            return;
-                        }
-                        else if (!isMaster && SeriesPartyQueue.IsNaturalCompletion(stoppedPosition, runtimeTicks))
-                        {
-                            _logger.Info(
-                                $"[Party {party.Id}] Participant {e.Session.UserId} reached the episode end; retaining membership for transition");
                             return;
                         }
                     }
@@ -3709,6 +3824,9 @@ namespace WatchPartyForEmby
                             return;
                         }
 
+                        await StopParticipantsAfterMasterStop(
+                            party,
+                            e.Session.Id);
                         _plugin.SaveConfigurationSafely();
                     }
                     else

@@ -15,8 +15,6 @@ namespace WatchPartyForEmby
 
     public static class SeriesPartyQueue
     {
-        private static readonly long CompletionWindowTicks = TimeSpan.FromSeconds(30).Ticks;
-
         public static bool Repair(WatchPartyItem party)
         {
             if (party == null)
@@ -172,34 +170,11 @@ namespace WatchPartyForEmby
                 return SeriesPartyAdvanceResult.ItemMismatch;
             }
 
-            if (!IsNaturalCompletion(positionTicks, runtimeTicks))
-            {
-                return SeriesPartyAdvanceResult.NotCompleted;
-            }
-
-            party.IsPlaying = false;
-            if (party.CurrentEpisodeIndex >= party.EpisodeQueue.Count - 1)
-            {
-                return SeriesPartyAdvanceResult.EndOfQueue;
-            }
-
-            party.CurrentEpisodeIndex++;
-            party.CurrentPositionTicks = 0;
-            ApplyCurrentEpisode(party);
-            return SeriesPartyAdvanceResult.Advanced;
-        }
-
-        public static bool IsNaturalCompletion(long positionTicks, long runtimeTicks)
-        {
-            if (runtimeTicks <= 0 || positionTicks < 0)
-            {
-                return false;
-            }
-
-            var completionThreshold = Math.Max(
-                runtimeTicks - CompletionWindowTicks,
-                (long)Math.Floor(runtimeTicks * 0.95));
-            return positionTicks >= Math.Max(0, completionThreshold);
+            // A Stop never selects another episode. Emby Web emits Stop both at the
+            // end of an item and while a user manually changes streams/episodes, and a
+            // stale PlaySession can carry an unrelated near-end position. The master's
+            // next PlaybackStart is the only authoritative episode-selection event.
+            return SeriesPartyAdvanceResult.NotCompleted;
         }
 
         private static List<WatchPartyEpisode> NormalizeEpisodes(IEnumerable<WatchPartyEpisode> episodes)

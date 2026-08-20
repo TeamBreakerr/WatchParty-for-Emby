@@ -504,6 +504,80 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void RetiredMasterProgressCannotRecreateMembershipAfterCurrentPlaybackStops()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 19, 14, 46, 0, DateTimeKind.Utc);
+
+            registry.UpsertSession(
+                "party", "web-session", "master", "Master", "episode-5-playback", now,
+                out _, out _);
+            registry.UpsertSession(
+                "party", "web-session", "master", "Master", "episode-6-playback", now.AddMinutes(1),
+                out _, out _);
+            registry.UpsertSession(
+                "party", "web-session", "master", "Master", "episode-7-playback", now.AddMinutes(2),
+                out _, out _);
+            Assert.True(registry.SetMasterSession("party", "web-session"));
+
+            Assert.True(registry.TryRemoveSession(
+                "party",
+                "web-session",
+                "episode-7-playback",
+                out _,
+                out var removedMaster));
+            Assert.True(removedMaster);
+
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "episode-5-playback",
+                TimeSpan.FromMinutes(8).Ticks,
+                now.AddMinutes(3),
+                out var adopted,
+                out _));
+            Assert.False(adopted);
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "episode-6-playback",
+                TimeSpan.FromMinutes(8).Ticks,
+                now.AddMinutes(3).AddSeconds(1),
+                out adopted,
+                out _));
+            Assert.False(adopted);
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "zombie-created-after-stop",
+                TimeSpan.FromMinutes(8).Ticks,
+                now.AddMinutes(3).AddSeconds(2),
+                out adopted,
+                out _));
+            Assert.False(adopted);
+            Assert.Equal(0, registry.SessionCount("party"));
+            Assert.Null(registry.GetMasterSession("party"));
+        }
+
+        [Fact]
+        public void ProgressCannotCreateMembershipWithoutPlaybackStart()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 19, 15, 0, 0, DateTimeKind.Utc);
+
+            Assert.False(registry.TryAcceptPlaybackProgress(
+                "party",
+                "web-session",
+                "fresh-but-unconfirmed-playback",
+                TimeSpan.FromSeconds(1).Ticks,
+                now,
+                out var adopted,
+                out _));
+            Assert.False(adopted);
+            Assert.Equal(0, registry.SessionCount("party"));
+        }
+
+        [Fact]
         public void RetiredPlaybackHistoryKeepsRecentIdsAndEvictsTheOldestAtItsConfiguredLimit()
         {
             var registry = new PartySessionRegistry(maxRetiredPlaybackIdsPerParty: 2);

@@ -34,7 +34,7 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
-        public void NaturalCompletionAdvancesExactlyOneEpisodeAndResetsProgress()
+        public void PlaybackStopNeverSelectsTheNextEpisode()
         {
             var party = CreatePartyAtFirstEpisode();
             party.CurrentPositionTicks = TimeSpan.FromMinutes(22).Ticks - TimeSpan.FromSeconds(10).Ticks;
@@ -46,12 +46,12 @@ namespace WatchPartyForEmby.Tests
                 party.CurrentPositionTicks,
                 TimeSpan.FromMinutes(22).Ticks);
 
-            Assert.Equal(SeriesPartyAdvanceResult.Advanced, result);
-            Assert.Equal(1, party.CurrentEpisodeIndex);
-            Assert.Equal("s1e2", party.CurrentEpisodeId);
-            Assert.Equal("s1e2", party.ItemId);
-            Assert.Equal(0, party.CurrentPositionTicks);
-            Assert.False(party.IsPlaying);
+            Assert.Equal(SeriesPartyAdvanceResult.NotCompleted, result);
+            Assert.Equal(0, party.CurrentEpisodeIndex);
+            Assert.Equal("s1e1", party.CurrentEpisodeId);
+            Assert.Equal("s1e1", party.ItemId);
+            Assert.Equal(TimeSpan.FromMinutes(22).Ticks - TimeSpan.FromSeconds(10).Ticks, party.CurrentPositionTicks);
+            Assert.True(party.IsPlaying);
         }
 
         [Fact]
@@ -98,58 +98,6 @@ namespace WatchPartyForEmby.Tests
             Assert.Equal(0, party.CurrentEpisodeIndex);
             Assert.Equal("s1e1", party.CurrentEpisodeId);
             Assert.Equal("s1e1", party.ItemId);
-        }
-
-        [Fact]
-        public void StopAtNinetyFivePercentButOutsideCompletionWindowDoesNotAdvance()
-        {
-            var party = CreatePartyAtFirstEpisode();
-
-            var result = SeriesPartyQueue.TryAdvanceAfterStop(
-                party,
-                "s1e1",
-                TimeSpan.FromMinutes(21).Ticks,
-                TimeSpan.FromMinutes(22).Ticks);
-
-            Assert.Equal(SeriesPartyAdvanceResult.NotCompleted, result);
-            Assert.Equal("s1e1", party.CurrentEpisodeId);
-        }
-
-        [Fact]
-        public void DuplicateStopFromPreviousEpisodeDoesNotSkipAnEpisode()
-        {
-            var party = CreatePartyAtFirstEpisode();
-            var runtime = TimeSpan.FromMinutes(22).Ticks;
-
-            Assert.Equal(
-                SeriesPartyAdvanceResult.Advanced,
-                SeriesPartyQueue.TryAdvanceAfterStop(party, "s1e1", runtime, runtime));
-
-            Assert.Equal(
-                SeriesPartyAdvanceResult.ItemMismatch,
-                SeriesPartyQueue.TryAdvanceAfterStop(party, "s1e1", runtime, runtime));
-            Assert.Equal(1, party.CurrentEpisodeIndex);
-            Assert.Equal("s1e2", party.CurrentEpisodeId);
-        }
-
-        [Fact]
-        public void CompletingLastEpisodeMarksQueueCompleteWithoutMovingPastEnd()
-        {
-            var party = CreatePartyAtFirstEpisode();
-            party.CurrentEpisodeIndex = 1;
-            party.CurrentEpisodeId = "s1e2";
-            party.ItemId = "s1e2";
-
-            var result = SeriesPartyQueue.TryAdvanceAfterStop(
-                party,
-                "s1e2",
-                TimeSpan.FromMinutes(22).Ticks,
-                TimeSpan.FromMinutes(22).Ticks);
-
-            Assert.Equal(SeriesPartyAdvanceResult.EndOfQueue, result);
-            Assert.Equal(1, party.CurrentEpisodeIndex);
-            Assert.Equal("s1e2", party.CurrentEpisodeId);
-            Assert.False(party.IsPlaying);
         }
 
         [Fact]

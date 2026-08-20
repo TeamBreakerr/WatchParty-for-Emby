@@ -333,21 +333,37 @@ namespace WatchPartyForEmby
                 adopted = false;
                 previousPlaySessionId = null;
                 if (string.IsNullOrEmpty(partyId)
-                    || string.IsNullOrEmpty(sessionId)
-                    || string.IsNullOrEmpty(playSessionId)
-                    || !_sessionsByParty.TryGetValue(partyId, out var sessions)
-                    || !sessions.TryGetValue(sessionId, out var participant))
+                    || string.IsNullOrEmpty(sessionId))
                 {
-                    return true;
+                    return false;
                 }
 
-                previousPlaySessionId = participant.PlaySessionId;
-                if (IsRetiredPlayback(partyId, sessionId, playSessionId))
+                // Removal retires the current playback and preserves all earlier
+                // tombstones for this Emby SessionId. Check those tombstones before
+                // checking membership: after the visible Web player stops, zombie
+                // reporters from older episodes must not recreate the master session.
+                if (!string.IsNullOrEmpty(playSessionId)
+                    && IsRetiredPlayback(partyId, sessionId, playSessionId))
                 {
                     ClearProgressAdoption(partyId, sessionId);
                     return false;
                 }
 
+                if (!_sessionsByParty.TryGetValue(partyId, out var sessions)
+                    || !sessions.TryGetValue(sessionId, out var participant))
+                {
+                    // Progress cannot create membership. After Stop, a zombie Web
+                    // player can generate both old and previously unseen playback ids;
+                    // only a real PlaybackStart can establish the next generation.
+                    return false;
+                }
+
+                if (string.IsNullOrEmpty(playSessionId))
+                {
+                    return true;
+                }
+
+                previousPlaySessionId = participant.PlaySessionId;
                 if (string.IsNullOrEmpty(previousPlaySessionId))
                 {
                     participant.PlaySessionId = playSessionId;
