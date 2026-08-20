@@ -7,7 +7,7 @@ A synchronized watch party plugin for Emby Media Server. Create watch parties th
 - **Synchronized Playback** — All participants stay in sync with the host's playback position
 - **Waiting Room** — Optionally hold playback until a minimum number of participants are ready
 - **Auto-Start** — Automatically begin playback when enough participants have joined
-- **Playback Controls** — Configurable pause control for anyone, the master only, or a strict-majority vote
+- **Master-Authoritative Controls** — Only the master changes room playback; participant pause/resume cannot control other sessions
 - **Capability-Aware Control** — Unsupported clients can act as a reporting master without being treated as remotely controllable followers
 - **Web Dashboard** — Optional authenticated web UI for creating and managing watch parties
 - **SSO Support** — Authentik forward-auth integration when the reverse proxy connects over loopback

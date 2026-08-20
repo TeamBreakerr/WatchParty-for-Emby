@@ -1,80 +1,110 @@
+using System.Threading.Tasks;
 using Xunit;
 
 namespace WatchPartyForEmby.Tests
 {
     public sealed class PauseTransitionPolicyTests
     {
-        [Fact]
-        public void AnyoneModeRecoversParticipantTransitionWhenSessionCacheIsStale()
+        [Theory]
+        [InlineData(true, true)]
+        [InlineData(false, false)]
+        public void ParticipantPlaybackStateCanOnlyBeRestoredToTheMaster(
+            bool reportedIsPaused,
+            bool authoritativeIsPlaying)
         {
-            Assert.True(PauseTransitionPolicy.ShouldHandle(
-                isMaster: false,
-                isWaitingRoom: false,
-                isInitialParticipantReport: false,
-                isSyntheticEcho: false,
+            Assert.Equal(
+                PlaybackStateAuthorityAction.RestoreParticipant,
+                PauseTransitionPolicy.Decide(
+                PlaybackStateReporterRole.Participant,
                 previousIsPaused: true,
-                reportedIsPaused: true,
+                reportedIsPaused,
+                authoritativeIsPlaying));
+        }
+
+        [Theory]
+        [InlineData(false, true)]
+        [InlineData(true, false)]
+        public void MasterTransitionsAreTheOnlyRoomWidePlaybackControls(
+            bool previousIsPaused,
+            bool reportedIsPaused)
+        {
+            Assert.Equal(
+                PlaybackStateAuthorityAction.BroadcastMaster,
+                PauseTransitionPolicy.Decide(
+                PlaybackStateReporterRole.Master,
+                previousIsPaused,
+                reportedIsPaused,
                 authoritativeIsPlaying: true));
         }
 
         [Fact]
-        public void HostModeStillProcessesStaleStateSoTheCoordinatorCanRejectIt()
+        public void StaleMasterHeartbeatCannotChangeTheRoom()
         {
-            Assert.True(PauseTransitionPolicy.ShouldHandle(
-                isMaster: false,
-                isWaitingRoom: false,
-                isInitialParticipantReport: false,
-                isSyntheticEcho: false,
-                previousIsPaused: true,
-                reportedIsPaused: true,
-                authoritativeIsPlaying: true));
-        }
-
-        [Fact]
-        public void StaleMasterHeartbeatCannotUndoParticipantPause()
-        {
-            Assert.False(PauseTransitionPolicy.ShouldHandle(
-                isMaster: true,
-                isWaitingRoom: false,
-                isInitialParticipantReport: false,
-                isSyntheticEcho: false,
+            Assert.Equal(
+                PlaybackStateAuthorityAction.Ignore,
+                PauseTransitionPolicy.Decide(
+                PlaybackStateReporterRole.Master,
                 previousIsPaused: false,
                 reportedIsPaused: false,
                 authoritativeIsPlaying: false));
         }
 
         [Fact]
-        public void GenuineTransitionIsHandledEvenWhenItMatchesTheAuthoritativeState()
+        public void ParticipantStateMatchingTheMasterNeedsNoCommand()
         {
-            Assert.True(PauseTransitionPolicy.ShouldHandle(
-                isMaster: false,
-                isWaitingRoom: false,
-                isInitialParticipantReport: false,
-                isSyntheticEcho: false,
-                previousIsPaused: false,
+            Assert.Equal(
+                PlaybackStateAuthorityAction.Ignore,
+                PauseTransitionPolicy.Decide(
+                PlaybackStateReporterRole.Participant,
+                previousIsPaused: true,
                 reportedIsPaused: true,
-                authoritativeIsPlaying: true));
+                authoritativeIsPlaying: false));
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task MasterTransitionBroadcastsAndNeverUsesParticipantRestore(bool reportedIsPaused)
+        {
+            var participantRestoreCount = 0;
+            var pauseBroadcastCount = 0;
+            var resumeBroadcastCount = 0;
+
+            await PlaybackStateAuthorityDispatcher.Dispatch(
+                PlaybackStateAuthorityAction.BroadcastMaster,
+                reportedIsPaused,
+                () => Count(ref participantRestoreCount),
+                () => Count(ref pauseBroadcastCount),
+                () => Count(ref resumeBroadcastCount));
+
+            Assert.Equal(0, participantRestoreCount);
+            Assert.Equal(reportedIsPaused ? 1 : 0, pauseBroadcastCount);
+            Assert.Equal(reportedIsPaused ? 0 : 1, resumeBroadcastCount);
         }
 
         [Fact]
-        public void InitialAndSyntheticReportsNeverControlTheRoom()
+        public async Task ParticipantDivergenceRestoresOnlyTheReportingParticipant()
         {
-            Assert.False(PauseTransitionPolicy.ShouldHandle(
-                isMaster: false,
-                isWaitingRoom: false,
-                isInitialParticipantReport: true,
-                isSyntheticEcho: false,
-                previousIsPaused: false,
+            var participantRestoreCount = 0;
+            var pauseBroadcastCount = 0;
+            var resumeBroadcastCount = 0;
+
+            await PlaybackStateAuthorityDispatcher.Dispatch(
+                PlaybackStateAuthorityAction.RestoreParticipant,
                 reportedIsPaused: true,
-                authoritativeIsPlaying: true));
-            Assert.False(PauseTransitionPolicy.ShouldHandle(
-                isMaster: false,
-                isWaitingRoom: false,
-                isInitialParticipantReport: false,
-                isSyntheticEcho: true,
-                previousIsPaused: false,
-                reportedIsPaused: true,
-                authoritativeIsPlaying: true));
+                () => Count(ref participantRestoreCount),
+                () => Count(ref pauseBroadcastCount),
+                () => Count(ref resumeBroadcastCount));
+
+            Assert.Equal(1, participantRestoreCount);
+            Assert.Equal(0, pauseBroadcastCount);
+            Assert.Equal(0, resumeBroadcastCount);
+        }
+
+        private static Task Count(ref int count)
+        {
+            count++;
+            return Task.CompletedTask;
         }
     }
 }

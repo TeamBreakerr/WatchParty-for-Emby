@@ -154,7 +154,6 @@ namespace WatchPartyForEmby
         public bool IsWaitingRoom { get; set; }
         public bool AutoStartWhenReady { get; set; }
         public int MinReadyCount { get; set; }
-        public string PauseControl { get; set; }
         public int SyncToleranceSeconds { get; set; }
         public int MaxBufferThresholdSeconds { get; set; }
         public bool AutoKickInactiveMinutes { get; set; }
@@ -172,7 +171,6 @@ namespace WatchPartyForEmby
             IsWaitingRoom = true;
             AutoStartWhenReady = true;
             MinReadyCount = 1;
-            PauseControl = "Anyone";
             SyncToleranceSeconds = 2;
             MaxBufferThresholdSeconds = 30;
             AutoKickInactiveMinutes = true;

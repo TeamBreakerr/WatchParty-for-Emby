@@ -24,8 +24,6 @@ namespace WatchPartyForEmby
         private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, bool>> _partySessionPauseState = new ConcurrentDictionary<string, ConcurrentDictionary<string, bool>>();
         private readonly HashSet<string> _trackedPartyIds = new HashSet<string>();
         private readonly HashSet<string> _trackedActivePartyIds = new HashSet<string>();
-        private readonly PauseControlCoordinator _pauseControlCoordinator =
-            new PauseControlCoordinator();
         private readonly HashSet<string> _partiesTransitioning = new HashSet<string>();
         private readonly SeriesSelectionCoordinator _seriesSelections =
             new SeriesSelectionCoordinator();
@@ -150,9 +148,6 @@ namespace WatchPartyForEmby
                 {
                     _trackedActivePartyIds.Add(party.Id);
                 }
-                _pauseControlCoordinator.ResetParty(
-                    party.Id,
-                    isPaused: !party.IsPlaying);
             }
 
             var intervalMs = Math.Max(1, config.SyncIntervalSeconds) * 1000;
@@ -189,12 +184,6 @@ namespace WatchPartyForEmby
 
             NormalizePartyConfiguration();
             var config = _plugin.Configuration;
-            foreach (var party in config.WatchParties)
-            {
-                _pauseControlCoordinator.ResetParty(
-                    party.Id,
-                    isPaused: !party.IsPlaying);
-            }
             var intervalMs = Math.Max(1, config.SyncIntervalSeconds) * 1000;
             _syncTimer?.Change(intervalMs, intervalMs);
 
@@ -348,7 +337,6 @@ namespace WatchPartyForEmby
             if (!_plugin.PartyParticipants.HasUser(partyId, participant.UserId))
             {
                 _plugin.PartyReadyUsers.RemoveUser(partyId, participant.UserId);
-                _pauseControlCoordinator.RemoveMember(partyId, participant.UserId);
             }
             _logger.Info(
                 $"[Party {partyId}] Participant session left: {participant.UserName} ({sessionId})");
@@ -626,7 +614,6 @@ namespace WatchPartyForEmby
             party.CurrentPositionTicks = frozenPosition;
             party.IsPlaying = false;
             _playbackSyncCoordinator.StopMasterClock(party.Id, frozenPosition, nowUtc);
-            _pauseControlCoordinator.ObserveAuthoritativeState(party.Id, isPaused: true);
             CancelPendingMasterSeekSync(party.Id);
             if (!party.IsWaitingRoom && party.MinReadyCount > 1)
             {
@@ -719,9 +706,6 @@ namespace WatchPartyForEmby
                         nowUtc,
                         TimeSpan.FromSeconds(party.SyncToleranceSeconds).Ticks);
                     _plugin.SaveConfigurationSafely();
-                    _pauseControlCoordinator.ObserveAuthoritativeState(
-                        party.Id,
-                        isPaused: false);
                 }
                 catch
                 {
@@ -769,42 +753,28 @@ namespace WatchPartyForEmby
             return true;
         }
 
-        private async Task HandlePauseAttempt(
+        private async Task HandleMasterPause(
             WatchPartyItem party,
             SessionInfo session,
-            bool isMaster,
             long? reportedPositionTicks)
         {
-            var decision = EvaluatePauseControl(
+            ApplyAuthoritativePauseState(
+                party,
+                isPaused: true,
+                reportedPositionTicks);
+            _logger.Info(
+                $"[Party {party.Id}] Master {session.UserName} paused; " +
+                "broadcasting authoritative pause");
+            await PauseAllUsers(party, session.Id);
+            await SyncParticipantsAfterPause(
                 party,
                 session,
-                isMaster,
-                requestedIsPaused: true);
-            if (decision.Kind == PauseControlDecisionKind.Broadcast)
-            {
-                ApplyAuthoritativePauseState(
-                    party,
-                    isPaused: true,
-                    isMaster,
-                    reportedPositionTicks);
-                _logger.Info($"[Party {party.Id}] {session.UserName} paused; broadcasting authoritative pause");
-                await PauseAllUsers(party, session.Id);
-                await SyncParticipantsAfterPause(
-                    party,
-                    session,
-                    isMaster,
-                    reportedPositionTicks);
-                return;
-            }
-
-            LogPendingOrRejectedPauseDecision(party, session, decision);
-            await SendPauseStateCommand(session, decision.AuthoritativeIsPaused);
+                reportedPositionTicks);
         }
 
         private void ApplyAuthoritativePauseState(
             WatchPartyItem party,
             bool isPaused,
-            bool isMaster,
             long? reportedPositionTicks = null)
         {
             if (party == null)
@@ -813,7 +783,7 @@ namespace WatchPartyForEmby
             }
 
             var nowUtc = DateTime.UtcNow;
-            var fallbackPosition = isMaster && reportedPositionTicks.HasValue
+            var fallbackPosition = reportedPositionTicks.HasValue
                 ? Math.Max(0, reportedPositionTicks.Value)
                 : party.CurrentPositionTicks;
             var authoritativePosition = _playbackSyncCoordinator.SetMasterPlaybackState(
@@ -823,15 +793,11 @@ namespace WatchPartyForEmby
                 nowUtc);
             party.CurrentPositionTicks = authoritativePosition;
             party.IsPlaying = !isPaused;
-            _pauseControlCoordinator.ObserveAuthoritativeState(
-                party.Id,
-                isPaused);
         }
 
         private async Task SyncParticipantsAfterPause(
             WatchPartyItem party,
-            SessionInfo pauseInitiator,
-            bool initiatorIsMaster,
+            SessionInfo masterSession,
             long? reportedPositionTicks)
         {
             // A drag immediately before pause may still have a debounced sync waiting to
@@ -845,10 +811,7 @@ namespace WatchPartyForEmby
                 return;
             }
 
-            // If the master initiated the pause, its event carries the exact final
-            // position. If somebody else paused, the master's projected clock remains
-            // authoritative; the participant's own position must never overwrite it.
-            var targetPosition = initiatorIsMaster && reportedPositionTicks.HasValue
+            var targetPosition = reportedPositionTicks.HasValue
                 ? Math.Max(0, reportedPositionTicks.Value)
                 : _playbackSyncCoordinator.GetEstimatedPartyPosition(
                     party.Id,
@@ -856,7 +819,7 @@ namespace WatchPartyForEmby
                     DateTime.UtcNow);
 
             _logger.Info(
-                $"[Party {party.Id}] Pause accepted from {pauseInitiator.UserName}; " +
+                $"[Party {party.Id}] Pause accepted from master {masterSession.UserName}; " +
                 $"actively syncing participants to master position " +
                 $"{TimeSpan.FromTicks(targetPosition).TotalSeconds:F1}s");
 
@@ -899,8 +862,7 @@ namespace WatchPartyForEmby
 
         private async Task SyncParticipantsAfterResume(
             WatchPartyItem party,
-            string resumedSessionId,
-            bool includeResumedSession = false)
+            string masterSessionId)
         {
             // The master clock starts advancing as soon as the master resumes. By the
             // time a remote client receives Unpause and rebuilds its player, it is
@@ -932,8 +894,7 @@ namespace WatchPartyForEmby
             foreach (var participantSession in sessions)
             {
                 if (IsMasterSession(party, participantSession)
-                    || (!includeResumedSession
-                        && participantSession.Id == resumedSessionId))
+                    || participantSession.Id == masterSessionId)
                 {
                     continue;
                 }
@@ -1032,65 +993,31 @@ namespace WatchPartyForEmby
             await BroadcastPauseState(party, excludeSessionId, isPaused: true);
         }
 
-        private async Task HandleUnpauseAttempt(WatchPartyItem party, SessionInfo session, bool isHost)
+        private async Task HandleMasterResume(WatchPartyItem party, SessionInfo session)
         {
-            var decision = EvaluatePauseControl(
+            ApplyAuthoritativePauseState(
                 party,
-                session,
-                isHost,
-                requestedIsPaused: false);
-            if (decision.Kind == PauseControlDecisionKind.Broadcast)
+                isPaused: false);
+            _logger.Info(
+                $"[Party {party.Id}] Master {session.UserName} resumed; " +
+                "broadcasting authoritative play state");
+            await UnpauseAllUsers(party, session.Id);
+            if (!party.IsWaitingRoom)
             {
-                ApplyAuthoritativePauseState(
-                    party,
-                    isPaused: false,
-                    isMaster: isHost);
-                _logger.Info($"[Party {party.Id}] {session.UserName} resumed; broadcasting authoritative play state");
-                await UnpauseAllUsers(party, session.Id);
-                if (!party.IsWaitingRoom)
-                {
-                    await SyncParticipantsAfterResume(
-                        party,
-                        session.Id,
-                        includeResumedSession: !isHost);
-                }
-                return;
+                await SyncParticipantsAfterResume(party, session.Id);
             }
-
-            LogPendingOrRejectedPauseDecision(party, session, decision);
-            await SendPauseStateCommand(session, decision.AuthoritativeIsPaused);
         }
 
-        private PauseControlDecision EvaluatePauseControl(
+        private async Task RestoreParticipantPlaybackState(
             WatchPartyItem party,
-            SessionInfo session,
-            bool isMaster,
-            bool requestedIsPaused)
+            SessionInfo session)
         {
-            return _pauseControlCoordinator.HandleRequest(
-                party.Id,
-                PauseControlModeParser.Parse(party.PauseControl),
-                session.UserId,
-                isMaster,
-                requestedIsPaused,
-                Math.Max(1, _plugin.PartyParticipants.DistinctUserCount(party.Id)));
-        }
-
-        private void LogPendingOrRejectedPauseDecision(
-            WatchPartyItem party,
-            SessionInfo session,
-            PauseControlDecision decision)
-        {
-            if (decision.Kind == PauseControlDecisionKind.WaitForVotes)
-            {
-                _logger.Info(
-                    $"[Party {party.Id}] Playback-state vote from {session.UserName}: " +
-                    $"{decision.VoteCount}/{decision.RequiredVotes}; restoring actor to authoritative state");
-                return;
-            }
-
-            _logger.Warn(
-                $"[Party {party.Id}] Playback-state request from {session.UserName} rejected by {party.PauseControl} policy");
+            var authoritativeIsPaused = party.IsWaitingRoom || !party.IsPlaying;
+            _logger.Info(
+                $"[Party {party.Id}] Ignoring playback-state change from participant " +
+                $"{session.UserName}; restoring master " +
+                $"{(authoritativeIsPaused ? "pause" : "play")} state");
+            await SendPauseStateCommand(session, authoritativeIsPaused);
         }
 
         private async Task UnpauseAllUsers(WatchPartyItem party, string excludeSessionId)
@@ -1521,7 +1448,6 @@ namespace WatchPartyForEmby
 
             _partySyncedSessions.TryRemove(partyId, out _);
             _partySessionPauseState.TryRemove(partyId, out _);
-            _pauseControlCoordinator.ClearParty(partyId);
             _lastProgressCheckpoint.TryRemove(partyId, out _);
             _participantStopGraces.ClearParty(partyId);
             _seriesSelections.ClearParty(partyId);
@@ -2053,9 +1979,6 @@ namespace WatchPartyForEmby
                                             party.IsPlaying,
                                             nowUtc,
                                             TimeSpan.FromSeconds(party.SyncToleranceSeconds).Ticks);
-                                        _pauseControlCoordinator.ObserveAuthoritativeState(
-                                            party.Id,
-                                            isPaused: !party.IsPlaying);
                                         _plugin.SaveConfigurationSafely();
                                         _lastProgressCheckpoint[party.Id] = nowUtc;
 
@@ -2143,9 +2066,6 @@ namespace WatchPartyForEmby
                             party.IsPlaying,
                             nowUtc,
                             TimeSpan.FromSeconds(party.SyncToleranceSeconds).Ticks);
-                        _pauseControlCoordinator.ObserveAuthoritativeState(
-                            party.Id,
-                            isPaused: !party.IsPlaying);
                     }
 
                     if (party.IsWaitingRoom && !party.IsPlaying)
@@ -2774,11 +2694,10 @@ namespace WatchPartyForEmby
                     var applyPauseTransition = !isMaster
                         || (!deferMasterPauseTransition && !ignoreMasterPauseTransition);
                     var effectiveIsPaused = applyPauseTransition ? e.IsPaused : wasPaused;
-                    var shouldHandlePauseTransition = PauseTransitionPolicy.ShouldHandle(
-                        isMaster,
-                        party.IsWaitingRoom,
-                        isInitialParticipantReport,
-                        inboundPauseState.IsSyntheticEcho,
+                    var pauseTransitionAction = PauseTransitionPolicy.Decide(
+                        isMaster
+                            ? PlaybackStateReporterRole.Master
+                            : PlaybackStateReporterRole.Participant,
                         wasPaused,
                         e.IsPaused,
                         party.IsPlaying);
@@ -2850,8 +2769,8 @@ namespace WatchPartyForEmby
                     {
                         // Waiting-room progress is readiness/activity, never a room-control
                         // signal. A local resume (or an uncontrollable client that never
-                        // honored the initial Pause) must not reach Anyone/Host/Vote and
-                        // broadcast an early Unpause. Reassert once per reported transition;
+                        // honored the initial Pause) must not become a room-wide action.
+                        // Reassert once per reported transition;
                         // repeated unpaused progress is not allowed to create a command storm.
                         if (WaitingRoomPolicy.ShouldRestorePause(party, effectiveIsPaused)
                             && (!hasPriorPauseState || wasPaused))
@@ -2875,21 +2794,17 @@ namespace WatchPartyForEmby
                             $"[Party {party.Id}] Ignoring initial participant playback state " +
                             $"from session {e.Session.Id} as a control transition");
                     }
-                    else if (applyPauseTransition
-                        && shouldHandlePauseTransition
-                        && e.IsPaused)
+                    else if (applyPauseTransition)
                     {
-                        await HandlePauseAttempt(
-                            party,
-                            e.Session,
-                            isMaster,
-                            effectiveReportedPosition);
-                    }
-                    else if (applyPauseTransition
-                        && shouldHandlePauseTransition
-                        && !e.IsPaused)
-                    {
-                        await HandleUnpauseAttempt(party, e.Session, isMaster);
+                        await PlaybackStateAuthorityDispatcher.Dispatch(
+                            pauseTransitionAction,
+                            e.IsPaused,
+                            () => RestoreParticipantPlaybackState(party, e.Session),
+                            () => HandleMasterPause(
+                                party,
+                                e.Session,
+                                effectiveReportedPosition),
+                            () => HandleMasterResume(party, e.Session));
                     }
 
                     pauseState[e.Session.Id] = effectiveIsPaused;
@@ -2901,10 +2816,6 @@ namespace WatchPartyForEmby
                         {
                             party.IsPlaying = !effectiveIsPaused;
                         }
-                        _pauseControlCoordinator.ObserveAuthoritativeState(
-                            party.Id,
-                            isPaused: !party.IsPlaying);
-
                         if (reportedPosition.HasValue)
                         {
                             var masterPositionUpdate =
@@ -2962,9 +2873,6 @@ namespace WatchPartyForEmby
                                     && !party.IsWaitingRoom)
                                 {
                                     party.IsPlaying = false;
-                                    _pauseControlCoordinator.ObserveAuthoritativeState(
-                                        party.Id,
-                                        isPaused: true);
                                 }
                                 party.CurrentPositionTicks = masterPositionUpdate.AuthoritativePositionTicks;
                                 _logger.Debug(
@@ -3166,9 +3074,6 @@ namespace WatchPartyForEmby
                 }
 
                 party.IsPlaying = !committedIsPaused;
-                _pauseControlCoordinator.ObserveAuthoritativeState(
-                    party.Id,
-                    isPaused: committedIsPaused);
                 pauseState[pending.SessionId] = committedIsPaused;
 
                 _logger.Info(
@@ -3176,15 +3081,14 @@ namespace WatchPartyForEmby
                     $"{(committedIsPaused ? "pause" : "resume")} after Web state debounce");
                 if (committedIsPaused)
                 {
-                    await HandlePauseAttempt(
+                    await HandleMasterPause(
                         party,
                         session,
-                        isMaster: true,
                         reportedPositionTicks: pending.ReportedPositionTicks);
                 }
                 else
                 {
-                    await HandleUnpauseAttempt(party, session, isHost: true);
+                    await HandleMasterResume(party, session);
                 }
             }
             catch (OperationCanceledException)
@@ -3695,7 +3599,6 @@ namespace WatchPartyForEmby
                 pauseStates.Clear();
             }
 
-            _pauseControlCoordinator.ResetParty(party.Id, isPaused: false);
             _playbackSyncCoordinator.ClearParty(party.Id);
             foreach (var participant in _plugin.PartyParticipants.GetSessions(party.Id))
             {

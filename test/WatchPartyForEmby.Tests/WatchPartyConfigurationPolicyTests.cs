@@ -25,48 +25,10 @@ namespace WatchPartyForEmby.Tests
             Assert.Empty(party.EpisodeQueue);
         }
 
-        [Theory]
-        [InlineData("HostOnly")]
-        [InlineData("Master")]
-        [InlineData("MasterOnly")]
-        [InlineData("Disabled")]
-        [InlineData(" host ")]
-        public void HostPauseAliasesUseSafeHostOnlyBehavior(string pauseControl)
+        [Fact]
+        public void RoomModelDoesNotExposeViewerPlaybackControlPolicy()
         {
-            var party = ValidParty();
-            party.PauseControl = pauseControl;
-
-            Assert.True(WatchPartyConfigurationPolicy.Normalize(party));
-            Assert.Equal("Host", party.PauseControl);
-        }
-
-        [Theory]
-        [InlineData(null)]
-        [InlineData("")]
-        [InlineData("Nobody")]
-        public void MissingOrInvalidPauseControlFallsBackToAnyone(string pauseControl)
-        {
-            var party = ValidParty();
-            party.PauseControl = pauseControl;
-
-            Assert.True(WatchPartyConfigurationPolicy.Normalize(party));
-            Assert.Equal("Anyone", party.PauseControl);
-        }
-
-        [Theory]
-        [InlineData("Anyone", "Anyone")]
-        [InlineData("Vote", "Vote")]
-        [InlineData("HOST", "Host")]
-        [InlineData("vote", "Vote")]
-        public void SupportedPauseControlsAreCanonicalized(string pauseControl, string expected)
-        {
-            var party = ValidParty();
-            party.PauseControl = pauseControl;
-
-            var changed = WatchPartyConfigurationPolicy.Normalize(party);
-
-            Assert.Equal(expected, party.PauseControl);
-            Assert.Equal(pauseControl != expected, changed);
+            Assert.Null(typeof(WatchPartyItem).GetProperty("PauseControl"));
         }
 
         [Fact]
@@ -246,7 +208,6 @@ namespace WatchPartyForEmby.Tests
                 MaxBufferThresholdSeconds = 1,
                 MaxParticipants = 500,
                 MinReadyCount = 500,
-                PauseControl = "Master",
                 SyncToleranceSeconds = 500
             };
 
@@ -265,7 +226,6 @@ namespace WatchPartyForEmby.Tests
                 MaxBufferThresholdSeconds = 30,
                 MaxParticipants = 50,
                 MinReadyCount = 1,
-                PauseControl = "Anyone",
                 SyncToleranceSeconds = 10,
                 InactiveTimeoutMinutes = 15
             };

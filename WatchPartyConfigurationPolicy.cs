@@ -30,11 +30,6 @@ namespace WatchPartyForEmby
             }
 
             changed |= SetIfDifferent(
-                party.PauseControl,
-                NormalizePauseControl(party.PauseControl),
-                value => party.PauseControl = value);
-
-            changed |= SetIfDifferent(
                 party.MaxParticipants,
                 NormalizeBounded(party.MaxParticipants, 2, 100, 50),
                 value => party.MaxParticipants = value);
@@ -83,19 +78,6 @@ namespace WatchPartyForEmby
             }
 
             return SeriesPartyQueue.Repair(party) || changed;
-        }
-
-        private static string NormalizePauseControl(string pauseControl)
-        {
-            switch (PauseControlModeParser.Parse(pauseControl))
-            {
-                case PauseControlMode.Host:
-                    return "Host";
-                case PauseControlMode.Vote:
-                    return "Vote";
-                default:
-                    return "Anyone";
-            }
         }
 
         private static int NormalizeBounded(int value, int minimum, int maximum, int defaultValue)

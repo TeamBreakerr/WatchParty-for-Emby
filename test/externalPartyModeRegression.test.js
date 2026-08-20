@@ -38,7 +38,6 @@ function createHarness({
     seasonId = '',
     episodeId = '',
     allowedUserIds = [],
-    pauseControl = 'Anyone',
     maxParticipants = '10',
     minReadyCount = '2'
 }) {
@@ -61,7 +60,6 @@ function createHarness({
     add('newWaitingRoom', { checked: true });
     add('newAutoStart', { checked: true });
     add('newMinReady', { value: minReadyCount });
-    add('newPauseControl', { value: pauseControl });
     add('newSyncTolerance', { value: '10' });
     add('newMaxBuffer', { value: '30' });
     add('newAutoKick', { checked: true });
@@ -164,17 +162,16 @@ test('external Dashboard single-episode mode still requires an episode', async (
     assert.match(harness.alerts.join('\n'), /单集模式下，请选择要观看的剧集/);
 });
 
-test('external Dashboard adds the master to a non-empty whitelist and uses the shared pause enum', async () => {
+test('external Dashboard adds the master to a non-empty whitelist and omits viewer playback control', async () => {
     const harness = createHarness({
         isSeriesParty: true,
-        allowedUserIds: ['viewer-user'],
-        pauseControl: 'Vote'
+        allowedUserIds: ['viewer-user']
     });
     await harness.submit();
 
     const party = harness.submittedParties[0];
     assert.deepEqual(Array.from(party.allowedUserIds), ['master-user', 'viewer-user']);
-    assert.equal(party.pauseControl, 'Vote');
+    assert.equal('pauseControl' in party, false);
     assert.equal('hostOnlySeek' in party, false);
     assert.equal('lockSeekAhead' in party, false);
     assert.equal('enableNetworkLatencyCompensation' in party, false);

@@ -136,7 +136,6 @@ function createView() {
     add('#isWaitingRoom', { checked: false });
     add('#autoStartWhenReady', { checked: false });
     add('#minReadyCount', { value: '1' });
-    add('#pauseControl', { value: 'Anyone' });
     add('#maxBufferThresholdSeconds', { value: '30' });
     add('#autoKickInactive', { checked: false });
     add('#inactiveTimeoutMinutes', { value: '15' });
@@ -294,14 +293,11 @@ test('an unrestricted Party keeps an empty whitelist', async () => {
     assert.deepEqual(party.AllowedUserIds, []);
 });
 
-test('new Party payload only submits implemented controls and normalizes pause permission', async () => {
-    const view = createView();
-    view.querySelector('#pauseControl').value = 'HostOnly';
-
-    const result = await submit(view);
+test('new Party payload only submits master-authoritative playback controls', async () => {
+    const result = await submit(createView());
     const party = result.updatedConfigurations[0].WatchParties[0];
 
-    assert.equal(party.PauseControl, 'Host');
+    assert.equal('PauseControl' in party, false);
     assert.equal('HostOnlySeek' in party, false);
     assert.equal('LockSeekAhead' in party, false);
     assert.equal('EnableNetworkLatencyCompensation' in party, false);
@@ -507,7 +503,9 @@ test('embedded page exposes one ready-count input, accessible comboboxes, and mo
     assert.equal((html.match(/role="combobox"/g) || []).length, 3);
     assert.equal((html.match(/role="listbox"/g) || []).length, 3);
     assert.match(html, /@media \(max-width: 480px\)/);
-    assert.match(html, /value="Anyone"[\s\S]*value="Host"[\s\S]*value="Vote"/);
+    assert.doesNotMatch(html, /id="pauseControl"|value="Anyone"|value="Vote"/);
+    assert.doesNotMatch(script, /PauseControl|pauseControl|normalizePauseControl/);
+    assert.match(html, /播放、暂停、进度和切集均以主控用户为准/);
     assert.match(html, /id="syncToleranceSeconds"[^>]+value="2"/);
     assert.match(html, /id="autoStartWhenReadyContainer"[\s\S]*?id="autoStartWhenReady"/);
     assert.match(html, /id="inactiveTimeoutContainer"[\s\S]*?id="inactiveTimeoutMinutes"/);

@@ -274,21 +274,10 @@
                             </div>
                         </div>
 
-                        <h3 style="margin-top: 2em; margin-bottom: 1em; color: #4CAF50;">播放控制</h3>
-
-                        <div class="selectContainer" style="margin-top: 1em;">
-                            <label class="selectLabel" for="pauseControl">播放/暂停权限</label>
-                            <select is="emby-select" id="pauseControl" class="emby-select-withcolor emby-select">
-                                <option value="Anyone">任何人都可播放或暂停</option>
-                                <option value="Host">仅主控用户可播放或暂停</option>
-                                <option value="Vote">由参与者投票决定</option>
-                            </select>
-                            <div class="fieldDescription">
-                                选择谁可以向房间发送播放和暂停信号。播放进度始终以主控用户为准，观众拖动后会被重新校准。
-                            </div>
-                        </div>
-
                         <h3 style="margin-top: 2em; margin-bottom: 1em; color: #4CAF50;">同步与性能</h3>
+                        <div class="fieldDescription">
+                            播放、暂停、进度和切集均以主控用户为准；观众端的本地操作不会反向控制房间。
+                        </div>
 
                         <div class="inputContainer" style="margin-top: 1em;">
                             <label class="inputLabel inputLabelUnfocused" for="syncToleranceSeconds">主控跳转识别阈值（秒）</label>

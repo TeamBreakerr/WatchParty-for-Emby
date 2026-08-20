@@ -535,18 +535,8 @@
             </div>
             </div>
 
-            <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">播放控制</h3>
-            <div style="margin: 15px 0;">
-                <label for="newPauseControl" style="display: block; margin-bottom: 5px;">播放/暂停权限</label>
-                <select id="newPauseControl" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
-                    <option value="Anyone">任何人都可播放或暂停</option>
-                    <option value="Host">仅主控用户可播放或暂停</option>
-                    <option value="Vote">由参与者投票决定</option>
-                </select>
-            </div>
-            <div class="field-help">选择谁可以向房间发送播放和暂停信号。播放进度始终以主控用户为准，观众拖动后会被重新校准。</div>
-
             <h3 style="color: #4CAF50; margin-top: 20px; margin-bottom: 10px; font-size: 1.2rem;">同步与性能</h3>
+            <div class="field-help">播放、暂停、进度和切集均以主控用户为准；观众端的本地操作不会反向控制房间。</div>
             <div style="margin: 15px 0;">
                 <label for="newSyncTolerance" style="display: block; margin-bottom: 5px;">主控跳转识别阈值（秒）</label>
                 <input type="number" id="newSyncTolerance" value="2" min="1" max="60" step="1" style="width: 100%; padding: 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
@@ -1572,7 +1562,6 @@
             document.getElementById('newWaitingRoom').checked = true;
             document.getElementById('newAutoStart').checked = true;
             document.getElementById('newMinReady').value = 1;
-            document.getElementById('newPauseControl').value = 'Anyone';
             document.getElementById('newSyncTolerance').value = 2;
             document.getElementById('newMaxBuffer').value = 30;
             document.getElementById('newAutoKick').checked = true;
@@ -2144,7 +2133,6 @@
                     isWaitingRoom: isWaitingRoom,
                     autoStartWhenReady: autoStartWhenReady,
                     minReadyCount: minReadyCount,
-                    pauseControl: document.getElementById('newPauseControl').value,
                     syncToleranceSeconds: syncToleranceSeconds,
                     maxBufferThresholdSeconds: maxBufferThresholdSeconds,
                     autoKickInactiveMinutes: autoKickInactive,

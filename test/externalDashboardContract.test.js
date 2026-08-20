@@ -62,14 +62,12 @@ function createApiHarness(responses, initialStorage = {}) {
     return { calls, context, stored };
 }
 
-test('external Dashboard has unique IDs and only exposes implemented playback policies', () => {
+test('external Dashboard has unique IDs and exposes master-authoritative playback only', () => {
     const ids = Array.from(html.matchAll(/\sid="([^"]+)"/g), match => match[1]);
     const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index);
 
     assert.deepEqual(duplicateIds, []);
-    assert.match(html, /<option value="Anyone">/);
-    assert.match(html, /<option value="Host">/);
-    assert.match(html, /<option value="Vote">/);
+    assert.doesNotMatch(html, /newPauseControl|pauseControl|任何人都可播放或暂停|由参与者投票决定/);
     assert.doesNotMatch(html, /newHostOnlySeek|newLockSeekAhead|Network Latency Compensation|HostOnly|value="Disabled"/);
     assert.doesNotMatch(html, /joinParty|join chat|chat\.html|usernameModal/);
     assert.match(html, /id="newMaxParticipants" value="50" min="2" max="100"/);
@@ -81,9 +79,7 @@ test('external Dashboard uses the same clear Chinese room and control terms as t
     assert.match(html, />主控用户（必选）</);
     assert.match(html, />允许加入的用户（可选）</);
     assert.match(html, />启用等候室</);
-    assert.match(html, /<option value="Anyone">任何人都可播放或暂停<\/option>/);
-    assert.match(html, /<option value="Host">仅主控用户可播放或暂停<\/option>/);
-    assert.match(html, /<option value="Vote">由参与者投票决定<\/option>/);
+    assert.match(html, /播放、暂停、进度和切集均以主控用户为准/);
     assert.match(html, />主控跳转识别阈值（秒）</);
     assert.match(html, /115\/小雅流被反复 seek/);
     assert.match(script, /单集模式：请选择季和集/);

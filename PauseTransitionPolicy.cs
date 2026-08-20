@@ -1,38 +1,41 @@
-using System;
-
 namespace WatchPartyForEmby
 {
+    public enum PlaybackStateReporterRole
+    {
+        Master,
+        Participant
+    }
+
+    public enum PlaybackStateAuthorityAction
+    {
+        Ignore,
+        BroadcastMaster,
+        RestoreParticipant
+    }
+
     /// <summary>
-    /// Decides whether one playback-state report should enter room pause control.
-    /// A stale per-session cache must not hide a real participant transition, but
-    /// synthetic reload/command echoes must never become room-wide controls.
+    /// Enforces one-way playback-state authority. Only the master can change the
+    /// room; a participant that diverges is restored to the master's state.
     /// </summary>
     public static class PauseTransitionPolicy
     {
-        public static bool ShouldHandle(
-            bool isMaster,
-            bool isWaitingRoom,
-            bool isInitialParticipantReport,
-            bool isSyntheticEcho,
+        public static PlaybackStateAuthorityAction Decide(
+            PlaybackStateReporterRole reporterRole,
             bool previousIsPaused,
             bool reportedIsPaused,
             bool authoritativeIsPlaying)
         {
-            if (isWaitingRoom || isInitialParticipantReport || isSyntheticEcho)
+            if (reporterRole == PlaybackStateReporterRole.Master)
             {
-                return false;
+                return reportedIsPaused != previousIsPaused
+                    ? PlaybackStateAuthorityAction.BroadcastMaster
+                    : PlaybackStateAuthorityAction.Ignore;
             }
 
-            if (reportedIsPaused != previousIsPaused)
-            {
-                return true;
-            }
-
-            // If the local cache is stale, a participant action can otherwise be
-            // ignored forever. Let the caller enter the normal pause-policy decision
-            // even in Host mode, where the coordinator will reject it and restore the
-            // actor. Anyone/Vote modes can accept it and broadcast normally.
-            return !isMaster && reportedIsPaused == authoritativeIsPlaying;
+            var authoritativeIsPaused = !authoritativeIsPlaying;
+            return reportedIsPaused != authoritativeIsPaused
+                ? PlaybackStateAuthorityAction.RestoreParticipant
+                : PlaybackStateAuthorityAction.Ignore;
         }
     }
 }

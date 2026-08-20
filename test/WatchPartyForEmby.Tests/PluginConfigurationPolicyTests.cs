@@ -57,13 +57,11 @@ namespace WatchPartyForEmby.Tests
             {
                 MasterUserId = "master",
                 HostUserId = null,
-                PauseControl = "MasterOnly",
                 MaxParticipants = 500
             });
 
             Assert.True(PluginConfigurationPolicy.Normalize(configuration));
             Assert.Equal("master", configuration.WatchParties[0].HostUserId);
-            Assert.Equal("Host", configuration.WatchParties[0].PauseControl);
             Assert.Equal(100, configuration.WatchParties[0].MaxParticipants);
             Assert.False(PluginConfigurationPolicy.Normalize(configuration));
         }

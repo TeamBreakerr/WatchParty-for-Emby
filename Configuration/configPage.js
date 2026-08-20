@@ -2,8 +2,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
     'use strict';
 
     const pluginId = "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d";
-    const validPauseControls = new Set(['Anyone', 'Host', 'Vote']);
-
     function finiteInteger(value, fallback) {
         const normalizedValue = typeof value === 'string' ? value.trim() : value;
         if (normalizedValue === null || normalizedValue === undefined || normalizedValue === '') {
@@ -12,16 +10,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
         const parsed = Number(normalizedValue);
         return Number.isFinite(parsed) && Number.isInteger(parsed) ? parsed : fallback;
-    }
-
-    function normalizePauseControl(value) {
-        if (validPauseControls.has(value)) {
-            return value;
-        }
-        if (['HostOnly', 'Master', 'MasterOnly', 'Disabled'].includes(value)) {
-            return 'Host';
-        }
-        return 'Anyone';
     }
 
     function getPluginConfiguration() {
@@ -981,7 +969,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             view.querySelector('#isWaitingRoom').checked = true;
             view.querySelector('#autoStartWhenReady').checked = true;
             view.querySelector('#minReadyCount').value = 1;
-            view.querySelector('#pauseControl').value = 'Anyone';
             view.querySelector('#syncToleranceSeconds').value = 2;
             view.querySelector('#maxBufferThresholdSeconds').value = 30;
             view.querySelector('#autoKickInactive').checked = true;
@@ -1015,8 +1002,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
                 const features = [];
                 if (party.IsWaitingRoom) features.push('等候室');
-                if (party.PauseControl === 'Host') features.push('暂停权限：仅主控用户');
-                if (party.PauseControl === 'Vote') features.push('暂停权限：投票决定');
                 if (party.AutoKickInactiveMinutes) features.push('自动移除不活跃用户');
                 if (party.IsSeriesParty) {
                     const episodeCount = (party.EpisodeQueue || []).length;
@@ -1208,7 +1193,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 view.querySelector('#autoStartWhenReady').checked = true;
                 view.querySelector('#autoStartWhenReady').disabled = false;
                 view.querySelector('#minReadyCount').value = 1;
-                view.querySelector('#pauseControl').value = 'Anyone';
                 view.querySelector('#syncToleranceSeconds').value = 2;
                 view.querySelector('#maxBufferThresholdSeconds').value = 30;
                 view.querySelector('#autoKickInactive').checked = true;
@@ -1409,7 +1393,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     IsWaitingRoom: isWaitingRoom,
                     AutoStartWhenReady: autoStartWhenReady,
                     MinReadyCount: minReadyCount,
-                    PauseControl: normalizePauseControl(view.querySelector('#pauseControl').value),
                     SyncToleranceSeconds: syncTolerance,
                     MaxBufferThresholdSeconds: maxBufferThreshold,
                     AutoKickInactiveMinutes: autoKickInactive,

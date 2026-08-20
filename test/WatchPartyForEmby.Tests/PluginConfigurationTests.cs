@@ -1,3 +1,5 @@
+using System.IO;
+using System.Xml.Serialization;
 using Xunit;
 
 namespace WatchPartyForEmby.Tests
@@ -40,6 +42,46 @@ namespace WatchPartyForEmby.Tests
             Assert.Same(room, configuration.WatchParties[0]);
             Assert.Equal(PluginConfigurationMigration.DirectItemBindingVersion, configuration.ConfigurationVersion);
             Assert.Equal(0, PluginConfigurationMigration.UpgradeLegacyRooms(configuration));
+        }
+
+        [Fact]
+        public void LegacyPauseControlElementIsIgnoredWithoutLosingRoomConfiguration()
+        {
+            var serializer = new XmlSerializer(typeof(PluginConfiguration));
+            var source = new PluginConfiguration();
+            source.WatchParties.Add(new WatchPartyItem
+            {
+                Id = "legacy-room",
+                ItemName = "Legacy room",
+                MasterUserId = "master-user",
+                SyncToleranceSeconds = 7,
+                MaxParticipants = 12
+            });
+
+            string xml;
+            using (var writer = new StringWriter())
+            {
+                serializer.Serialize(writer, source);
+                xml = writer.ToString();
+            }
+
+            xml = xml.Replace(
+                "<SyncToleranceSeconds>7</SyncToleranceSeconds>",
+                "<PauseControl>Anyone</PauseControl><SyncToleranceSeconds>7</SyncToleranceSeconds>");
+            Assert.Contains("<PauseControl>Anyone</PauseControl>", xml);
+
+            PluginConfiguration restored;
+            using (var reader = new StringReader(xml))
+            {
+                restored = (PluginConfiguration)serializer.Deserialize(reader);
+            }
+
+            var room = Assert.Single(restored.WatchParties);
+            Assert.Equal("legacy-room", room.Id);
+            Assert.Equal("Legacy room", room.ItemName);
+            Assert.Equal("master-user", room.MasterUserId);
+            Assert.Equal(7, room.SyncToleranceSeconds);
+            Assert.Equal(12, room.MaxParticipants);
         }
     }
 }
