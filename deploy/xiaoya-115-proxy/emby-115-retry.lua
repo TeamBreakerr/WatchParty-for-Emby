@@ -11,7 +11,7 @@ local target, host = policy.resolve_115_target(
     ngx.var.emby_115_link_uri,
     ngx.var.emby_115_link_args)
 if not target then
-    ngx.log(ngx.ERR, "could not refresh a 115 download link after an upstream 403")
+    ngx.log(ngx.ERR, "could not refresh a 115 download link during the bounded retry")
     return ngx.exit(ngx.HTTP_BAD_GATEWAY)
 end
 

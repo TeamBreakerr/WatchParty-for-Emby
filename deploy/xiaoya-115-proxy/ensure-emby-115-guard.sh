@@ -15,9 +15,29 @@ if ! mkdir "$lock_dir" 2>/dev/null; then
 fi
 trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT HUP INT TERM
 
-if pgrep -f "^$guard_command$" >/dev/null 2>&1; then
-    echo "115 guard process exists but its health endpoint is unavailable" >&2
-    exit 1
+guard_pids=$(pgrep -f "^$guard_command$" 2>/dev/null || true)
+if [ -n "$guard_pids" ]; then
+    echo "restarting unhealthy 115 guard process" >&2
+    for guard_pid in $guard_pids; do
+        kill "$guard_pid" 2>/dev/null || true
+    done
+
+    for _ in $(seq 1 20); do
+        still_running=0
+        for guard_pid in $guard_pids; do
+            if kill -0 "$guard_pid" 2>/dev/null; then
+                still_running=1
+            fi
+        done
+        [ "$still_running" -eq 1 ] || break
+        sleep 0.1
+    done
+
+    for guard_pid in $guard_pids; do
+        if kill -0 "$guard_pid" 2>/dev/null; then
+            kill -KILL "$guard_pid" 2>/dev/null || true
+        fi
+    done
 fi
 
 nohup /data/emby-115-guard -listen "$listen_address" \

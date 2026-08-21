@@ -29,6 +29,10 @@ const (
 
 var keyPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
+var errUpstreamClosureTimeout = errors.New("evicted upstream did not close before the replacement deadline")
+
+var allowed115Suffixes = []string{"115cdn.net", "115cdn.com", "115.com"}
+
 type targetParser func(string) (*url.URL, error)
 
 type streamLease struct {
@@ -46,22 +50,29 @@ func (l *streamLease) markUpstreamClosed() {
 }
 
 type leaseManager struct {
-	mu        sync.Mutex
-	nextID    uint64
-	byKey     map[string][]*streamLease
-	maxPerKey int
-	waitTime  time.Duration
+	mu         sync.Mutex
+	nextID     uint64
+	byKey      map[string]*leaseGroup
+	maxPerKey  int
+	waitTime   time.Duration
+	closeGrace time.Duration
 }
 
-func newLeaseManager(maxPerKey int, waitTime time.Duration) *leaseManager {
+type leaseGroup struct {
+	leases      []*streamLease
+	replacement chan struct{}
+}
+
+func newLeaseManager(maxPerKey int, waitTime, closeGrace time.Duration) *leaseManager {
 	return &leaseManager{
-		byKey:     make(map[string][]*streamLease),
-		maxPerKey: maxPerKey,
-		waitTime:  waitTime,
+		byKey:      make(map[string]*leaseGroup),
+		maxPerKey:  maxPerKey,
+		waitTime:   waitTime,
+		closeGrace: closeGrace,
 	}
 }
 
-func (m *leaseManager) acquire(parent context.Context, key string) (context.Context, *streamLease, bool) {
+func (m *leaseManager) acquire(parent context.Context, key string) (context.Context, *streamLease, bool, error) {
 	ctx, cancel := context.WithCancel(parent)
 	lease := &streamLease{
 		id:             atomic.AddUint64(&m.nextID, 1),
@@ -70,32 +81,101 @@ func (m *leaseManager) acquire(parent context.Context, key string) (context.Cont
 		upstreamClosed: make(chan struct{}),
 	}
 
-	m.mu.Lock()
-	leases := m.byKey[key]
-	sort.SliceStable(leases, func(i, j int) bool {
-		return leases[i].createdAt.Before(leases[j].createdAt)
-	})
-	var evicted *streamLease
-	if len(leases) >= m.maxPerKey {
-		evicted = leases[0]
-		leases = leases[1:]
+	for {
+		m.mu.Lock()
+		group := m.byKey[key]
+		if group == nil {
+			group = &leaseGroup{}
+			m.byKey[key] = group
+		}
+		if group.replacement != nil {
+			replacementDone := group.replacement
+			m.mu.Unlock()
+			select {
+			case <-replacementDone:
+				continue
+			case <-parent.Done():
+				cancel()
+				return nil, nil, false, parent.Err()
+			}
+		}
+		if len(group.leases) < m.maxPerKey {
+			group.leases = append(group.leases, lease)
+			m.mu.Unlock()
+			return ctx, lease, false, nil
+		}
+
+		sort.SliceStable(group.leases, func(i, j int) bool {
+			return group.leases[i].createdAt.Before(group.leases[j].createdAt)
+		})
+		evicted := group.leases[0]
+		replacementDone := make(chan struct{})
+		group.replacement = replacementDone
 		evicted.cancel()
-	}
-	m.byKey[key] = append(leases, lease)
-	m.mu.Unlock()
+		m.mu.Unlock()
 
-	if evicted == nil {
-		return ctx, lease, false
-	}
+		waitErr := m.waitForUpstreamClosure(parent, evicted)
 
+		m.mu.Lock()
+		group = m.byKey[key]
+		if group == nil {
+			group = &leaseGroup{}
+			m.byKey[key] = group
+		}
+		group.replacement = nil
+		if waitErr == nil {
+			group.leases = removeLease(group.leases, evicted.id)
+			group.leases = append(group.leases, lease)
+		}
+		close(replacementDone)
+		if len(group.leases) == 0 {
+			delete(m.byKey, key)
+		}
+		m.mu.Unlock()
+
+		if waitErr != nil {
+			cancel()
+			return nil, nil, true, waitErr
+		}
+		return ctx, lease, true, nil
+	}
+}
+
+func (m *leaseManager) waitForUpstreamClosure(parent context.Context, evicted *streamLease) error {
 	timer := time.NewTimer(m.waitTime)
 	defer timer.Stop()
 	select {
 	case <-evicted.upstreamClosed:
 	case <-timer.C:
-	case <-ctx.Done():
+		select {
+		case <-evicted.upstreamClosed:
+		default:
+			return errUpstreamClosureTimeout
+		}
+	case <-parent.Done():
+		return parent.Err()
 	}
-	return ctx, lease, true
+
+	if m.closeGrace <= 0 {
+		return nil
+	}
+	graceTimer := time.NewTimer(m.closeGrace)
+	defer graceTimer.Stop()
+	select {
+	case <-graceTimer.C:
+		return nil
+	case <-parent.Done():
+		return parent.Err()
+	}
+}
+
+func removeLease(leases []*streamLease, id uint64) []*streamLease {
+	for index, candidate := range leases {
+		if candidate.id == id {
+			return append(leases[:index], leases[index+1:]...)
+		}
+	}
+	return leases
 }
 
 func (m *leaseManager) release(key string, lease *streamLease) {
@@ -104,18 +184,13 @@ func (m *leaseManager) release(key string, lease *streamLease) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	leases := m.byKey[key]
-	for index, candidate := range leases {
-		if candidate.id != lease.id {
-			continue
-		}
-		leases = append(leases[:index], leases[index+1:]...)
-		break
+	group := m.byKey[key]
+	if group == nil {
+		return
 	}
-	if len(leases) == 0 {
+	group.leases = removeLease(group.leases, lease.id)
+	if len(group.leases) == 0 && group.replacement == nil {
 		delete(m.byKey, key)
-	} else {
-		m.byKey[key] = leases
 	}
 }
 
@@ -125,14 +200,19 @@ type streamGuard struct {
 	leases    *leaseManager
 	logger    *log.Logger
 	evictions atomic.Uint64
+	timeouts  atomic.Uint64
+	breaches  atomic.Uint64
+	activeMu  sync.Mutex
+	active    map[string]int
 }
 
 func newStreamGuard(client *http.Client, parse targetParser, logger *log.Logger) *streamGuard {
 	return &streamGuard{
 		client: client,
 		parse:  parse,
-		leases: newLeaseManager(2, 2*time.Second),
+		leases: newLeaseManager(2, 750*time.Millisecond, 250*time.Millisecond),
 		logger: logger,
+		active: make(map[string]int),
 	}
 }
 
@@ -158,7 +238,17 @@ func (g *streamGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	leaseContext, lease, evicted := g.leases.acquire(r.Context(), key)
+	leaseContext, lease, evicted, acquireErr := g.leases.acquire(r.Context(), key)
+	if acquireErr != nil {
+		if errors.Is(acquireErr, context.Canceled) || errors.Is(acquireErr, context.DeadlineExceeded) {
+			return
+		}
+		g.timeouts.Add(1)
+		g.logger.Printf("replacement timed out for key %.8s", key)
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "115 upstream replacement unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	defer g.leases.release(key, lease)
 	if evicted {
 		g.evictions.Add(1)
@@ -180,14 +270,18 @@ func (g *streamGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	copyRequestHeaders(upstreamRequest.Header, r.Header)
 	upstreamRequest.Host = target.Host
 
+	upstreamDone := g.beginUpstream(key)
 	response, err := g.client.Do(upstreamRequest)
 	if err != nil {
+		upstreamDone()
 		if leaseContext.Err() == nil {
-			g.logger.Printf("upstream request failed for host %s: %v", target.Hostname(), err)
+			g.logger.Printf("upstream request failed for host %s: category=%s",
+				target.Hostname(), errorCategory(err))
 			http.Error(w, "115 upstream unavailable", http.StatusBadGateway)
 		}
 		return
 	}
+	defer upstreamDone()
 
 	copyDone := make(chan struct{})
 	go func() {
@@ -213,8 +307,67 @@ func (g *streamGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	buffer := make([]byte, 64*1024)
 	if _, err := io.CopyBuffer(w, response.Body, buffer); err != nil && leaseContext.Err() == nil {
-		g.logger.Printf("downstream copy ended for host %s: %v", target.Hostname(), err)
+		g.logger.Printf("downstream copy ended for host %s: category=%s",
+			target.Hostname(), errorCategory(err))
 	}
+}
+
+func (g *streamGuard) beginUpstream(key string) func() {
+	g.activeMu.Lock()
+	g.active[key]++
+	if g.active[key] > g.leases.maxPerKey {
+		g.breaches.Add(1)
+	}
+	g.activeMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.activeMu.Lock()
+			g.active[key]--
+			if g.active[key] == 0 {
+				delete(g.active, key)
+			}
+			g.activeMu.Unlock()
+		})
+	}
+}
+
+func (g *streamGuard) writeMetrics(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	_, _ = fmt.Fprintf(w,
+		"emby_115_guard_replacements_total %d\n"+
+			"emby_115_guard_replacement_timeouts_total %d\n"+
+			"emby_115_guard_connection_limit_breaches_total %d\n",
+		g.evictions.Load(), g.timeouts.Load(), g.breaches.Load())
+}
+
+func errorCategory(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		err = urlErr.Err
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "dns"
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		if networkErr.Timeout() {
+			return "timeout"
+		}
+		return "network"
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return "unexpected_eof"
+	}
+	return "upstream"
 }
 
 func copyRequestHeaders(destination, source http.Header) {
@@ -278,7 +431,7 @@ func parse115Target(rawTarget string) (*url.URL, error) {
 }
 
 func is115Host(host string) bool {
-	for _, suffix := range []string{"115cdn.net", "115cdn.com", "115.com"} {
+	for _, suffix := range allowed115Suffixes {
 		if host == suffix || strings.HasSuffix(host, "."+suffix) {
 			return true
 		}
@@ -319,6 +472,9 @@ func main() {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "ok\n")
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+		guard.writeMetrics(w)
 	})
 
 	server := &http.Server{

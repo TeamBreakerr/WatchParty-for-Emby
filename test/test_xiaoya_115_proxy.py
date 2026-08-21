@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 import unittest
@@ -28,20 +29,54 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         self.assertIn("newLeaseManager(2", guard)
         self.assertIn("evicted.cancel()", guard)
         self.assertIn("<-evicted.upstreamClosed", guard)
+        self.assertIn("errUpstreamClosureTimeout", guard)
+        self.assertIn("http.StatusServiceUnavailable", guard)
         self.assertIn("X-Emby-115-Target", locations)
         self.assertIn("rewrite ^ /stream break;", locations)
         self.assertIn("proxy_pass http://127.0.0.1:15678;", locations)
-        self.assertNotIn("body_filter_by_lua", locations)
+        stream_locations = locations.split("location @emby_115_stream", 1)[1]
+        self.assertNotIn("body_filter_by_lua", stream_locations)
 
     def test_403_retry_is_bounded_and_refreshes_the_download_link(self):
         locations = (DEPLOY_ROOT / "emby-115-locations.conf").read_text()
         retry = (DEPLOY_ROOT / "emby-115-retry.lua").read_text()
 
-        self.assertIn("error_page 403 = @emby_115_retry", locations)
+        self.assertIn("error_page 403 503 = @emby_115_retry", locations)
         self.assertIn("X-Emby-115-Proxy dynamic", locations)
         self.assertIn('emby_115_attempt ~= "0"', retry)
         self.assertIn("resolve_115_target", retry)
         self.assertNotIn("error_page 403", locations.split("location @emby_115_retry", 1)[1])
+
+    def test_probe_discards_the_first_body_chunk(self):
+        locations = (DEPLOY_ROOT / "emby-115-locations.conf").read_text()
+        resolver = locations.split("location ^~ /__emby_115_resolve/", 1)[1].split(
+            "location @emby_115_stream", 1
+        )[0]
+
+        self.assertIn("body_filter_by_lua_block", resolver)
+        self.assertIn("ngx.arg[1] = nil", resolver)
+        self.assertIn("ngx.arg[2] = true", resolver)
+
+    def test_go_and_lua_115_host_allowlists_are_identical(self):
+        guard = (DEPLOY_ROOT / "guard" / "main.go").read_text()
+        policy = (DEPLOY_ROOT / "emby_115_policy.lua").read_text()
+        go_match = re.search(r"allowed115Suffixes = \[\]string\{([^}]*)\}", guard)
+        lua_match = re.search(r"allowed_suffixes = \{([^}]*)\}", policy, re.DOTALL)
+
+        self.assertIsNotNone(go_match)
+        self.assertIsNotNone(lua_match)
+        self.assertEqual(
+            re.findall(r'"([^"]+)"', lua_match.group(1)),
+            re.findall(r'"([^"]+)"', go_match.group(1)),
+        )
+
+    def test_health_check_restarts_an_unhealthy_existing_guard(self):
+        ensure = (DEPLOY_ROOT / "ensure-emby-115-guard.sh").read_text()
+
+        self.assertIn('guard_pids=$(pgrep -f "^$guard_command$"', ensure)
+        self.assertIn('kill "$guard_pid"', ensure)
+        self.assertIn('kill -KILL "$guard_pid"', ensure)
+        self.assertNotIn("process exists but its health endpoint is unavailable", ensure)
 
     def test_installer_patches_only_includes_and_reinstalls_after_updates(self):
         installer = (DEPLOY_ROOT / "install-emby-115-proxy.sh").read_text()
@@ -62,6 +97,9 @@ class Xiaoya115ProxyTests(unittest.TestCase):
 
         self.assertEqual(2, integration.count("--limit-rate 128k"))
         self.assertIn("third range did not return 206", integration)
+        self.assertIn("third seek exceeded", integration)
+        self.assertIn("connection limit breach counter increased", integration)
+        self.assertIn("replacement counter did not increase", integration)
         self.assertIn("X-Emby-115-Proxy: dynamic", integration)
         self.assertIn("X-Emby-115-Guard: active", integration)
 

@@ -10,10 +10,17 @@ official Xiaoya `/d/` location.
 
 The loopback `emby-115-guard` process keeps two upstream requests per media
 path. A third Range request, which normally follows a seek, cancels the oldest
-upstream HTTP context and waits for its CDN socket to close before opening the
-new request. One refreshed retry is allowed when 115 still returns a transient
-403. Nginx never needs to interrupt a response that is blocked on a slow
-downstream client.
+upstream HTTP context, waits for its CDN socket to close, and allows a short
+teardown grace period before opening the new request. If the old connection
+does not close by the deadline, the guard returns 503 without opening a third
+upstream; Nginx performs one delayed, refreshed retry for either that condition
+or a transient 115 403. Nginx never needs to interrupt a response that is
+blocked on a slow downstream client.
+
+The guard exposes loopback-only Prometheus counters at
+`http://127.0.0.1:15678/metrics`. The integration test asserts that a seek
+increments the replacement counter, completes within three seconds, and does
+not increment the per-media connection-limit breach counter.
 
 Files are copied to Xiaoya's persistent `/data` mount. The installer wraps
 `/updateall`, and `install-xiaoyakeeper-hook.sh` adds a post-update reinstall

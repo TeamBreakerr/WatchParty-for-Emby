@@ -1,18 +1,52 @@
 package main
 
 import (
+	"bytes"
 	"crypto/md5"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+type delayedCloseBody struct {
+	active       *atomic.Int32
+	closeStarted chan struct{}
+	releaseClose <-chan struct{}
+	startOnce    sync.Once
+	finishOnce   sync.Once
+}
+
+func (b *delayedCloseBody) Read(_ []byte) (int, error) {
+	<-b.closeStarted
+	return 0, io.EOF
+}
+
+func (b *delayedCloseBody) Close() error {
+	b.startOnce.Do(func() {
+		close(b.closeStarted)
+	})
+	<-b.releaseClose
+	b.finishOnce.Do(func() {
+		b.active.Add(-1)
+	})
+	return nil
+}
 
 func TestParse115Target(t *testing.T) {
 	t.Parallel()
@@ -144,6 +178,129 @@ func TestThirdStreamCancelsOldestUpstreamBeforeConnecting(t *testing.T) {
 
 	first.Body.Close()
 	second.Body.Close()
+}
+
+func TestThirdStreamFailsWithoutOpeningUpstreamWhenEvictionDoesNotClose(t *testing.T) {
+	var calls atomic.Int32
+	var active atomic.Int32
+	releaseClose := make(chan struct{})
+	var releaseOnce sync.Once
+
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		current := active.Add(1)
+		if current > 2 {
+			active.Add(-1)
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("too many upstreams")),
+				Request:    request,
+			}, nil
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header: http.Header{
+				"Content-Type":  []string{"application/octet-stream"},
+				"Content-Range": []string{"bytes 0-1023/4096"},
+			},
+			Body: &delayedCloseBody{
+				active:       &active,
+				closeStarted: make(chan struct{}),
+				releaseClose: releaseClose,
+			},
+			Request: request,
+		}, nil
+	})
+
+	target, err := url.Parse("https://cdnfhnfile.115cdn.net/video.mkv?token=redacted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := newStreamGuard(
+		&http.Client{Transport: transport},
+		func(string) (*url.URL, error) { return target, nil },
+		log.New(io.Discard, "", 0))
+	guard.leases.waitTime = 20 * time.Millisecond
+	guardServer := httptest.NewServer(guard)
+	defer guardServer.Close()
+
+	key := fmt.Sprintf("%x", md5.Sum([]byte("/media/video.mkv")))
+	first := openGuardStream(t, guardServer.URL, target.String(), key, "bytes=0-")
+	second := openGuardStream(t, guardServer.URL, target.String(), key, "bytes=100-")
+	defer func() {
+		releaseOnce.Do(func() { close(releaseClose) })
+		first.Body.Close()
+		second.Body.Close()
+	}()
+
+	request, err := http.NewRequest(http.MethodGet, guardServer.URL+"/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set(targetHeader, target.String())
+	request.Header.Set(keyHeader, key)
+	request.Header.Set("Range", "bytes=200-")
+	third, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdBody, readErr := io.ReadAll(third.Body)
+	third.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+
+	if third.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 while the evicted upstream is still open, got %d: %s",
+			third.StatusCode, bytes.TrimSpace(thirdBody))
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected no third upstream attempt, got %d attempts", calls.Load())
+	}
+	if guard.timeouts.Load() != 1 || guard.breaches.Load() != 0 {
+		t.Fatalf("unexpected guard counters: timeouts=%d breaches=%d",
+			guard.timeouts.Load(), guard.breaches.Load())
+	}
+
+	releaseOnce.Do(func() { close(releaseClose) })
+}
+
+func TestUpstreamFailureLogsDoNotContainSignedTargetURL(t *testing.T) {
+	signedTarget := "https://cdnfhnfile.115cdn.net/video.mkv?token=super-secret"
+	target, err := url.Parse(signedTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return nil, &url.Error{
+			Op:  "Get",
+			URL: request.URL.String(),
+			Err: errors.New("dial failed"),
+		}
+	})
+	var logs bytes.Buffer
+	guard := newStreamGuard(
+		&http.Client{Transport: transport},
+		func(string) (*url.URL, error) { return target, nil },
+		log.New(&logs, "", 0))
+
+	request := httptest.NewRequest(http.MethodGet, "http://guard/stream", nil)
+	request.Header.Set(targetHeader, signedTarget)
+	request.Header.Set(keyHeader, fmt.Sprintf("%x", md5.Sum([]byte("/media/video.mkv"))))
+	response := httptest.NewRecorder()
+	guard.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for an upstream failure, got %d", response.Code)
+	}
+	if strings.Contains(logs.String(), "super-secret") || strings.Contains(logs.String(), signedTarget) {
+		t.Fatalf("signed target leaked into logs: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "category=") {
+		t.Fatalf("sanitized error category is missing: %s", logs.String())
+	}
 }
 
 func openGuardStream(t *testing.T, guardURL, target, key, byteRange string) *http.Response {
