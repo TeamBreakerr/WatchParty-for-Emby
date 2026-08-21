@@ -252,6 +252,44 @@ namespace WatchPartyForEmby.Tests
             Assert.False(secondResumeSent);
         }
 
+        [Fact]
+        public async Task CancelSessionDuringSeekConfirmationPreventsSecondSeek()
+        {
+            var coordinator = new ParticipantResumeCoordinator(capacityPerSession: 8);
+            var confirmationWaitStarted = NewSignal();
+            var seekCount = 0;
+            var seekRetrier = new ConfirmedPlaybackSeekRetrier(
+                maxAttempts: 2,
+                confirmationTimeout: TimeSpan.FromSeconds(6),
+                delayAsync: async (_, cancellationToken) =>
+                {
+                    confirmationWaitStarted.TrySetResult(true);
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                });
+
+            var resumeTask = coordinator.ResumeAsync(
+                "ios",
+                _ => Task.FromResult(true),
+                () => 100L,
+                (target, cancellationToken) => seekRetrier.SendAsync(
+                    "ios",
+                    target,
+                    getRetryTargetPositionTicks: () => 200L,
+                    sendSeek: (_, __) =>
+                    {
+                        seekCount++;
+                        return Task.FromResult(true);
+                    },
+                    cancellationToken),
+                CancellationToken.None);
+            await confirmationWaitStarted.Task;
+
+            coordinator.CancelSession("ios");
+
+            Assert.False(await resumeTask);
+            Assert.Equal(1, seekCount);
+        }
+
         private static TaskCompletionSource<bool> NewSignal()
         {
             return new TaskCompletionSource<bool>(

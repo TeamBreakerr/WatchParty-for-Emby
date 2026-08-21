@@ -53,6 +53,14 @@ namespace WatchPartyForEmby
                 maximumEstimate: TimeSpan.FromSeconds(6),
                 sampleTimeout: TimeSpan.FromSeconds(30),
                 smoothingFactor: 0.5);
+        private readonly AcknowledgedPlaybackStateCommandRetrier _playbackStateCommandRetrier =
+            new AcknowledgedPlaybackStateCommandRetrier(
+                PauseCommandMaxAttempts,
+                PauseCommandRetryDelay);
+        private readonly ConfirmedPlaybackSeekRetrier _confirmedPlaybackSeekRetrier =
+            new ConfirmedPlaybackSeekRetrier(
+                ResumeSeekMaxAttempts,
+                ResumeSeekConfirmationTimeout);
         private readonly OfficialIosWebSocketTransport _officialIosWebSocketTransport =
             new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
         private readonly MasterPlaybackStateDebouncer _masterPlaybackStateDebouncer =
@@ -74,6 +82,12 @@ namespace WatchPartyForEmby
         private const int PauseCommandMaxAttempts = 3;
         private static readonly TimeSpan PauseCommandRetryDelay =
             TimeSpan.FromMilliseconds(350);
+        private const int ResumeSeekMaxAttempts = 2;
+        // Relayed iOS clients have shown 2-3s of additional delay. Six seconds keeps a
+        // retry beyond that observed tail and one normal sync interval, while the strict
+        // two-attempt bound still avoids a seek storm when the client never confirms.
+        private static readonly TimeSpan ResumeSeekConfirmationTimeout =
+            TimeSpan.FromSeconds(6);
         private const int SeriesCommandMaxAttempts = 3;
         private static readonly TimeSpan SeriesCommandConfirmationRetryInterval =
             TimeSpan.FromSeconds(6);
@@ -926,7 +940,36 @@ namespace WatchPartyForEmby
         {
             try
             {
-                await _participantResumeCoordinator.ResumeAsync(
+                Func<long> getTargetPositionTicks = () =>
+                {
+                    var nowUtc = DateTime.UtcNow;
+                    var estimatedPosition =
+                        _playbackSyncCoordinator.GetEstimatedPartyPosition(
+                            party.Id,
+                            party.CurrentPositionTicks,
+                            nowUtc);
+                    var configuredOffset = TimeSpan.FromMilliseconds(
+                        _plugin.Configuration.SyncOffsetMilliseconds);
+                    var learnedLatency =
+                        _participantResumeLatencies.GetEstimatedLatency(
+                            participantSession.Id);
+                    var targetPosition = Math.Max(
+                        0,
+                        estimatedPosition
+                            + configuredOffset.Ticks
+                            + learnedLatency.Ticks);
+
+                    _logger.Info(
+                        $"[Party {party.Id}] Resume compensation for session " +
+                        $"{participantSession.Id}: target " +
+                        $"{TimeSpan.FromTicks(targetPosition).TotalSeconds:F1}s " +
+                        $"(clock {TimeSpan.FromTicks(estimatedPosition).TotalSeconds:F1}s, " +
+                        $"configured {configuredOffset.TotalMilliseconds:F0}ms, " +
+                        $"learned {learnedLatency.TotalMilliseconds:F0}ms)");
+                    return targetPosition;
+                };
+
+                var resumeSeekConfirmed = await _participantResumeCoordinator.ResumeAsync(
                     participantSession.Id,
                     queuedToken => CanContinueParticipantResume(
                             party,
@@ -937,65 +980,57 @@ namespace WatchPartyForEmby
                             isPaused: false,
                             cancellationToken: queuedToken)
                         : Task.FromResult(false),
-                    () =>
-                    {
-                        var nowUtc = DateTime.UtcNow;
-                        var estimatedPosition =
-                            _playbackSyncCoordinator.GetEstimatedPartyPosition(
-                                party.Id,
-                                party.CurrentPositionTicks,
-                                nowUtc);
-                        var configuredOffset = TimeSpan.FromMilliseconds(
-                            _plugin.Configuration.SyncOffsetMilliseconds);
-                        var learnedLatency =
-                            _participantResumeLatencies.GetEstimatedLatency(
-                                participantSession.Id);
-                        var targetPosition = Math.Max(
-                            0,
-                            estimatedPosition
-                                + configuredOffset.Ticks
-                                + learnedLatency.Ticks);
-
-                        _logger.Info(
-                            $"[Party {party.Id}] Resume compensation for session " +
-                            $"{participantSession.Id}: target " +
-                            $"{TimeSpan.FromTicks(targetPosition).TotalSeconds:F1}s " +
-                            $"(clock {TimeSpan.FromTicks(estimatedPosition).TotalSeconds:F1}s, " +
-                            $"configured {configuredOffset.TotalMilliseconds:F0}ms, " +
-                            $"learned {learnedLatency.TotalMilliseconds:F0}ms)");
-                        return targetPosition;
-                    },
+                    getTargetPositionTicks,
                     async (targetPosition, queuedToken) =>
                     {
-                        if (!CanContinueParticipantResume(
-                                party,
-                                participantSession.Id))
-                        {
-                            return false;
-                        }
-
-                        var currentItem = participantSession.NowPlayingItem == null
-                            ? null
-                            : _libraryManager.GetItemById(
-                                participantSession.NowPlayingItem.Id);
-                        var matchingParty = FindPartyForItem(currentItem);
-                        if (currentItem != null
-                            && (matchingParty == null || matchingParty.Id != party.Id))
-                        {
-                            return false;
-                        }
-
-                        return await SyncUserToPosition(
-                            party,
-                            participantSession,
-                            currentItem,
+                        return await _confirmedPlaybackSeekRetrier.SendAsync(
+                            participantSession.Id,
                             targetPosition,
-                            allowReplace: true,
-                            controllingSession: GetMasterSessionForCommand(party),
-                            applySyncOffset: false,
-                            cancellationToken: queuedToken).ConfigureAwait(false);
+                            getTargetPositionTicks,
+                            async (confirmedTargetPosition, confirmationToken) =>
+                            {
+                                if (!CanContinueParticipantResume(
+                                        party,
+                                        participantSession.Id))
+                                {
+                                    return false;
+                                }
+
+                                var currentItem = participantSession.NowPlayingItem == null
+                                    ? null
+                                    : _libraryManager.GetItemById(
+                                        participantSession.NowPlayingItem.Id);
+                                var matchingParty = FindPartyForItem(currentItem);
+                                if (currentItem != null
+                                    && (matchingParty == null
+                                        || matchingParty.Id != party.Id))
+                                {
+                                    return false;
+                                }
+
+                                return await SyncUserToPosition(
+                                    party,
+                                    participantSession,
+                                    currentItem,
+                                    confirmedTargetPosition,
+                                    allowReplace: true,
+                                    controllingSession: GetMasterSessionForCommand(party),
+                                    applySyncOffset: false,
+                                    cancellationToken: confirmationToken)
+                                    .ConfigureAwait(false);
+                            },
+                            queuedToken).ConfigureAwait(false);
                     },
                     _lifetimeCts.Token).ConfigureAwait(false);
+                if (!resumeSeekConfirmed
+                    && CanContinueParticipantResume(
+                        party,
+                        participantSession.Id))
+                {
+                    _logger.Warn(
+                        $"[Party {party.Id}] Resume seek was not confirmed for session " +
+                        $"{participantSession.Id} after {ResumeSeekMaxAttempts} attempts");
+                }
             }
             catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
             {
@@ -1119,7 +1154,7 @@ namespace WatchPartyForEmby
             }
         }
 
-        private async Task HandleMasterResume(WatchPartyItem party, SessionInfo session)
+        private Task HandleMasterResume(WatchPartyItem party, SessionInfo session)
         {
             ApplyAuthoritativePauseState(
                 party,
@@ -1129,7 +1164,37 @@ namespace WatchPartyForEmby
                 "broadcasting authoritative play state");
             if (!party.IsWaitingRoom)
             {
-                await ResumeParticipantsWithCompensation(party, session.Id);
+                // Confirmation waits must not hold the master's serialized event queue.
+                // A following Pause needs to update authority and cancel these pipelines
+                // immediately, before an unconfirmed compensation Seek can retry.
+                var resumeTask = ResumeParticipantsWithCompensation(
+                    party,
+                    session.Id);
+                _ = ObserveParticipantResumeCompletionAsync(
+                    resumeTask,
+                    party.Id);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private async Task ObserveParticipantResumeCompletionAsync(
+            Task resumeTask,
+            string partyId)
+        {
+            try
+            {
+                await resumeTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+            {
+                // Plugin shutdown cancels pending participant pipelines.
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorException(
+                    $"[Party {partyId}] Background participant resume failed",
+                    ex);
             }
         }
 
@@ -1290,9 +1355,8 @@ namespace WatchPartyForEmby
                 };
                 var resumeObservationStarted = false;
 
-                for (var attempt = 1; attempt <= PauseCommandMaxAttempts; attempt++)
-                {
-                    try
+                var commandSent = await _playbackStateCommandRetrier.SendAsync(
+                    async queuedToken =>
                     {
                         Action<DateTime> onDispatching = null;
                         if (!isPaused && !resumeObservationStarted)
@@ -1307,56 +1371,40 @@ namespace WatchPartyForEmby
                             };
                         }
 
-                        var commandSent = await SendPlaystateCommandSerialAsync(
+                        return await SendPlaystateCommandSerialAsync(
                             party?.Id,
                             session.Id,
                             session.Id,
                             request,
-                            commandToken,
-                            onDispatching);
-                        if (!commandSent)
-                        {
-                            if (!isPaused)
-                            {
-                                _participantResumeLatencies.CancelPendingResume(
-                                    session.Id,
-                                    expectation);
-                            }
-                            _playbackSyncCoordinator.CancelExpectedPauseState(
-                                session.Id,
-                                expectation);
-                            return false;
-                        }
-                    }
-                    catch (OperationCanceledException) when (commandToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex) when (attempt < PauseCommandMaxAttempts)
-                    {
+                            queuedToken,
+                            onDispatching).ConfigureAwait(false);
+                    },
+                    () => _playbackSyncCoordinator.IsPauseStateExpectationPending(
+                        session.Id,
+                        expectation,
+                        DateTime.UtcNow),
+                    (attempt, ex) =>
                         _logger.Warn(
                             $"[Watch Party] {(isPaused ? "pause" : "resume")} command " +
                             $"attempt {attempt}/{PauseCommandMaxAttempts} failed for " +
-                            $"session {session.Id}: {ex.Message}; retrying");
-                        await Task.Delay(PauseCommandRetryDelay, commandToken)
-                            .ConfigureAwait(false);
-                        continue;
-                    }
-
-                    if (attempt == PauseCommandMaxAttempts
-                        || !_playbackSyncCoordinator.IsPauseStateExpectationPending(
-                            session.Id,
-                            expectation,
-                            DateTime.UtcNow))
-                    {
-                        break;
-                    }
-
-                    _logger.Debug(
+                            $"session {session.Id}: {ex.Message}; retrying"),
+                    nextAttempt => _logger.Debug(
                         $"[Watch Party] No {(isPaused ? "pause" : "resume")} echo yet for " +
-                        $"session {session.Id}; retrying command ({attempt + 1}/{PauseCommandMaxAttempts})");
-                    await Task.Delay(PauseCommandRetryDelay, commandToken)
-                        .ConfigureAwait(false);
+                        $"session {session.Id}; waiting before retry " +
+                        $"({nextAttempt}/{PauseCommandMaxAttempts})"),
+                    commandToken).ConfigureAwait(false);
+                if (!commandSent)
+                {
+                    if (!isPaused)
+                    {
+                        _participantResumeLatencies.CancelPendingResume(
+                            session.Id,
+                            expectation);
+                    }
+                    _playbackSyncCoordinator.CancelExpectedPauseState(
+                        session.Id,
+                        expectation);
+                    return false;
                 }
 
                 return true;
@@ -3152,6 +3200,7 @@ namespace WatchPartyForEmby
                     if (!ignoreParticipantPosition
                         && _playbackSyncCoordinator.ConfirmSeekTarget(e.Session.Id, currentPosition, nowUtc))
                     {
+                        _confirmedPlaybackSeekRetrier.Confirm(e.Session.Id);
                         _logger.Debug($"[Party {party.Id}] Session {e.Session.Id} confirmed seek target at {TimeSpan.FromTicks(currentPosition).TotalSeconds:F1}s");
                     }
 
