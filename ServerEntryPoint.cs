@@ -53,6 +53,8 @@ namespace WatchPartyForEmby
                 maximumEstimate: TimeSpan.FromSeconds(6),
                 sampleTimeout: TimeSpan.FromSeconds(30),
                 smoothingFactor: 0.5);
+        private readonly OfficialIosWebSocketTransport _officialIosWebSocketTransport =
+            new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
         private readonly MasterPlaybackStateDebouncer _masterPlaybackStateDebouncer =
             new MasterPlaybackStateDebouncer(TimeSpan.FromMilliseconds(750));
         private readonly object _masterPauseCommitLock = new object();
@@ -338,6 +340,7 @@ namespace WatchPartyForEmby
             _participantResumeCoordinator.CancelSession(sessionId);
             _playbackSyncCoordinator.ClearSession(sessionId);
             _participantResumeLatencies.ClearSession(sessionId);
+            _officialIosWebSocketTransport.ClearSession(sessionId);
             _seriesEpisodeTransitions.ClearSession(sessionId);
             ClearSessionEpisodeMarkers(partyId, sessionId);
             _masterPlaybackStateDebouncer.Cancel(sessionId);
@@ -1413,6 +1416,12 @@ namespace WatchPartyForEmby
             {
                 return false;
             }
+            if (!CanDispatchThroughOfficialIosWebSocket(
+                    targetSessionId,
+                    command))
+            {
+                return false;
+            }
 
             var commandToken = cancellationToken.CanBeCanceled
                 ? cancellationToken
@@ -1486,6 +1495,12 @@ namespace WatchPartyForEmby
             {
                 return false;
             }
+            if (!CanDispatchThroughOfficialIosWebSocket(
+                    targetSessionId,
+                    ParticipantRoomCommand.PlayNow))
+            {
+                return false;
+            }
 
             var commandToken = cancellationToken.CanBeCanceled
                 ? cancellationToken
@@ -1510,6 +1525,28 @@ namespace WatchPartyForEmby
                     queued: true);
             }
             return commandSent;
+        }
+
+        private bool CanDispatchThroughOfficialIosWebSocket(
+            string targetSessionId,
+            ParticipantRoomCommand command)
+        {
+            var targetSession = _sessionManager.Sessions.FirstOrDefault(session =>
+                session != null
+                && string.Equals(session.Id, targetSessionId, StringComparison.Ordinal));
+            if (targetSession == null
+                || _officialIosWebSocketTransport.CanDispatchPlaybackCommand(
+                    targetSession.Client,
+                    targetSession.SessionControllers))
+            {
+                return true;
+            }
+
+            _logger.Info(
+                $"[Watch Party] Skipping {command} for Emby for iOS session " +
+                $"{targetSessionId} because no active WebSocket controller is available; " +
+                "Firebase fallback is disabled for Watch Party");
+            return false;
         }
 
         private bool CanDispatchParticipantCommand(
@@ -1695,6 +1732,7 @@ namespace WatchPartyForEmby
                 _participantResumeCoordinator.CancelSession(participant.SessionId);
                 _playbackSyncCoordinator.ClearSession(participant.SessionId);
                 _participantResumeLatencies.ClearSession(participant.SessionId);
+                _officialIosWebSocketTransport.ClearSession(participant.SessionId);
                 _seriesEpisodeTransitions.ClearSession(participant.SessionId);
             }
 
@@ -2452,6 +2490,8 @@ namespace WatchPartyForEmby
                         continue;
                     }
 
+                    await KeepOfficialIosParticipantConnectionsAlive(party);
+
                     lock (_masterSeekSyncLock)
                     {
                         if (_pendingMasterSeeks.ContainsKey(party.Id))
@@ -2615,6 +2655,48 @@ namespace WatchPartyForEmby
             finally
             {
                 Volatile.Write(ref _syncPassRunning, 0);
+            }
+        }
+
+        private async Task KeepOfficialIosParticipantConnectionsAlive(
+            WatchPartyItem party)
+        {
+            var nowUtc = DateTime.UtcNow;
+            var sessions = GetRegisteredPartySessions(
+                party.Id,
+                ParticipantRoomCommand.Seek);
+            foreach (var session in sessions)
+            {
+                if (IsMasterSession(party, session))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var sent = await _officialIosWebSocketTransport.TrySendKeepAliveAsync(
+                        session.Id,
+                        session.Client,
+                        session.SessionControllers,
+                        nowUtc,
+                        _lifetimeCts.Token);
+                    if (sent)
+                    {
+                        _logger.Debug(
+                            $"[Party {party.Id}] Sent WebSocket KeepAlive to " +
+                            $"Emby for iOS session {session.Id}");
+                    }
+                }
+                catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn(
+                        $"[Party {party.Id}] WebSocket KeepAlive failed for Emby for iOS " +
+                        $"session {session.Id}: {ex.Message}");
+                }
             }
         }
 
@@ -4147,6 +4229,7 @@ namespace WatchPartyForEmby
             _masterPlaybackStateDebouncer.Clear();
             _participantResumeCoordinator.Clear();
             _participantResumeLatencies.Clear();
+            _officialIosWebSocketTransport.Clear();
 
             try
             {
