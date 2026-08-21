@@ -899,6 +899,26 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void InboundEchoClassificationReturnsTheMatchedExpectationToken()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
+            var expectation = coordinator.ExpectPauseState(
+                "ios-session",
+                isPaused: false,
+                now);
+
+            var classification = coordinator.ClassifyInboundPauseState(
+                "ios-session",
+                previousIsPaused: true,
+                reportedIsPaused: false,
+                now.AddSeconds(1));
+
+            Assert.True(classification.IsExpectedCommandEcho);
+            Assert.Equal(expectation, classification.MatchedExpectation);
+        }
+
+        [Fact]
         public void SlowIosPauseEchoIsStillConsumedAfterTenSeconds()
         {
             var coordinator = new PlaybackSyncCoordinator();

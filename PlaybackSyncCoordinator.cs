@@ -26,14 +26,20 @@ namespace WatchPartyForEmby
     /// </summary>
     public readonly struct InboundPauseStateClassification
     {
+        private static readonly IReadOnlyList<PauseStateExpectationToken>
+            EmptyMatchedExpectations = Array.Empty<PauseStateExpectationToken>();
+        private readonly IReadOnlyList<PauseStateExpectationToken> _matchedExpectations;
+
         internal InboundPauseStateClassification(
             bool isTransition,
             bool isExpectedCommandEcho,
-            bool isSeekCommandEcho)
+            bool isSeekCommandEcho,
+            IReadOnlyList<PauseStateExpectationToken> matchedExpectations)
         {
             IsTransition = isTransition;
             IsExpectedCommandEcho = isExpectedCommandEcho;
             IsSeekCommandEcho = isSeekCommandEcho;
+            _matchedExpectations = matchedExpectations;
         }
 
         public bool IsTransition { get; }
@@ -41,6 +47,14 @@ namespace WatchPartyForEmby
         public bool IsExpectedCommandEcho { get; }
 
         public bool IsSeekCommandEcho { get; }
+
+        public IReadOnlyList<PauseStateExpectationToken> MatchedExpectations =>
+            _matchedExpectations ?? EmptyMatchedExpectations;
+
+        public PauseStateExpectationToken MatchedExpectation =>
+            MatchedExpectations.Count == 1
+                ? MatchedExpectations[0]
+                : default;
 
         // A position-less transition inside the short seek window is treated as a
         // synthetic reload echo. This prevents a delayed buffer-induced Pause/Unpause
@@ -482,7 +496,8 @@ namespace WatchPartyForEmby
                     sessionId,
                     isPaused,
                     nowUtc,
-                    clearOnMismatch);
+                    clearOnMismatch,
+                    out _);
             }
         }
 
@@ -523,7 +538,8 @@ namespace WatchPartyForEmby
                 return new InboundPauseStateClassification(
                     isTransition,
                     isExpectedCommandEcho: false,
-                    isSeekCommandEcho: false);
+                    isSeekCommandEcho: false,
+                    matchedExpectations: Array.Empty<PauseStateExpectationToken>());
             }
 
             lock (_syncRoot)
@@ -532,7 +548,8 @@ namespace WatchPartyForEmby
                     sessionId,
                     reportedIsPaused,
                     nowUtc,
-                    clearOnMismatch: isTransition);
+                    clearOnMismatch: isTransition,
+                    matchedExpectations: out var matchedExpectations);
                 var isSeekCommandEcho = false;
                 if (_pendingSeeks.TryGetValue(sessionId, out var pending)
                     && nowUtc >= pending.CommandedAt
@@ -565,7 +582,8 @@ namespace WatchPartyForEmby
                 return new InboundPauseStateClassification(
                     isTransition,
                     isExpectedCommandEcho,
-                    isSeekCommandEcho);
+                    isSeekCommandEcho,
+                    matchedExpectations);
             }
         }
 
@@ -981,8 +999,10 @@ namespace WatchPartyForEmby
             string sessionId,
             bool isPaused,
             DateTime nowUtc,
-            bool clearOnMismatch)
+            bool clearOnMismatch,
+            out IReadOnlyList<PauseStateExpectationToken> matchedExpectations)
         {
+            matchedExpectations = Array.Empty<PauseStateExpectationToken>();
             if (!_expectedPauseStates.TryGetValue(sessionId, out var expectedStates))
             {
                 return false;
@@ -1015,6 +1035,10 @@ namespace WatchPartyForEmby
                 IsPaused = isPaused,
                 EchoedAt = nowUtc
             };
+            matchedExpectations = expectedStates[matchingIndex].TokenIds
+                .OrderBy(tokenId => tokenId)
+                .Select(tokenId => new PauseStateExpectationToken(tokenId))
+                .ToArray();
             expectedStates.RemoveAt(matchingIndex);
             if (expectedStates.Count == 0)
             {
