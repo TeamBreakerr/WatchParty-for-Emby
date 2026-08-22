@@ -646,7 +646,29 @@ test('embedded page stays legible and uses the full Emby settings width in a lig
     assert.match(formRule[1], /width:\s*100%\s*!important;/);
     assert.ok(contrast(variable('wp-surface'), variable('wp-text')) >= 7, 'primary text should meet enhanced contrast');
     assert.ok(contrast(variable('wp-surface'), variable('wp-text-muted')) >= 4.5, 'secondary text should meet normal contrast');
+    assert.ok(contrast('#ffffff', variable('wp-action-bg')) >= 4.5, 'primary action text should meet normal contrast');
     assert.doesNotMatch(html, /#202832|#17211f|#1b232d|background:\s*rgba\(24,\s*27,\s*32/);
+});
+
+test('form controls and the dashboard action use polished interaction states', () => {
+    const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
+    const controlRule = html.match(/\.watch-party-page input:not\(\[type="checkbox"\]\):not\(\[type="hidden"\]\),\s*\n\s*\.watch-party-page select\s*\{([\s\S]*?)\n\s*\}/);
+    const actionRule = html.match(/\.watch-party-primary-action\s*\{([\s\S]*?)\n\s*\}/);
+
+    assert.ok(controlRule, 'shared input and select styles should exist');
+    assert.ok(actionRule, 'dashboard action styles should exist');
+    assert.match(controlRule[1], /min-height:\s*46px;/);
+    assert.match(controlRule[1], /border-radius:\s*10px\s*!important;/);
+    assert.match(controlRule[1], /transition:/);
+    assert.match(html, /\.watch-party-page input::placeholder\s*\{/);
+    assert.match(html, /\.watch-party-page input:not\([^}]+:hover,[\s\S]*?\.watch-party-page select:hover\s*\{/);
+    assert.match(html, /\.watch-party-page input:not\([^}]+:focus,[\s\S]*?\.watch-party-page select:focus\s*\{[\s\S]*?box-shadow:\s*0 0 0 3px/);
+    assert.match(html, /\.watch-party-page input:disabled,[\s\S]*?\.watch-party-page select:disabled\s*\{/);
+    assert.match(actionRule[1], /border-radius:\s*10px\s*!important;/);
+    assert.match(actionRule[1], /background:\s*var\(--wp-action-bg\)\s*!important;/);
+    assert.doesNotMatch(actionRule[1], /999px|linear-gradient/);
+    assert.match(html, /\.watch-party-primary-action:hover\s*\{/);
+    assert.match(html, /\.watch-party-primary-action:active\s*\{/);
 });
 
 test('embedded page exposes one ready-count input, accessible comboboxes, and mobile layout', () => {

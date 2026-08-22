@@ -4,6 +4,10 @@
             --wp-accent: #5d9f3a;
             --wp-accent-strong: #3f7827;
             --wp-accent-soft: #edf5e9;
+            --wp-action-bg: #3f7827;
+            --wp-action-border: #356820;
+            --wp-action-hover-bg: #356820;
+            --wp-action-active-bg: #2d5d1b;
             --wp-blue: #356b9c;
             --wp-blue-soft: #edf4fa;
             --wp-warning: #9a620d;
@@ -13,6 +17,12 @@
             --wp-surface-soft: #f5f7f8;
             --wp-border: #d9dee3;
             --wp-border-strong: #c7ced5;
+            --wp-control-bg: #f8fafb;
+            --wp-control-border-hover: #9da8b1;
+            --wp-control-placeholder: #87919a;
+            --wp-control-disabled-bg: #eef1f3;
+            --wp-control-disabled-text: #7c858d;
+            --wp-control-focus-ring: rgba(93, 159, 58, 0.16);
             --wp-text: #202428;
             --wp-text-strong: #111417;
             --wp-text-muted: #606971;
@@ -142,11 +152,33 @@
         }
 
         .watch-party-primary-action {
-            border-radius: 999px !important;
-            background: linear-gradient(135deg, var(--wp-accent), var(--wp-accent-strong)) !important;
+            display: inline-flex !important;
+            align-items: center;
+            justify-content: center;
+            min-height: 46px;
+            padding: 0 1.2rem !important;
+            border: 1px solid var(--wp-action-border) !important;
+            border-radius: 10px !important;
+            background: var(--wp-action-bg) !important;
             color: #ffffff !important;
-            font-weight: 750 !important;
-            box-shadow: 0 8px 18px rgba(63, 120, 39, 0.22);
+            font-weight: 700 !important;
+            letter-spacing: 0.01em;
+            box-shadow: 0 3px 8px rgba(63, 120, 39, 0.18) !important;
+            transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+        }
+
+        .watch-party-primary-action:hover {
+            border-color: var(--wp-action-border) !important;
+            background: var(--wp-action-hover-bg) !important;
+            box-shadow: 0 5px 12px rgba(63, 120, 39, 0.22) !important;
+            transform: translateY(-1px);
+        }
+
+        .watch-party-primary-action:active {
+            border-color: var(--wp-action-border) !important;
+            background: var(--wp-action-active-bg) !important;
+            box-shadow: 0 1px 3px rgba(63, 120, 39, 0.18) !important;
+            transform: translateY(0);
         }
 
         .watch-party-hero-action-note {
@@ -532,9 +564,52 @@
         .watch-party-page input:not([type="checkbox"]):not([type="hidden"]),
         .watch-party-page select {
             width: 100%;
-            border-color: var(--wp-border-strong) !important;
-            background-color: #ffffff !important;
+            min-height: 46px;
+            padding: 0.72rem 0.85rem !important;
+            border: 1px solid var(--wp-border-strong) !important;
+            border-radius: 10px !important;
+            outline: none !important;
+            background-color: var(--wp-control-bg) !important;
             color: var(--wp-text) !important;
+            box-shadow: 0 1px 2px rgba(25, 32, 38, 0.04) !important;
+            transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+        }
+
+        .watch-party-page input::placeholder {
+            color: var(--wp-control-placeholder);
+            opacity: 1;
+        }
+
+        .watch-party-page input:not([type="checkbox"]):not([type="hidden"]):hover,
+        .watch-party-page select:hover {
+            border-color: var(--wp-control-border-hover) !important;
+            background-color: #ffffff !important;
+        }
+
+        .watch-party-page input:not([type="checkbox"]):not([type="hidden"]):focus,
+        .watch-party-page select:focus {
+            border-color: var(--wp-accent) !important;
+            background-color: #ffffff !important;
+            box-shadow: 0 0 0 3px var(--wp-control-focus-ring) !important;
+        }
+
+        .watch-party-page input:disabled,
+        .watch-party-page select:disabled {
+            border-color: var(--wp-border) !important;
+            background-color: var(--wp-control-disabled-bg) !important;
+            color: var(--wp-control-disabled-text) !important;
+            box-shadow: none !important;
+            cursor: not-allowed;
+        }
+
+        .watch-party-page select[multiple] {
+            min-height: 9.5rem;
+            padding: 0.45rem !important;
+        }
+
+        .watch-party-page select[multiple] option {
+            padding: 0.55rem 0.65rem;
+            border-radius: 6px;
         }
 
         .watch-party-page .fieldDescription {
