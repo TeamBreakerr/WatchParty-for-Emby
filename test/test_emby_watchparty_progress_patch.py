@@ -54,6 +54,10 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
             patched = playbackmanager.read_text(encoding="utf-8")
             self.assertIn('WatchParty/Playback/Seek', patched)
             self.assertIn('PositionTicks:ticks', patched)
+            self.assertIn(
+                'PlaySessionId:state&&state.PlayState&&state.PlayState.PlaySessionId',
+                patched,
+            )
             self.assertIn('DeviceId:apiClient.deviceId()', patched)
             self.assertIn('markWatchPartySeek', patched)
             self.assertIn('state=instance.getPlayerState?instance.getPlayerState(player):null', patched)
@@ -84,24 +88,37 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
             incompatible = subprocess.run(command, check=False, capture_output=True, text=True)
             self.assertNotEqual(0, incompatible.returncode)
 
-    def test_patch_migrates_legacy_helper_without_touching_seek_logic(self):
+    def test_patch_migrates_previous_helper_to_include_playback_generation(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             playbackmanager = self._write_fixture(root)
+            patcher = load_patcher()
+            playbackmanager.write_text(
+                PLAYBACKMANAGER_FIXTURE.replace(
+                    "function PlaybackManager(){",
+                    patcher.PLAYBACK_MANAGER_START_PATCHED_WITHOUT_PLAY_SESSION_ID,
+                    1,
+                ),
+                encoding="utf-8",
+            )
             result = subprocess.run(
                 [sys.executable, str(PATCHER), "--dashboard-root", str(root)],
                 check=False,
                 capture_output=True,
                 text=True,
             )
+
             self.assertEqual(0, result.returncode, result.stderr)
-            legacy = load_patcher().PLAYBACK_MANAGER_START_PATCHED_LEGACY
+            self.assertEqual("patched\n", result.stdout)
             current = playbackmanager.read_text(encoding="utf-8")
-            # The fixture starts unpatched; this assertion documents the new helper's
-            # fallback contract and keeps the migration branch covered by its source
-            # shape even when the dashboard is patched in place by deployment tooling.
-            self.assertNotIn(legacy, current)
-            self.assertIn('state=instance.getPlayerState?instance.getPlayerState(player):null', current)
+            self.assertIn(
+                'PlaySessionId:state&&state.PlayState&&state.PlayState.PlaySessionId',
+                current,
+            )
+            self.assertNotIn(
+                patcher.PLAYBACK_MANAGER_START_PATCHED_WITHOUT_PLAY_SESSION_ID,
+                current,
+            )
 
 
 if __name__ == "__main__":

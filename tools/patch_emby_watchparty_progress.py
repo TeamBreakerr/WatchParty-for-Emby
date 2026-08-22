@@ -26,9 +26,15 @@ PLAYBACK_MANAGER_START_PATCHED = (
     'apiClient=_connectionmanager.default.getApiClient(item);'
     'apiClient&&apiClient.ajax&&apiClient.ajax({type:"POST",url:apiClient.getUrl('
     '"WatchParty/Playback/Seek"),data:JSON.stringify({PositionTicks:ticks,ItemId:item.Id,'
+    'PlaySessionId:state&&state.PlayState&&state.PlayState.PlaySessionId,'
     'DeviceId:apiClient.deviceId()}),contentType:"application/json"}).catch(function(err){'
     'console.warn("WatchParty seek notification failed",err)})}'
     "function PlaybackManager(){"
+)
+PLAYBACK_MANAGER_START_PATCHED_WITHOUT_PLAY_SESSION_ID = PLAYBACK_MANAGER_START_PATCHED.replace(
+    'PlaySessionId:state&&state.PlayState&&state.PlayState.PlaySessionId,',
+    '',
+    1,
 )
 PLAYBACK_MANAGER_START_PATCHED_LEGACY = (
     'function markWatchPartySeek(instance,player,ticks){var item,apiClient;'
@@ -123,6 +129,13 @@ def patch_dashboard(dashboard_root: Path) -> bool:
     text = playbackmanager.read_text(encoding="utf-8")
     if PLAYBACK_MANAGER_START_PATCHED in text:
         helper_changed = False
+    elif PLAYBACK_MANAGER_START_PATCHED_WITHOUT_PLAY_SESSION_ID in text:
+        text = text.replace(
+            PLAYBACK_MANAGER_START_PATCHED_WITHOUT_PLAY_SESSION_ID,
+            PLAYBACK_MANAGER_START_PATCHED,
+            1,
+        )
+        helper_changed = True
     elif PLAYBACK_MANAGER_START_PATCHED_INTERMEDIATE in text:
         text = text.replace(
             PLAYBACK_MANAGER_START_PATCHED_INTERMEDIATE,

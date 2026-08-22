@@ -285,11 +285,28 @@ namespace WatchPartyForEmby
             }
         }
 
-        private void UpdateParticipantActivity(string partyId, string sessionId, long positionTicks, bool isPaused)
+        private void UpdateParticipantActivity(
+            string partyId,
+            string sessionId,
+            long positionTicks,
+            bool isPaused,
+            string playSessionId = null)
         {
+            if (string.IsNullOrEmpty(playSessionId))
+            {
+                _plugin.PartyParticipants.UpdateActivity(
+                    partyId,
+                    sessionId,
+                    positionTicks,
+                    isPaused,
+                    DateTime.UtcNow);
+                return;
+            }
+
             _plugin.PartyParticipants.UpdateActivity(
                 partyId,
                 sessionId,
+                playSessionId,
                 positionTicks,
                 isPaused,
                 DateTime.UtcNow);
@@ -1857,6 +1874,7 @@ namespace WatchPartyForEmby
             string userId,
             string deviceId,
             string itemId,
+            string playSessionId,
             long positionTicks)
         {
             if (string.IsNullOrWhiteSpace(userId)
@@ -1878,11 +1896,13 @@ namespace WatchPartyForEmby
                 TaskCreationOptions.RunContinuationsAsynchronously);
             // A drag can invoke PlaybackManager.seek several times before the
             // previous notification reaches the server. Keep only the newest queued
-            // target; a seek already being sent is allowed to finish, while its
-            // per-participant command queue coalesces the next target as well.
+            // target within one playback generation; a delayed seek from a retired
+            // generation must not cancel a current queued target. A seek already being
+            // sent is allowed to finish, while its per-participant command queue
+            // coalesces the next target as well.
             if (!_playbackEventQueue.TryEnqueueLatest(
                     session.Id,
-                    coalescingKey: "explicit-master-seek",
+                    coalescingKey: $"explicit-master-seek:{playSessionId ?? "<none>"}",
                     async cancellationToken =>
                     {
                         try
@@ -1893,6 +1913,7 @@ namespace WatchPartyForEmby
                                     userId,
                                     deviceId,
                                     itemId,
+                                    playSessionId,
                                     positionTicks,
                                     cancellationToken).ConfigureAwait(false));
                         }
@@ -1983,6 +2004,7 @@ namespace WatchPartyForEmby
             string userId,
             string deviceId,
             string itemId,
+            string playSessionId,
             long positionTicks,
             CancellationToken cancellationToken)
         {
@@ -2011,11 +2033,22 @@ namespace WatchPartyForEmby
                 return false;
             }
 
-            if (!TryResolveMasterSession(party, session))
+            if (!IsMasterSession(party, session))
             {
                 _logger.Debug(
                     $"[Party {party.Id}] Rejected explicit seek from non-master session " +
                     $"{session.Id}");
+                return false;
+            }
+
+            if (!_plugin.PartyParticipants.IsCurrentPlaybackSession(
+                    party.Id,
+                    session.Id,
+                    playSessionId))
+            {
+                _logger.Debug(
+                    $"[Party {party.Id}] Rejected explicit seek from stale playback " +
+                    $"{playSessionId ?? "<none>"} in master session {session.Id}");
                 return false;
             }
 
@@ -2409,7 +2442,12 @@ namespace WatchPartyForEmby
                     var isInSyncedSet = syncedSessions.ContainsKey(e.Session.Id);
                     var wasPaused = pauseState.TryGetValue(e.Session.Id, out var isPaused) && isPaused;
 
-                    UpdateParticipantActivity(party.Id, e.Session.Id, userStartPosition, e.IsPaused);
+                    UpdateParticipantActivity(
+                        party.Id,
+                        e.Session.Id,
+                        userStartPosition,
+                        e.IsPaused,
+                        e.PlaySessionId);
 
                     if (isMaster)
                     {
@@ -2594,16 +2632,27 @@ namespace WatchPartyForEmby
                                 }
                             }
 
-                            var reportedPosition = session.PlayState?.PositionTicks ?? 0;
-                            var reportedIsPaused = session.PlayState?.IsPaused ?? false;
-                            var currentPosition = ParticipantPositionEstimator.Estimate(
-                                participant,
-                                reportedPosition,
-                                reportedIsPaused,
-                                nowUtc,
-                                MaxParticipantPositionProjection);
-                            var positionDifference = Math.Abs(currentPosition - estimatedPartyPosition);
                             var isMaster = TryResolveMasterSession(party, session);
+                            // SessionInfo.PlayState is shared by every PlaySessionId in
+                            // one client session. A retired player can overwrite it after
+                            // a newer generation has been accepted. The master therefore
+                            // uses only the registry snapshot written by accepted progress;
+                            // participant snapshots remain advisory for drift correction.
+                            var reportedPosition = isMaster
+                                ? participant.CurrentPositionTicks
+                                : session.PlayState?.PositionTicks ?? 0;
+                            var reportedIsPaused = isMaster
+                                ? participant.IsPaused
+                                : session.PlayState?.IsPaused ?? false;
+                            var currentPosition = isMaster
+                                ? participant.CurrentPositionTicks
+                                : ParticipantPositionEstimator.Estimate(
+                                    participant,
+                                    reportedPosition,
+                                    reportedIsPaused,
+                                    nowUtc,
+                                    MaxParticipantPositionProjection);
+                            var positionDifference = Math.Abs(currentPosition - estimatedPartyPosition);
 
                             if (party.IsSeriesParty && !isMaster)
                             {
@@ -2945,43 +2994,20 @@ namespace WatchPartyForEmby
                 if (party != null && party.IsActive)
                 {
                     var nowUtc = DateTime.UtcNow;
-                    var progressEpisodeId = FindSeriesEpisodeId(party, e.Item);
-                    var isExpectedSeriesProgress = party.IsSeriesParty
-                        && _seriesEpisodeTransitions.IsExpectedStart(
-                            e.Session.Id,
-                            progressEpisodeId,
-                            nowUtc);
-
                     // One Emby Web SessionId can briefly retain several PlaySessionIds
                     // after a seek or stream reload. Ignore progress from the replaced
                     // playback before it can overwrite the participant's current playback
                     // id or move the authoritative party clock backwards and forwards.
-                    var acceptsPlaybackProgress = _plugin.PartyParticipants.TryAcceptPlaybackProgress(
+                    var acceptsPlaybackProgress = _plugin.PartyParticipants.IsCurrentPlaybackSession(
                         party.Id,
                         e.Session.Id,
-                        e.PlaySessionId,
-                        e.PlaybackPositionTicks,
-                        nowUtc,
-                        out var adoptedPlayback,
-                        out var previousPlaySessionId);
-                    if (!acceptsPlaybackProgress && !isExpectedSeriesProgress)
+                        e.PlaySessionId);
+                    if (!acceptsPlaybackProgress)
                     {
                         _logger.Debug(
                             $"[Party {party.Id}] Ignoring stale progress from playback " +
                             $"{e.PlaySessionId} for session {e.Session.Id}");
                         return;
-                    }
-
-                    if (adoptedPlayback
-                        && _playbackSyncCoordinator.ResetForNewPlayback(
-                            e.Session.Id,
-                            previousPlaySessionId,
-                            e.PlaySessionId))
-                    {
-                        ClearSessionEpisodeMarkers(party.Id, e.Session.Id);
-                        _logger.Info(
-                            $"[Party {party.Id}] Adopted playback {e.PlaySessionId} from progress because PlaybackStart was missing; " +
-                            $"retired {previousPlaySessionId}");
                     }
 
                     if (!CanUserJoinParty(party, e.Session.UserId))
@@ -3146,7 +3172,8 @@ namespace WatchPartyForEmby
                             party.Id,
                             e.Session.Id,
                             currentPosition,
-                            effectiveIsPaused);
+                            effectiveIsPaused,
+                            e.PlaySessionId);
                     }
 
                     // Emby only fires PlaybackStart once per PlaySessionId. When a client
@@ -3449,29 +3476,23 @@ namespace WatchPartyForEmby
                 await Task.Delay(_masterPlaybackStateDebouncer.Window, cancellationToken)
                     .ConfigureAwait(false);
 
-                var session = _sessionManager.Sessions.FirstOrDefault(candidate =>
-                    string.Equals(candidate.Id, pending.SessionId, StringComparison.Ordinal));
-                if (session == null || !TryResolveMasterSession(party, session))
-                {
-                    _masterPlaybackStateDebouncer.Cancel(pending.SessionId);
-                    return;
-                }
-
-                if (!string.IsNullOrEmpty(pending.PlaySessionId)
-                    && _plugin.PartyParticipants.TryGetSession(
+                if (!_plugin.PartyParticipants.IsCurrentPlaybackSession(
                         party.Id,
                         pending.SessionId,
-                        out var registeredParticipant)
-                    && !string.IsNullOrEmpty(registeredParticipant.PlaySessionId)
-                    && !string.Equals(
-                        pending.PlaySessionId,
-                        registeredParticipant.PlaySessionId,
-                        StringComparison.Ordinal))
+                        pending.PlaySessionId))
                 {
                     _masterPlaybackStateDebouncer.Cancel(pending.SessionId);
                     _logger.Debug(
                         $"[Party {party.Id}] Discarding delayed master state from " +
-                        $"replaced playback {pending.PlaySessionId}");
+                        $"stale playback {pending.PlaySessionId ?? "<none>"}");
+                    return;
+                }
+
+                var session = _sessionManager.Sessions.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Id, pending.SessionId, StringComparison.Ordinal));
+                if (session == null || !IsMasterSession(party, session))
+                {
+                    _masterPlaybackStateDebouncer.Cancel(pending.SessionId);
                     return;
                 }
 

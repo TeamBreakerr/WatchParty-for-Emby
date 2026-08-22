@@ -128,6 +128,9 @@ namespace WatchPartyForEmby.Api
         [ApiMember(Name = "ItemId", Description = "Item currently being played by the master", IsRequired = false)]
         public string ItemId { get; set; }
 
+        [ApiMember(Name = "PlaySessionId", Description = "Current Emby playback generation", IsRequired = true)]
+        public string PlaySessionId { get; set; }
+
         [ApiMember(Name = "DeviceId", Description = "Emby Web device identifier", IsRequired = false)]
         public string DeviceId { get; set; }
     }
@@ -339,6 +342,7 @@ namespace WatchPartyForEmby.Api
                     currentUser.Id.ToString(),
                     request.DeviceId,
                     request.ItemId,
+                    request.PlaySessionId,
                     request.PositionTicks).ConfigureAwait(false);
 
             return new ExplicitMasterSeekResponse { Accepted = accepted };

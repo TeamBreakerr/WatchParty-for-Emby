@@ -12,9 +12,6 @@ namespace WatchPartyForEmby
     public sealed class PartySessionRegistry
     {
         private const int DefaultMaxRetiredPlaybackIdsPerParty = 256;
-        private static readonly TimeSpan ReplacementPlaybackSilence = TimeSpan.FromSeconds(8);
-        private static readonly TimeSpan ReplacementCandidateObservation = TimeSpan.FromSeconds(2);
-        private static readonly long ReplacementBackwardToleranceTicks = TimeSpan.TicksPerSecond * 2;
         private readonly object _syncRoot = new object();
         private readonly int _maxRetiredPlaybackIdsPerParty;
         private readonly Dictionary<string, Dictionary<string, PartyParticipant>> _sessionsByParty =
@@ -25,8 +22,6 @@ namespace WatchPartyForEmby
             new Dictionary<string, Dictionary<string, HashSet<string>>>(StringComparer.Ordinal);
         private readonly Dictionary<string, Queue<KeyValuePair<string, string>>> _retiredPlaybackOrder =
             new Dictionary<string, Queue<KeyValuePair<string, string>>>(StringComparer.Ordinal);
-        private readonly Dictionary<string, Dictionary<string, ProgressAdoptionCandidate>> _progressAdoptions =
-            new Dictionary<string, Dictionary<string, ProgressAdoptionCandidate>>(StringComparer.Ordinal);
 
         public PartySessionRegistry(
             int maxRetiredPlaybackIdsPerParty = DefaultMaxRetiredPlaybackIdsPerParty)
@@ -63,7 +58,6 @@ namespace WatchPartyForEmby
                     RetirePreviousPlayback(partyId, sessionId, previous.PlaySessionId, stored.PlaySessionId);
                 }
                 sessions[sessionId] = stored;
-                ClearProgressAdoption(partyId, sessionId);
                 return Clone(stored);
             }
         }
@@ -118,7 +112,6 @@ namespace WatchPartyForEmby
                         participant.PlaySessionId,
                         playSessionId);
                     participant.PlaySessionId = playSessionId;
-                    ClearProgressAdoption(partyId, sessionId);
                 }
 
                 return Clone(participant);
@@ -180,19 +173,72 @@ namespace WatchPartyForEmby
         {
             lock (_syncRoot)
             {
-                if (string.IsNullOrEmpty(partyId)
-                    || string.IsNullOrEmpty(sessionId)
-                    || !_sessionsByParty.TryGetValue(partyId, out var sessions)
-                    || !sessions.TryGetValue(sessionId, out var participant))
-                {
-                    return false;
-                }
-
-                participant.LastActivityAt = nowUtc;
-                participant.CurrentPositionTicks = Math.Max(0, positionTicks);
-                participant.IsPaused = isPaused;
-                return true;
+                return UpdateActivityLocked(
+                    partyId,
+                    sessionId,
+                    null,
+                    positionTicks,
+                    isPaused,
+                    nowUtc);
             }
+        }
+
+        /// <summary>
+        /// Updates activity only when the event belongs to the registered playback
+        /// generation. This is the strict form used by playback events; the legacy
+        /// overload remains for advisory maintenance snapshots that have no generation
+        /// identity.
+        /// </summary>
+        public bool UpdateActivity(
+            string partyId,
+            string sessionId,
+            string playSessionId,
+            long positionTicks,
+            bool isPaused,
+            DateTime nowUtc)
+        {
+            if (string.IsNullOrEmpty(playSessionId))
+            {
+                return false;
+            }
+
+            lock (_syncRoot)
+            {
+                return UpdateActivityLocked(
+                    partyId,
+                    sessionId,
+                    playSessionId,
+                    positionTicks,
+                    isPaused,
+                    nowUtc);
+            }
+        }
+
+        private bool UpdateActivityLocked(
+            string partyId,
+            string sessionId,
+            string expectedPlaySessionId,
+            long positionTicks,
+            bool isPaused,
+            DateTime nowUtc)
+        {
+            if (string.IsNullOrEmpty(partyId)
+                || string.IsNullOrEmpty(sessionId)
+                || !_sessionsByParty.TryGetValue(partyId, out var sessions)
+                || !sessions.TryGetValue(sessionId, out var participant)
+                || (expectedPlaySessionId != null
+                    && !string.Equals(
+                        participant.PlaySessionId,
+                        expectedPlaySessionId,
+                        StringComparison.Ordinal)))
+            {
+                return false;
+            }
+
+            participant.LastActivityAt = nowUtc;
+            participant.CurrentPositionTicks = Math.Max(0, positionTicks);
+            participant.IsPaused = isPaused;
+            return true;
         }
 
         public bool ResetEpisodeState(string partyId)
@@ -247,12 +293,9 @@ namespace WatchPartyForEmby
         }
 
         /// <summary>
-        /// Returns false only when both the registered participant and the incoming
-        /// progress report identify different playback instances. Emby can reuse one
-        /// SessionId while an old PlaySessionId continues reporting progress; accepting
-        /// that stale report would replace the current playback and move the party clock.
-        /// Position-less StateChange reports may omit PlaySessionId, so an empty value is
-        /// not sufficient evidence that the event is stale.
+        /// Returns true only when the incoming event identifies the registered playback
+        /// generation. An event without PlaySessionId cannot be safely attributed once a
+        /// SessionId has been reused by multiple player instances.
         /// </summary>
         public bool IsCurrentPlaybackSession(
             string partyId,
@@ -264,14 +307,14 @@ namespace WatchPartyForEmby
                 if (string.IsNullOrEmpty(partyId)
                     || string.IsNullOrEmpty(sessionId)
                     || !_sessionsByParty.TryGetValue(partyId, out var sessions)
-                    || !sessions.TryGetValue(sessionId, out var participant)
-                    || string.IsNullOrEmpty(participant.PlaySessionId)
-                    || string.IsNullOrEmpty(playSessionId))
+                    || !sessions.TryGetValue(sessionId, out var participant))
                 {
-                    return true;
+                    return false;
                 }
 
-                return string.Equals(
+                return !string.IsNullOrEmpty(participant.PlaySessionId)
+                    && !string.IsNullOrEmpty(playSessionId)
+                    && string.Equals(
                     participant.PlaySessionId,
                     playSessionId,
                     StringComparison.Ordinal);
@@ -291,119 +334,6 @@ namespace WatchPartyForEmby
             lock (_syncRoot)
             {
                 return IsRetiredPlayback(partyId, sessionId, playSessionId);
-            }
-        }
-
-        /// <summary>
-        /// Accepts progress for the current playback, or establishes the playback id when
-        /// the participant has no identity because PlaybackStart was omitted. Once a
-        /// playback id is known, an unseen id must provide multiple position-bearing
-        /// reports over time while the current identity remains silent. This lets a client
-        /// recover when PlaybackStart and Stop were both lost without allowing a burst of
-        /// delayed callbacks from an old Emby playback to reclaim the SessionId.
-        /// </summary>
-        public bool TryAcceptPlaybackProgress(
-            string partyId,
-            string sessionId,
-            string playSessionId,
-            out bool adopted,
-            out string previousPlaySessionId)
-        {
-            return TryAcceptPlaybackProgress(
-                partyId,
-                sessionId,
-                playSessionId,
-                reportedPositionTicks: null,
-                DateTime.UtcNow,
-                out adopted,
-                out previousPlaySessionId);
-        }
-
-        public bool TryAcceptPlaybackProgress(
-            string partyId,
-            string sessionId,
-            string playSessionId,
-            long? reportedPositionTicks,
-            DateTime nowUtc,
-            out bool adopted,
-            out string previousPlaySessionId)
-        {
-            lock (_syncRoot)
-            {
-                adopted = false;
-                previousPlaySessionId = null;
-                if (string.IsNullOrEmpty(partyId)
-                    || string.IsNullOrEmpty(sessionId))
-                {
-                    return false;
-                }
-
-                // Removal retires the current playback and preserves all earlier
-                // tombstones for this Emby SessionId. Check those tombstones before
-                // checking membership: after the visible Web player stops, zombie
-                // reporters from older episodes must not recreate the master session.
-                if (!string.IsNullOrEmpty(playSessionId)
-                    && IsRetiredPlayback(partyId, sessionId, playSessionId))
-                {
-                    ClearProgressAdoption(partyId, sessionId);
-                    return false;
-                }
-
-                if (!_sessionsByParty.TryGetValue(partyId, out var sessions)
-                    || !sessions.TryGetValue(sessionId, out var participant))
-                {
-                    // Progress cannot create membership. After Stop, a zombie Web
-                    // player can generate both old and previously unseen playback ids;
-                    // only a real PlaybackStart can establish the next generation.
-                    return false;
-                }
-
-                if (string.IsNullOrEmpty(playSessionId))
-                {
-                    return true;
-                }
-
-                previousPlaySessionId = participant.PlaySessionId;
-                if (string.IsNullOrEmpty(previousPlaySessionId))
-                {
-                    participant.PlaySessionId = playSessionId;
-                    ClearProgressAdoption(partyId, sessionId);
-                    adopted = true;
-                    return true;
-                }
-
-                if (string.Equals(
-                        previousPlaySessionId,
-                        playSessionId,
-                        StringComparison.Ordinal))
-                {
-                    ClearProgressAdoption(partyId, sessionId);
-                    return true;
-                }
-
-                if (!reportedPositionTicks.HasValue
-                    || !ObserveProgressAdoptionCandidate(
-                        partyId,
-                        sessionId,
-                        playSessionId,
-                        reportedPositionTicks.Value,
-                        nowUtc,
-                        out var candidate)
-                    || nowUtc - participant.LastActivityAt < ReplacementPlaybackSilence
-                    || nowUtc - candidate.FirstObservedAt < ReplacementCandidateObservation)
-                {
-                    return false;
-                }
-
-                RetirePreviousPlayback(
-                    partyId,
-                    sessionId,
-                    previousPlaySessionId,
-                    playSessionId);
-                participant.PlaySessionId = playSessionId;
-                ClearProgressAdoption(partyId, sessionId);
-                adopted = true;
-                return true;
             }
         }
 
@@ -618,7 +548,6 @@ namespace WatchPartyForEmby
                 }
 
                 RetirePlayback(partyId, sessionId, stored.PlaySessionId);
-                ClearProgressAdoption(partyId, sessionId);
                 sessions.Remove(sessionId);
                 removed = Clone(stored);
                 if (sessions.Count == 0)
@@ -758,59 +687,6 @@ namespace WatchPartyForEmby
                 _masterSessions.Remove(partyId);
                 _retiredPlaybackIds.Remove(partyId);
                 _retiredPlaybackOrder.Remove(partyId);
-                _progressAdoptions.Remove(partyId);
-            }
-        }
-
-        private bool ObserveProgressAdoptionCandidate(
-            string partyId,
-            string sessionId,
-            string playSessionId,
-            long reportedPositionTicks,
-            DateTime nowUtc,
-            out ProgressAdoptionCandidate candidate)
-        {
-            if (!_progressAdoptions.TryGetValue(partyId, out var candidatesBySession))
-            {
-                candidatesBySession = new Dictionary<string, ProgressAdoptionCandidate>(StringComparer.Ordinal);
-                _progressAdoptions[partyId] = candidatesBySession;
-            }
-
-            if (!candidatesBySession.TryGetValue(sessionId, out candidate)
-                || !string.Equals(candidate.PlaySessionId, playSessionId, StringComparison.Ordinal)
-                || nowUtc <= candidate.LastObservedAt
-                || reportedPositionTicks + ReplacementBackwardToleranceTicks
-                    < candidate.LastPositionTicks)
-            {
-                candidate = new ProgressAdoptionCandidate
-                {
-                    PlaySessionId = playSessionId,
-                    FirstObservedAt = nowUtc,
-                    LastObservedAt = nowUtc,
-                    LastPositionTicks = Math.Max(0, reportedPositionTicks),
-                    ObservationCount = 1
-                };
-                candidatesBySession[sessionId] = candidate;
-                return false;
-            }
-
-            candidate.LastObservedAt = nowUtc;
-            candidate.LastPositionTicks = Math.Max(0, reportedPositionTicks);
-            candidate.ObservationCount++;
-            return candidate.ObservationCount >= 2;
-        }
-
-        private void ClearProgressAdoption(string partyId, string sessionId)
-        {
-            if (!_progressAdoptions.TryGetValue(partyId, out var candidatesBySession))
-            {
-                return;
-            }
-
-            candidatesBySession.Remove(sessionId);
-            if (candidatesBySession.Count == 0)
-            {
-                _progressAdoptions.Remove(partyId);
             }
         }
 
@@ -887,15 +763,6 @@ namespace WatchPartyForEmby
             return _retiredPlaybackIds.TryGetValue(partyId, out var retiredBySession)
                 && retiredBySession.TryGetValue(sessionId, out var retiredIds)
                 && retiredIds.Contains(playSessionId);
-        }
-
-        private sealed class ProgressAdoptionCandidate
-        {
-            public string PlaySessionId { get; set; }
-            public DateTime FirstObservedAt { get; set; }
-            public DateTime LastObservedAt { get; set; }
-            public long LastPositionTicks { get; set; }
-            public int ObservationCount { get; set; }
         }
 
         private static PartyParticipant Clone(PartyParticipant participant)

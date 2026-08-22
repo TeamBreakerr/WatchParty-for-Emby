@@ -136,9 +136,9 @@
 
 ### 3.4 Web master seek 有专用通知
 
-当前部署的 Emby Web patch 在 `PlaybackManager.seek` 前后调用 `POST /WatchParty/Playback/Seek`，请求携带 `PositionTicks`、`ItemId`、`DeviceId`；实现脚本见 [`tools/patch_emby_watchparty_progress.py` L1-L73](/Users/teambreaker/Projects/WatchParty-for-Emby/tools/patch_emby_watchparty_progress.py:1)。
+当前部署的 Emby Web patch 在 `PlaybackManager.seek` 前调用 `POST /WatchParty/Playback/Seek`，请求携带 `PositionTicks`、`ItemId`、`DeviceId` 和当前 `PlaySessionId`；实现脚本见 [`tools/patch_emby_watchparty_progress.py`](/Users/teambreaker/Projects/WatchParty-for-Emby/tools/patch_emby_watchparty_progress.py)。
 
-服务端用用户、设备、媒体和已注册 master session 解析唯一来源，确认后将 explicit seek 写入主时钟并同步参与者：[`ServerEntryPoint.cs` L1412-L1487](/Users/teambreaker/Projects/WatchParty-for-Emby/ServerEntryPoint.cs:1412)、[`ServerEntryPoint.cs` L1489-L1609](/Users/teambreaker/Projects/WatchParty-for-Emby/ServerEntryPoint.cs:1489)。
+服务端用用户、设备、媒体和已注册 master session 解析唯一来源，再要求请求的 `PlaySessionId` 与当前播放代次完全一致；确认后才将 explicit seek 写入主时钟并同步参与者：[`ServerEntryPoint.cs`](/Users/teambreaker/Projects/WatchParty-for-Emby/ServerEntryPoint.cs)。
 
 这使服务端终于能区分：
 

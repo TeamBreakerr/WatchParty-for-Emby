@@ -15,6 +15,8 @@ namespace WatchPartyForEmby
         private readonly KeyedAsyncSerialQueue<string> _sessionQueue;
         private readonly Dictionary<string, HashSet<PipelineRegistration>> _registrations =
             new Dictionary<string, HashSet<PipelineRegistration>>(StringComparer.Ordinal);
+        private readonly HashSet<string> _cancelingSessions =
+            new HashSet<string>(StringComparer.Ordinal);
 
         public ParticipantResumeCoordinator(int capacityPerSession)
         {
@@ -53,6 +55,11 @@ namespace WatchPartyForEmby
                     sessionId,
                     async queuedToken =>
                     {
+                        if (IsSessionCancellationInProgress(sessionId))
+                        {
+                            return;
+                        }
+
                         if (!await sendResume(queuedToken).ConfigureAwait(false))
                         {
                             return;
@@ -103,17 +110,29 @@ namespace WatchPartyForEmby
                 }
 
                 _registrations.Remove(sessionId);
+                _cancelingSessions.Add(sessionId);
             }
 
-            foreach (var registration in registrations)
+            try
             {
-                registration.Cancel();
+                foreach (var registration in registrations)
+                {
+                    registration.Cancel();
+                }
+            }
+            finally
+            {
+                lock (_syncRoot)
+                {
+                    _cancelingSessions.Remove(sessionId);
+                }
             }
         }
 
         public void Clear()
         {
             var registrationsToCancel = new List<PipelineRegistration>();
+            var sessionCancellationBarriers = new List<string>();
             lock (_syncRoot)
             {
                 foreach (var registrations in _registrations.Values)
@@ -121,12 +140,32 @@ namespace WatchPartyForEmby
                     registrationsToCancel.AddRange(registrations);
                 }
 
+                foreach (var sessionId in _registrations.Keys)
+                {
+                    if (_cancelingSessions.Add(sessionId))
+                    {
+                        sessionCancellationBarriers.Add(sessionId);
+                    }
+                }
                 _registrations.Clear();
             }
 
-            foreach (var registration in registrationsToCancel)
+            try
             {
-                registration.Cancel();
+                foreach (var registration in registrationsToCancel)
+                {
+                    registration.Cancel();
+                }
+            }
+            finally
+            {
+                lock (_syncRoot)
+                {
+                    foreach (var sessionId in sessionCancellationBarriers)
+                    {
+                        _cancelingSessions.Remove(sessionId);
+                    }
+                }
             }
         }
 
@@ -137,18 +176,37 @@ namespace WatchPartyForEmby
             var registration = new PipelineRegistration(
                 sessionId,
                 cancellationToken);
+            var cancelImmediately = false;
+            HashSet<PipelineRegistration> registrations = null;
             lock (_syncRoot)
             {
-                if (!_registrations.TryGetValue(sessionId, out var registrations))
+                cancelImmediately = _cancelingSessions.Contains(sessionId);
+                if (!cancelImmediately
+                    && !_registrations.TryGetValue(sessionId, out registrations))
                 {
                     registrations = new HashSet<PipelineRegistration>();
                     _registrations[sessionId] = registrations;
                 }
 
-                registrations.Add(registration);
+                if (!cancelImmediately)
+                {
+                    registrations.Add(registration);
+                }
             }
 
+            if (cancelImmediately)
+            {
+                registration.Cancel();
+            }
             return registration;
+        }
+
+        private bool IsSessionCancellationInProgress(string sessionId)
+        {
+            lock (_syncRoot)
+            {
+                return _cancelingSessions.Contains(sessionId);
+            }
         }
 
         private void Complete(PipelineRegistration registration)
