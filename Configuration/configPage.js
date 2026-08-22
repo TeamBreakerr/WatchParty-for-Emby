@@ -1636,12 +1636,23 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         checkWebServerStatus(view, config) {
             const statusElement = view.querySelector('#webServerStatusText');
             const port = finiteInteger(config.ExternalWebServerPort, 8097);
-            const enabled = config.EnableExternalWebServer !== false;
+            const enabled = config.EnableExternalWebServer === true;
+            const checkId = (this.webServerStatusCheckId || 0) + 1;
+            this.webServerStatusCheckId = checkId;
+
+            if (this.webServerStatusTimeout) {
+                clearTimeout(this.webServerStatusTimeout);
+                this.webServerStatusTimeout = null;
+            }
+            if (this.webServerStatusAbortController) {
+                this.webServerStatusAbortController.abort();
+                this.webServerStatusAbortController = null;
+            }
 
             if (!enabled) {
-                statusElement.textContent = '已停用';
+                statusElement.textContent = '外部控制台未启用；不影响 Emby 内的一起看同步。';
                 statusElement.style.color = '#999';
-                this.setStatusElement(view, '#heroServerStatusText', '已停用', 'neutral');
+                this.setStatusElement(view, '#heroServerStatusText', '未启用', 'neutral');
                 return;
             }
 
@@ -1657,8 +1668,28 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             statusElement.style.color = '#FFA500';
             this.setStatusElement(view, '#heroServerStatusText', '正在检查……', 'pending');
 
-            fetch(dashboardUrl)
+            const abortController = typeof AbortController === 'function'
+                ? new AbortController()
+                : null;
+            const timeoutMs = Number.isFinite(this.statusCheckTimeoutMs)
+                ? this.statusCheckTimeoutMs
+                : 5000;
+            this.webServerStatusAbortController = abortController;
+
+            const timeoutPromise = new Promise((_, reject) => {
+                this.webServerStatusTimeout = setTimeout(() => {
+                    if (abortController) abortController.abort();
+                    const timeoutError = new Error('status check timed out');
+                    timeoutError.name = 'TimeoutError';
+                    reject(timeoutError);
+                }, timeoutMs);
+            });
+            const requestOptions = { cache: 'no-store' };
+            if (abortController) requestOptions.signal = abortController.signal;
+
+            Promise.race([fetch(dashboardUrl, requestOptions), timeoutPromise])
                 .then(response => {
+                    if (checkId !== this.webServerStatusCheckId) return;
                     if (response.ok) {
                         statusElement.innerHTML = `✓ 正在端口 ${port} 上运行<br><a href="${dashboardUrl}" target="_blank" style="color: #4CAF50;">打开控制台</a>`;
                         statusElement.style.color = '#4CAF50';
@@ -1670,9 +1701,22 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     }
                 })
                 .catch(error => {
-                    statusElement.innerHTML = `✗ 未运行<br><small style="color: #999;">Windows 可能需要执行：<code style="background: #222; padding: 0.2em 0.4em; border-radius: 3px;">netsh http add urlacl url=http://*:${port}/ user="Everyone"</code></small>`;
+                    if (checkId !== this.webServerStatusCheckId) return;
+                    const timedOut = error && (error.name === 'TimeoutError'
+                        || (abortController && abortController.signal.aborted));
+                    statusElement.innerHTML = timedOut
+                        ? '连接检查超时；请确认控制台端口和网络配置。'
+                        : `✗ 未运行<br><small style="color: #999;">Windows 可能需要执行：<code style="background: #222; padding: 0.2em 0.4em; border-radius: 3px;">netsh http add urlacl url=http://*:${port}/ user="Everyone"</code></small>`;
                     statusElement.style.color = '#F44336';
-                    this.setStatusElement(view, '#heroServerStatusText', '未运行', 'error');
+                    this.setStatusElement(view, '#heroServerStatusText', timedOut ? '检查超时' : '未运行', 'error');
+                })
+                .finally(() => {
+                    if (checkId !== this.webServerStatusCheckId) return;
+                    if (this.webServerStatusTimeout) {
+                        clearTimeout(this.webServerStatusTimeout);
+                        this.webServerStatusTimeout = null;
+                    }
+                    this.webServerStatusAbortController = null;
                 });
         }
 

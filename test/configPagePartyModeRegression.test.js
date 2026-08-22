@@ -544,6 +544,51 @@ test('room overview count stays in sync with the rendered room list', () => {
     assert.match(view.querySelector('#activePartiesList').innerHTML, /1 个启用/);
 });
 
+test('room count and default-disabled console status settle before ancillary data finishes loading', async () => {
+    const configuration = {
+        WatchParties: [
+            { Id: 'configured-room', ItemName: 'Configured Room', ItemType: 'Movie', IsActive: true, CreatedDate: '2026-08-22T00:00:00Z' }
+        ]
+    };
+    const view = createView();
+    const controller = loadController([], [], configuration);
+    const never = new Promise(() => {});
+    global.ApiClient.getUsers = () => never;
+    global.ApiClient.getJSON = () => never;
+
+    controller.loadData(view);
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.equal(view.querySelector('#partyCount').textContent, '1');
+    assert.match(view.querySelector('#heroServerStatusText').textContent, /未启用/);
+    assert.doesNotMatch(view.querySelector('#heroServerStatusText').textContent, /正在检查/);
+});
+
+test('external console status times out instead of remaining pending forever', async () => {
+    const view = createView();
+    const controller = loadController([], []);
+    controller.statusCheckTimeoutMs = 5;
+    const nativeFetch = global.fetch;
+    global.fetch = (_url, options = {}) => new Promise((_resolve, reject) => {
+        options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    });
+
+    try {
+        controller.checkWebServerStatus(view, {
+            EnableExternalWebServer: true,
+            UseReverseProxy: false,
+            ExternalWebServerPort: 8097,
+            EmbyServerUrl: 'http://127.0.0.1:8096'
+        });
+        await new Promise(resolve => setTimeout(resolve, 30));
+    } finally {
+        global.fetch = nativeFetch;
+    }
+
+    assert.doesNotMatch(view.querySelector('#heroServerStatusText').textContent, /正在检查/);
+    assert.match(view.querySelector('#heroServerStatusText').textContent, /超时|无法连接|未运行/);
+});
+
 test('saving global settings exposes persistent success feedback', async () => {
     const view = createView();
     const controller = loadController([], []);
@@ -669,6 +714,14 @@ test('form controls and the dashboard action use polished interaction states', (
     assert.doesNotMatch(actionRule[1], /999px|linear-gradient/);
     assert.match(html, /\.watch-party-primary-action:hover\s*\{/);
     assert.match(html, /\.watch-party-primary-action:active\s*\{/);
+});
+
+test('single-line selects keep a fixed height and do not overlap following fields', () => {
+    const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
+
+    assert.match(html, /\.watch-party-page select:not\(\[multiple\]\)\s*\{[\s\S]*?height:\s*46px\s*!important;[\s\S]*?line-height:\s*1\.25\s*!important;/);
+    assert.match(html, /\.watch-party-page select\[multiple\]\s*\{[\s\S]*?height:\s*auto\s*!important;/);
+    assert.match(html, /\.watch-party-field-grid \.selectContainer\s*\{[\s\S]*?align-self:\s*start;/);
 });
 
 test('embedded page exposes one ready-count input, accessible comboboxes, and mobile layout', () => {

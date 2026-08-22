@@ -557,6 +557,10 @@
             margin: 0;
         }
 
+        .watch-party-field-grid .selectContainer {
+            align-self: start;
+        }
+
         .watch-party-field-grid .watch-party-span-2 {
             grid-column: 1 / -1;
         }
@@ -565,7 +569,6 @@
         .watch-party-page select {
             width: 100%;
             min-height: 46px;
-            padding: 0.72rem 0.85rem !important;
             border: 1px solid var(--wp-border-strong) !important;
             border-radius: 10px !important;
             outline: none !important;
@@ -573,6 +576,24 @@
             color: var(--wp-text) !important;
             box-shadow: 0 1px 2px rgba(25, 32, 38, 0.04) !important;
             transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+        }
+
+        .watch-party-page input:not([type="checkbox"]):not([type="hidden"]) {
+            height: 46px !important;
+            padding: 0.72rem 0.85rem !important;
+            line-height: 1.25 !important;
+        }
+
+        .watch-party-page .emby-select-wrapper {
+            height: 46px !important;
+            min-height: 46px;
+        }
+
+        .watch-party-page select:not([multiple]) {
+            height: 46px !important;
+            min-height: 46px !important;
+            padding: 0 2.75rem 0 0.85rem !important;
+            line-height: 1.25 !important;
         }
 
         .watch-party-page input::placeholder {
@@ -603,8 +624,11 @@
         }
 
         .watch-party-page select[multiple] {
+            height: auto !important;
             min-height: 9.5rem;
             padding: 0.45rem !important;
+            line-height: 1.4 !important;
+            overflow-y: auto;
         }
 
         .watch-party-page select[multiple] option {
@@ -1099,8 +1123,8 @@
                     </div>
                     <div class="watch-party-metrics" aria-label="一起看状态摘要">
                         <div class="watch-party-metric">
-                            <span class="watch-party-metric-label">当前房间</span>
-                            <span class="watch-party-metric-value"><span id="partyCount">0</span> 个</span>
+                            <span class="watch-party-metric-label">已配置房间</span>
+                            <span class="watch-party-metric-value"><span id="partyCount">—</span> 个</span>
                         </div>
                         <div class="watch-party-metric">
                             <span class="watch-party-metric-label">控制方式</span>
@@ -1108,7 +1132,7 @@
                         </div>
                         <div class="watch-party-metric">
                             <span class="watch-party-metric-label">外部控制台</span>
-                            <span class="watch-party-metric-value" id="heroServerStatusText" role="status" aria-live="polite">正在检查……</span>
+                            <span class="watch-party-metric-value" id="heroServerStatusText" role="status" aria-live="polite">等待配置加载……</span>
                         </div>
                     </div>
                 </header>
@@ -1237,7 +1261,7 @@
 
                                             <div class="selectContainer watch-party-span-2">
                                                 <label class="selectLabel" for="allowedUsers">允许加入的用户（可选）</label>
-                                                <select is="emby-select" id="allowedUsers" multiple size="5" class="emby-select-withcolor emby-select">
+                                                <select id="allowedUsers" multiple size="5" class="watch-party-multiselect">
                                                     <option value="">正在加载用户……</option>
                                                 </select>
                                                 <div class="fieldDescription">按住 Ctrl/Cmd 可多选；选择白名单后会自动包含主控用户。</div>
@@ -1435,7 +1459,7 @@
                             <div id="webServerStatus" class="watch-party-status-panel">
                                 <div>
                                     <strong>控制台运行状态</strong>
-                                    <span id="webServerStatusText" role="status" aria-live="polite">正在检查……</span>
+                                    <span id="webServerStatusText" role="status" aria-live="polite">等待配置加载……</span>
                                 </div>
                                 <span class="watch-party-badge">连接检测</span>
                             </div>
