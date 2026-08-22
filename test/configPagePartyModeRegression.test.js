@@ -139,6 +139,17 @@ function createView() {
     add('#maxBufferThresholdSeconds', { value: '30' });
     add('#autoKickInactive', { checked: false });
     add('#inactiveTimeoutMinutes', { value: '15' });
+    add('#syncIntervalSeconds', { value: '5', min: '1', max: '60' });
+    add('#syncOffsetMilliseconds', { value: '1000', min: '-10000', max: '10000' });
+    add('#externalWebServerPort', { value: '8097', min: '1024', max: '65535' });
+    add('#sessionExpirationMinutes', { value: '60', min: '5', max: '1440' });
+    add('#rateLimitRequestsPerMinute', { value: '60', min: '0', max: '1000' });
+    add('#rateLimitBlockDurationMinutes', { value: '15', min: '1', max: '1440' });
+    add('#hstsMaxAge', { value: '31536000', min: '0', max: '63072000' });
+    add('#maxFailedLoginAttempts', { value: '5', min: '1', max: '20' });
+    add('#lockoutDurationMinutes', { value: '15', min: '1', max: '1440' });
+    add('#lockoutWindowMinutes', { value: '10', min: '1', max: '60' });
+    add('#maxAuditLogEntries', { value: '1000', min: '0', max: '100000' });
     add('#seriesContainer');
     add('#episodeContainer');
     add('#seriesPartyContainer');
@@ -479,6 +490,10 @@ test('dependent room and security fields are progressively disclosed', () => {
     assert.equal(view.querySelector('#certThumbprintContainer').style.display, 'none');
     assert.equal(view.querySelector('#cspContainer').style.display, 'none');
     assert.equal(view.querySelector('#maxFailedLoginAttemptsContainer').style.display, 'none');
+    assert.equal(view.querySelector('#hstsMaxAge').disabled, true);
+    assert.equal(view.querySelector('#maxFailedLoginAttempts').disabled, true);
+    assert.equal(view.querySelector('#lockoutDurationMinutes').disabled, true);
+    assert.equal(view.querySelector('#lockoutWindowMinutes').disabled, true);
 
     view.querySelector('#isWaitingRoom').checked = true;
     view.querySelector('#enableHttps').checked = true;
@@ -493,6 +508,111 @@ test('dependent room and security fields are progressively disclosed', () => {
     assert.equal(view.querySelector('#cspContainer').style.display, 'block');
     assert.equal(view.querySelector('#hstsMaxAgeContainer').style.display, 'block');
     assert.equal(view.querySelector('#maxFailedLoginAttemptsContainer').style.display, 'block');
+    assert.equal(view.querySelector('#hstsMaxAge').disabled, false);
+    assert.equal(view.querySelector('#maxFailedLoginAttempts').disabled, false);
+    assert.equal(view.querySelector('#lockoutDurationMinutes').disabled, false);
+    assert.equal(view.querySelector('#lockoutWindowMinutes').disabled, false);
+});
+
+test('room draft summary reflects the content, master, and launch mode', () => {
+    const view = createView();
+    const controller = loadController([], []);
+
+    controller.updateRoomDraftSummary(view);
+
+    const summary = view.querySelector('#roomDraftSummary').textContent;
+    assert.match(summary, /Example Series/);
+    assert.match(summary, /整部剧集/);
+    assert.match(summary, /master-user/);
+    assert.match(summary, /50 人/);
+    assert.match(summary, /创建后停用/);
+});
+
+test('room overview count stays in sync with the rendered room list', () => {
+    const view = createView();
+    const controller = loadController([], []);
+
+    controller.renderPartyList(view, {
+        WatchParties: [
+            { Id: 'active', ItemName: 'Movie A', ItemType: 'Movie', IsActive: true, CreatedDate: '2026-08-22T00:00:00Z' },
+            { Id: 'inactive', ItemName: 'Movie B', ItemType: 'Movie', IsActive: false, CreatedDate: '2026-08-22T00:00:00Z' }
+        ]
+    });
+
+    assert.equal(view.querySelector('#partyCount').textContent, '2');
+    assert.match(view.querySelector('#activePartiesList').innerHTML, /watch-party-list/);
+    assert.match(view.querySelector('#activePartiesList').innerHTML, /1 个启用/);
+});
+
+test('saving global settings exposes persistent success feedback', async () => {
+    const view = createView();
+    const controller = loadController([], []);
+    controller.checkWebServerStatus = () => {};
+
+    controller.saveGlobalSettings(view);
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.match(view.querySelector('#configSaveFeedback').textContent, /设置已保存/);
+    assert.equal(view.querySelector('#configSaveFeedback').dataset.tone, 'success');
+});
+
+test('global settings reject out-of-range numeric values before saving', async () => {
+    const view = createView();
+    const toasts = [];
+    const updatedConfigurations = [];
+    const controller = loadController(toasts, updatedConfigurations);
+    view.querySelector('#syncIntervalSeconds').value = '999';
+
+    controller.saveGlobalSettings(view);
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.equal(updatedConfigurations.length, 0);
+    assert.match(toasts.join('\n'), /同步检查间隔必须在 1 到 60 之间/);
+    assert.equal(view.querySelector('#configSaveFeedback').dataset.tone, 'error');
+});
+
+test('hidden advanced numeric settings do not block saving', async () => {
+    const view = createView();
+    const toasts = [];
+    const updatedConfigurations = [];
+    const controller = loadController(toasts, updatedConfigurations);
+    view.querySelector('#enableHttps').checked = false;
+    view.querySelector('#enableHsts').checked = false;
+    view.querySelector('#hstsMaxAge').value = '999999999';
+    view.querySelector('#enableAccountLockout').checked = false;
+    view.querySelector('#maxFailedLoginAttempts').value = '999';
+
+    controller.saveGlobalSettings(view);
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.equal(updatedConfigurations.length, 1, toasts.join('\n'));
+    assert.equal(view.querySelector('#configSaveFeedback').dataset.tone, 'success');
+});
+
+test('embedded page presents a task-oriented configuration workspace', () => {
+    const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
+
+    assert.match(html, /class="watch-party-hero"/);
+    assert.match(html, /<nav[^>]+aria-label="配置页面导航"/);
+    assert.match(html, /href="#partyOverview"/);
+    assert.match(html, /href="#createParty"/);
+    assert.match(html, /href="#syncSettings"/);
+    assert.match(html, /href="#externalConsole"/);
+    assert.match(html, /href="#securitySettings"/);
+
+    ['partyOverview', 'createParty', 'syncSettings', 'externalConsole', 'securitySettings', 'usageHelp']
+        .forEach(sectionId => assert.match(html, new RegExp(`id="${sectionId}"`)));
+
+    assert.equal((html.match(/class="setup-step/g) || []).length, 4);
+    assert.match(html, /<details[^>]+id="roomAdvancedSettings"/);
+    assert.match(html, /<details[^>]+id="securityAdvancedSettings"/);
+    assert.match(html, /id="btnCreateParty"/);
+    assert.match(html, /id="configSaveFeedback"[^>]+role="status"[^>]+aria-live="polite"/);
+    assert.match(html, /id="partyCount"/);
+    assert.match(html, /id="heroServerStatusText"[^>]+role="status"[^>]+aria-live="polite"/);
+    assert.match(html, /id="webServerStatusText"[^>]+role="status"[^>]+aria-live="polite"/);
+    assert.match(html, /@media \(max-width: 760px\)/);
+    assert.match(html, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
 test('embedded page exposes one ready-count input, accessible comboboxes, and mobile layout', () => {

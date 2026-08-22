@@ -127,10 +127,15 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         constructor(view, params) {
             super(view, params);
 
-            view.querySelector('#watchPartyConfigForm').addEventListener('submit', (e) => {
+            const form = view.querySelector('#watchPartyConfigForm');
+            form.addEventListener('submit', (e) => {
                 e.preventDefault();
                 this.saveData(view);
                 return false;
+            });
+
+            ['input', 'change'].forEach(eventName => {
+                form.addEventListener(eventName, () => this.updateRoomDraftSummary(view));
             });
 
             view.querySelector('#btnSaveSettings').addEventListener('click', () => {
@@ -164,7 +169,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             });
 
             this.setupAutocomplete(view, 'searchContent', 'selectedItemId', 'searchContentDropdown',
-                (itemData) => this.onItemSelect(view, itemData),
+                (itemData) => {
+                    this.onItemSelect(view, itemData);
+                    this.updateRoomDraftSummary(view);
+                },
                 () => this.loadMoreLibraryContent(view)
             );
 
@@ -896,11 +904,80 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             this.setContainerVisible(view, 'cspContainer', securityHeadersEnabled);
             this.setContainerVisible(view, 'hstsContainer', httpsEnabled);
             this.setContainerVisible(view, 'hstsMaxAgeContainer', hstsEnabled);
+            view.querySelector('#hstsMaxAge').disabled = !hstsEnabled;
 
             const accountLockoutEnabled = view.querySelector('#enableAccountLockout').checked;
             this.setContainerVisible(view, 'maxFailedLoginAttemptsContainer', accountLockoutEnabled);
             this.setContainerVisible(view, 'lockoutDurationContainer', accountLockoutEnabled);
             this.setContainerVisible(view, 'lockoutWindowContainer', accountLockoutEnabled);
+            ['maxFailedLoginAttempts', 'lockoutDurationMinutes', 'lockoutWindowMinutes']
+                .forEach(id => {
+                    view.querySelector(`#${id}`).disabled = !accountLockoutEnabled;
+                });
+        }
+
+        updateRoomDraftSummary(view) {
+            const itemInput = view.querySelector('#selectedItemId');
+            const contentName = (itemInput.dataset.name
+                || view.querySelector('#searchContent').value
+                || '尚未选择内容').trim();
+            const itemType = itemInput.dataset.type || '';
+            const mode = itemType === 'Series'
+                ? (view.querySelector('#isSeriesParty').checked ? '整部剧集' : '单集')
+                : itemType === 'Movie' ? '电影' : '原媒体';
+
+            const masterSelect = view.querySelector('#masterUser');
+            const selectedMaster = Array.from(masterSelect.selectedOptions || [])[0];
+            const masterName = selectedMaster
+                ? (selectedMaster.textContent || selectedMaster.text || selectedMaster.value)
+                : (masterSelect.value || '尚未选择');
+            const maxParticipants = finiteInteger(view.querySelector('#maxParticipants').value, 50);
+            const activation = view.querySelector('#isPartyActive').checked
+                ? '创建后立即启用'
+                : '创建后停用';
+            const waitingRoom = view.querySelector('#isWaitingRoom').checked ? ' · 等候室' : '';
+
+            view.querySelector('#roomDraftSummary').textContent =
+                `${contentName} · ${mode} · Master：${masterName} · ${maxParticipants} 人 · ${activation}${waitingRoom}`;
+        }
+
+        setStatusElement(view, selector, text, tone) {
+            const status = view.querySelector(selector);
+            status.textContent = text;
+            status.dataset.tone = tone || 'neutral';
+        }
+
+        validateGlobalSettings(view) {
+            const numericFields = [
+                ['syncIntervalSeconds', '同步检查间隔'],
+                ['syncOffsetMilliseconds', '恢复播放偏移'],
+                ['externalWebServerPort', '控制台端口'],
+                ['sessionExpirationMinutes', '登录会话有效期'],
+                ['rateLimitRequestsPerMinute', '请求频率限制'],
+                ['rateLimitBlockDurationMinutes', '超限封禁时长'],
+                ['hstsMaxAge', 'HSTS 有效期'],
+                ['maxFailedLoginAttempts', '最大登录失败次数'],
+                ['lockoutDurationMinutes', '锁定时长'],
+                ['lockoutWindowMinutes', '失败统计窗口'],
+                ['maxAuditLogEntries', '审计日志最大条数']
+            ];
+
+            for (const [id, label] of numericFields) {
+                const input = view.querySelector(`#${id}`);
+                if (input.disabled) continue;
+
+                const rawValue = String(input.value || '').trim();
+                if (!rawValue) continue;
+
+                const value = Number(rawValue);
+                const min = Number(input.min);
+                const max = Number(input.max);
+                if (!Number.isInteger(value) || value < min || value > max) {
+                    return `${label}必须在 ${min} 到 ${max} 之间。`;
+                }
+            }
+
+            return null;
         }
 
         toggleReverseProxySettings(view) {
@@ -976,6 +1053,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
             this.hideSeriesControls(view);
             this.updateDependentFields(view);
+            this.updateRoomDraftSummary(view);
         }
 
         escapeHtml(value) {
@@ -986,19 +1064,35 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
         renderPartyList(view, config) {
             const container = view.querySelector('#activePartiesList');
+            const parties = config.WatchParties || [];
+            const activeCount = parties.filter(party => party.IsActive).length;
+            view.querySelector('#partyCount').textContent = String(parties.length);
 
-            if (!config.WatchParties || config.WatchParties.length === 0) {
-                container.innerHTML = '<p style="color: #999;">暂无一起看房间</p>';
+            if (parties.length === 0) {
+                container.innerHTML = `
+                    <div class="watch-party-empty-state">
+                        <strong>还没有一起看房间</strong>
+                        完成下面四步即可创建第一个房间。
+                    </div>`;
                 return;
             }
 
-            let html = '<div style="display: flex; flex-direction: column; gap: 1em;">';
+            let html = `
+                <div class="watch-party-list-summary">${parties.length} 个房间 · ${activeCount} 个启用</div>
+                <div class="watch-party-list">`;
 
-            config.WatchParties.forEach(party => {
-                const statusColor = party.IsActive ? '#4CAF50' : '#999';
+            parties.forEach(party => {
                 const statusText = party.IsActive ? '已启用' : '已停用';
-                const created = new Date(party.CreatedDate).toLocaleDateString();
+                const statusClass = party.IsActive ? 'is-active' : 'is-inactive';
+                const created = party.CreatedDate
+                    ? new Date(party.CreatedDate).toLocaleDateString()
+                    : '未知';
                 const encodedPartyId = encodeURIComponent(String(party.Id || ''));
+                const typeText = party.ItemType === 'Episode'
+                    ? '剧集'
+                    : party.ItemType === 'Movie'
+                        ? '电影'
+                        : party.ItemType === 'Series' ? '电视剧' : '其他';
 
                 const features = [];
                 if (party.IsWaitingRoom) features.push('等候室');
@@ -1014,41 +1108,44 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 }
                 const featuresText = features.length > 0 ? `<br>功能：${features.join('，')}` : '';
                 const queueDetails = party.IsSeriesParty && (party.EpisodeQueue || []).length > 0
-                    ? `<details style="margin-top: 0.75em;">
-                           <summary style="cursor: pointer;">剧集队列</summary>
-                           <ol style="max-height: 18em; overflow-y: auto; margin: 0.5em 0 0; padding-left: 2em;">
+                    ? `<details class="watch-party-queue">
+                           <summary>查看剧集队列</summary>
+                           <ol>
                                ${party.EpisodeQueue.map((episode, index) => {
                                    const marker = index === party.CurrentEpisodeIndex ? ' ← 当前集' : '';
                                    const label = `S${String(episode.SeasonNumber).padStart(2, '0')}E${String(episode.EpisodeNumber).padStart(2, '0')} — ${episode.ItemName || ''}${marker}`;
-                                   return `<li${index === party.CurrentEpisodeIndex ? ' style="color: #4CAF50; font-weight: 600;"' : ''}>${this.escapeHtml(label)}</li>`;
+                                   const currentClass = index === party.CurrentEpisodeIndex
+                                       ? ' class="watch-party-queue-current"'
+                                       : '';
+                                   return `<li${currentClass}>${this.escapeHtml(label)}</li>`;
                                }).join('')}
                            </ol>
                        </details>`
                     : '';
 
                 html += `
-                    <div class="paper-card watch-party-list-card" style="padding: 1em; display: flex; justify-content: space-between; align-items: center;">
-                        <div style="flex: 1;">
-                            <div style="font-weight: 500; margin-bottom: 0.5em;">
+                    <div class="watch-party-list-card">
+                        <div>
+                            <h3 class="watch-party-list-title">
                                 ${this.escapeHtml((party.IsSeriesParty && party.SeriesName) || party.ItemName || '未命名房间')}
-                                <span style="color: ${statusColor}; font-size: 0.9em; margin-left: 0.5em;">● ${statusText}</span>
-                            </div>
-                            <div style="font-size: 0.85em; color: #999;">
-                                类型：${party.ItemType === 'Episode' ? '剧集' : party.ItemType === 'Movie' ? '电影' : party.ItemType === 'Series' ? '电视剧' : '其他'} |
-                                上限：${party.MaxParticipants || 50} 人 |
+                                <span class="watch-party-status ${statusClass}">${statusText}</span>
+                            </h3>
+                            <div class="watch-party-list-meta">
+                                类型：${typeText} ·
+                                上限：${party.MaxParticipants || 50} 人 ·
                                 创建日期：${created}${featuresText}
                             </div>
                             ${queueDetails}
                         </div>
-                        <div class="watch-party-list-actions" style="display: flex; gap: 0.5em;">
+                        <div class="watch-party-list-actions">
                             ${party.IsActive && party.IsWaitingRoom ? `
-                            <button is="emby-button" class="button-flat btnStartParty" data-partyid="${encodedPartyId}" style="padding: 0.5em 1em; color: #4CAF50;">
+                            <button is="emby-button" type="button" class="button-flat btnStartParty" data-partyid="${encodedPartyId}">
                                 <span>开始播放</span>
                             </button>` : ''}
-                            <button is="emby-button" class="button-flat btnToggleParty" data-partyid="${encodedPartyId}" style="padding: 0.5em 1em;">
+                            <button is="emby-button" type="button" class="button-flat btnToggleParty" data-partyid="${encodedPartyId}">
                                 <span>${party.IsActive ? '停用' : '启用'}</span>
                             </button>
-                            <button is="emby-button" class="button-flat btnDeleteParty" data-partyid="${encodedPartyId}" style="padding: 0.5em 1em; color: #f44336;">
+                            <button is="emby-button" type="button" class="button-flat btnDeleteParty" data-partyid="${encodedPartyId}">
                                 <span>删除</span>
                             </button>
                         </div>
@@ -1198,6 +1295,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 view.querySelector('#autoKickInactive').checked = true;
                 view.querySelector('#inactiveTimeoutMinutes').value = 15;
                 this.updateDependentFields(view);
+                this.updateRoomDraftSummary(view);
 
                 const usersPromise = loadUsers();
                 const allowedUsersSelect = view.querySelector('#allowedUsers');
@@ -1413,18 +1511,30 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     this.resetCreatePartyForm(view);
 
                     this.renderPartyList(view, this.config);
+                    this.setStatusElement(view, '#configSaveFeedback', '房间已创建，可在房间概览中进行控制。', 'success');
                 }).catch((error) => {
                     loading.hide();
+                    this.setStatusElement(view, '#configSaveFeedback', '房间创建失败，请检查填写内容后重试。', 'error');
                     toast({ type: 'error', text: `创建一起看房间失败：${error.message || error}` });
                 });
             }).catch((error) => {
                 loading.hide();
+                this.setStatusElement(view, '#configSaveFeedback', '无法准备房间，请检查媒体和服务器状态。', 'error');
                 toast({ type: 'error', text: `准备一起看房间失败：${error.message || error}` });
             });
         }
 
         saveGlobalSettings(view) {
+            this.updateDependentFields(view);
+            const validationError = this.validateGlobalSettings(view);
+            if (validationError) {
+                this.setStatusElement(view, '#configSaveFeedback', validationError, 'error');
+                toast({ type: 'error', text: validationError });
+                return;
+            }
+
             loading.show();
+            this.setStatusElement(view, '#configSaveFeedback', '正在保存设置……', 'pending');
 
             getPluginConfiguration().then(async config => {
                 config.SyncIntervalSeconds = finiteInteger(view.querySelector('#syncIntervalSeconds').value, 5);
@@ -1467,15 +1577,18 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     Dashboard.processPluginConfigurationUpdateResult(result);
 
                     this.config = config;
+                    this.setStatusElement(view, '#configSaveFeedback', '设置已保存并应用。', 'success');
                     setTimeout(() => {
                         this.checkWebServerStatus(view, config);
                     }, 2000);
                 }).catch(() => {
                     loading.hide();
+                    this.setStatusElement(view, '#configSaveFeedback', '保存失败，请检查服务器日志后重试。', 'error');
                     toast({ type: 'error', text: '保存设置失败。' });
                 });
             }).catch(() => {
                 loading.hide();
+                this.setStatusElement(view, '#configSaveFeedback', '无法读取当前设置，未保存任何更改。', 'error');
                 toast({ type: 'error', text: '加载设置失败，未保存任何更改。' });
             });
         }
@@ -1528,6 +1641,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             if (!enabled) {
                 statusElement.textContent = '已停用';
                 statusElement.style.color = '#999';
+                this.setStatusElement(view, '#heroServerStatusText', '已停用', 'neutral');
                 return;
             }
 
@@ -1535,25 +1649,30 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             if (!dashboardUrl) {
                 statusElement.textContent = '反向代理模式：请通过代理公开地址检查控制台。';
                 statusElement.style.color = '#2196F3';
+                this.setStatusElement(view, '#heroServerStatusText', '由反向代理提供', 'info');
                 return;
             }
 
             statusElement.textContent = '正在检查……';
             statusElement.style.color = '#FFA500';
+            this.setStatusElement(view, '#heroServerStatusText', '正在检查……', 'pending');
 
             fetch(dashboardUrl)
                 .then(response => {
                     if (response.ok) {
                         statusElement.innerHTML = `✓ 正在端口 ${port} 上运行<br><a href="${dashboardUrl}" target="_blank" style="color: #4CAF50;">打开控制台</a>`;
                         statusElement.style.color = '#4CAF50';
+                        this.setStatusElement(view, '#heroServerStatusText', `端口 ${port} 正在运行`, 'success');
                     } else {
                         statusElement.textContent = `错误：HTTP ${response.status}`;
                         statusElement.style.color = '#F44336';
+                        this.setStatusElement(view, '#heroServerStatusText', `HTTP ${response.status}`, 'error');
                     }
                 })
                 .catch(error => {
                     statusElement.innerHTML = `✗ 未运行<br><small style="color: #999;">Windows 可能需要执行：<code style="background: #222; padding: 0.2em 0.4em; border-radius: 3px;">netsh http add urlacl url=http://*:${port}/ user="Everyone"</code></small>`;
                     statusElement.style.color = '#F44336';
+                    this.setStatusElement(view, '#heroServerStatusText', '未运行', 'error');
                 });
         }
 
