@@ -670,6 +670,7 @@ test('embedded page presents a task-oriented configuration workspace', () => {
 test('embedded page stays legible and uses the full Emby settings width in a light theme', () => {
     const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
     const pageRule = html.match(/\.watch-party-page\s*\{([\s\S]*?)\n\s*\}/);
+    const shellRule = html.match(/\.watch-party-shell\s*\{([\s\S]*?)\n\s*\}/);
     const formRule = html.match(/\.watchPartyConfigForm\s*\{([\s\S]*?)\n\s*\}/);
     const luminance = hex => {
         const channels = hex.match(/[0-9a-f]{2}/gi).map(channel => parseInt(channel, 16) / 255);
@@ -685,6 +686,7 @@ test('embedded page stays legible and uses the full Emby settings width in a lig
     const variable = name => pageRule[1].match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6});`, 'i'))?.[1];
 
     assert.ok(pageRule, 'watch-party-page styles should exist');
+    assert.ok(shellRule, 'watch-party-shell styles should exist');
     assert.ok(formRule, 'watchPartyConfigForm styles should exist');
     assert.doesNotMatch(html, /class="readOnlyContent auto-center watch-party-page"/);
     assert.match(pageRule[1], /--wp-surface:\s*#fff(?:fff)?;/i);
@@ -694,6 +696,7 @@ test('embedded page stays legible and uses the full Emby settings width in a lig
     assert.match(pageRule[1], /margin:\s*0\s*!important;/);
     assert.match(pageRule[1], /color:\s*var\(--wp-text\);/);
     assert.doesNotMatch(pageRule[1], /color:\s*inherit/);
+    assert.match(shellRule[1], /box-sizing:\s*border-box;/);
     assert.match(formRule[1], /max-width:\s*none\s*!important;/);
     assert.match(formRule[1], /width:\s*100%\s*!important;/);
     assert.ok(contrast(variable('wp-surface'), variable('wp-text')) >= 7, 'primary text should meet enhanced contrast');
