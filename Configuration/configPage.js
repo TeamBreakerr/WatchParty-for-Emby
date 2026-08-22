@@ -1705,10 +1705,14 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     const timedOut = error && (error.name === 'TimeoutError'
                         || (abortController && abortController.signal.aborted));
                     statusElement.innerHTML = timedOut
-                        ? '连接检查超时；请确认控制台端口和网络配置。'
+                        ? '连接检查超时；外部控制台当前未启用。请确认控制台端口和网络配置。'
                         : `✗ 未运行<br><small style="color: #999;">Windows 可能需要执行：<code style="background: #222; padding: 0.2em 0.4em; border-radius: 3px;">netsh http add urlacl url=http://*:${port}/ user="Everyone"</code></small>`;
                     statusElement.style.color = '#F44336';
-                    this.setStatusElement(view, '#heroServerStatusText', timedOut ? '检查超时' : '未运行', 'error');
+                    this.setStatusElement(
+                        view,
+                        '#heroServerStatusText',
+                        timedOut ? '未启用' : '未运行',
+                        timedOut ? 'neutral' : 'error');
                 })
                 .finally(() => {
                     if (checkId !== this.webServerStatusCheckId) return;

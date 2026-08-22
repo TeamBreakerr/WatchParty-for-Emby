@@ -585,8 +585,15 @@ test('external console status times out instead of remaining pending forever', a
         global.fetch = nativeFetch;
     }
 
-    assert.doesNotMatch(view.querySelector('#heroServerStatusText').textContent, /正在检查/);
-    assert.match(view.querySelector('#heroServerStatusText').textContent, /超时|无法连接|未运行/);
+    assert.equal(view.querySelector('#heroServerStatusText').textContent, '未启用');
+    assert.match(view.querySelector('#webServerStatusText').innerHTML, /连接检查超时/);
+});
+
+test('room metric displays only an Arabic numeral without a unit suffix', () => {
+    const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
+
+    assert.match(html, /class="watch-party-metric-value" id="partyCount">—<\/span>/);
+    assert.doesNotMatch(html, /id="partyCount">—<\/span>\s*个/);
 });
 
 test('saving global settings exposes persistent success feedback', async () => {

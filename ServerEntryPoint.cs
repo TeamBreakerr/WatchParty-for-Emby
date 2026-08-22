@@ -2567,6 +2567,13 @@ namespace WatchPartyForEmby
                 {
                     CheckAndRemoveInactiveParticipants(party);
 
+                    // Playback progress and remote control use separate connections.
+                    // During a master Stop/Start transition (including episode changes),
+                    // participants can keep reporting HTTP progress while their iOS
+                    // control WebSocket goes idle. Keep that control channel alive for
+                    // every active room even when no master clock is temporarily present.
+                    await KeepOfficialIosParticipantConnectionsAlive(party);
+
                     // A paused master still owns an authoritative frozen clock. Keep
                     // running the pass so a participant whose native player rounded or
                     // ignored the first pause+seek can be corrected without requiring
@@ -2575,8 +2582,6 @@ namespace WatchPartyForEmby
                     {
                         continue;
                     }
-
-                    await KeepOfficialIosParticipantConnectionsAlive(party);
 
                     lock (_masterSeekSyncLock)
                     {
