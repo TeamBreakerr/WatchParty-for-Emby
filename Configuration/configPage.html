@@ -1,24 +1,38 @@
 <div is="emby-scroller" class="view flex flex-direction-column scrollFrameY flex-grow" data-horizontal="false" data-forcescrollbar="true" data-centerfocus="true" data-bindheader="true" data-controller="__plugin/configPagejs" data-title="一起看">
     <style>
         .watch-party-page {
-            --wp-accent: #56c596;
-            --wp-accent-strong: #2da875;
-            --wp-accent-soft: rgba(86, 197, 150, 0.14);
-            --wp-blue: #6ba9ff;
-            --wp-blue-soft: rgba(107, 169, 255, 0.13);
-            --wp-warning: #f3b664;
-            --wp-danger: #ff7777;
-            --wp-surface: rgba(27, 30, 36, 0.96);
-            --wp-surface-raised: rgba(38, 42, 50, 0.96);
-            --wp-surface-soft: rgba(255, 255, 255, 0.045);
-            --wp-border: rgba(255, 255, 255, 0.105);
-            --wp-text-muted: rgba(255, 255, 255, 0.65);
-            --wp-radius-lg: 20px;
-            --wp-radius-md: 14px;
-            --wp-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
-            max-width: 1320px;
-            width: 100%;
-            color: inherit;
+            --wp-accent: #5d9f3a;
+            --wp-accent-strong: #3f7827;
+            --wp-accent-soft: #edf5e9;
+            --wp-blue: #356b9c;
+            --wp-blue-soft: #edf4fa;
+            --wp-warning: #9a620d;
+            --wp-danger: #b43737;
+            --wp-surface: #ffffff;
+            --wp-surface-raised: #fbfcfd;
+            --wp-surface-soft: #f5f7f8;
+            --wp-border: #d9dee3;
+            --wp-border-strong: #c7ced5;
+            --wp-text: #202428;
+            --wp-text-strong: #111417;
+            --wp-text-muted: #606971;
+            --wp-radius-lg: 16px;
+            --wp-radius-md: 12px;
+            --wp-shadow: 0 8px 24px rgba(25, 32, 38, 0.08);
+            width: 100% !important;
+            max-width: none !important;
+            margin: 0 !important;
+            color: var(--wp-text);
+        }
+
+        .watch-party-shell,
+        .watchPartyConfigForm {
+            width: 100% !important;
+            max-width: none !important;
+        }
+
+        .watchPartyConfigForm {
+            margin: 0 !important;
         }
 
         .watch-party-page *,
@@ -31,17 +45,27 @@
             scroll-margin-top: 1.5rem;
         }
 
+        .watch-party-page h1,
+        .watch-party-page h2,
+        .watch-party-page h3,
+        .watch-party-page strong,
+        .watch-party-page .inputLabel,
+        .watch-party-page .selectLabel,
+        .watch-party-page .checkboxContainer label {
+            color: var(--wp-text-strong) !important;
+        }
+
         .watch-party-hero {
             position: relative;
             overflow: hidden;
-            padding: clamp(1.5rem, 4vw, 3rem);
+            padding: clamp(1.5rem, 3vw, 2.4rem);
             margin-bottom: 1.35rem;
-            border: 1px solid rgba(102, 221, 169, 0.24);
-            border-radius: 24px;
+            border: 1px solid #d4e5cd;
+            border-radius: 18px;
             background:
-                radial-gradient(circle at 86% 12%, rgba(86, 197, 150, 0.25), transparent 32%),
-                radial-gradient(circle at 4% 95%, rgba(78, 132, 230, 0.22), transparent 36%),
-                linear-gradient(135deg, #202832 0%, #17211f 52%, #1b232d 100%);
+                radial-gradient(circle at 88% 8%, rgba(113, 174, 75, 0.18), transparent 31%),
+                radial-gradient(circle at 8% 100%, rgba(70, 124, 177, 0.10), transparent 35%),
+                linear-gradient(135deg, #ffffff 0%, #f5f9f2 58%, #f8faf6 100%);
             box-shadow: var(--wp-shadow);
         }
 
@@ -51,7 +75,7 @@
             right: -3rem;
             width: 15rem;
             height: 15rem;
-            border: 1px solid rgba(255, 255, 255, 0.06);
+            border: 1px solid #dce8d7;
             border-radius: 50%;
             content: "";
             pointer-events: none;
@@ -71,7 +95,7 @@
             align-items: center;
             gap: 0.45rem;
             margin: 0 0 0.7rem;
-            color: #92e2bd;
+            color: var(--wp-accent-strong);
             font-size: 0.78rem;
             font-weight: 700;
             letter-spacing: 0.12em;
@@ -83,15 +107,16 @@
             height: 0.55rem;
             border-radius: 50%;
             background: var(--wp-accent);
-            box-shadow: 0 0 0 0.28rem rgba(86, 197, 150, 0.14);
+            box-shadow: 0 0 0 0.28rem rgba(93, 159, 58, 0.13);
             content: "";
         }
 
         .watch-party-hero h1 {
-            max-width: 720px;
+            max-width: 780px;
             margin: 0;
-            font-size: clamp(2rem, 5vw, 3.65rem);
-            line-height: 1.05;
+            color: var(--wp-text-strong);
+            font-size: clamp(2rem, 3.4vw, 3.15rem);
+            line-height: 1.08;
             letter-spacing: -0.035em;
         }
 
@@ -102,7 +127,7 @@
         .watch-party-hero-description {
             max-width: 680px;
             margin: 1rem 0 0;
-            color: rgba(255, 255, 255, 0.72);
+            color: var(--wp-text-muted);
             font-size: 1.02rem;
             line-height: 1.75;
         }
@@ -119,13 +144,13 @@
         .watch-party-primary-action {
             border-radius: 999px !important;
             background: linear-gradient(135deg, var(--wp-accent), var(--wp-accent-strong)) !important;
-            color: #071a12 !important;
+            color: #ffffff !important;
             font-weight: 750 !important;
-            box-shadow: 0 10px 24px rgba(45, 168, 117, 0.28);
+            box-shadow: 0 8px 18px rgba(63, 120, 39, 0.22);
         }
 
         .watch-party-hero-action-note {
-            color: rgba(255, 255, 255, 0.55);
+            color: var(--wp-text-muted);
             font-size: 0.76rem;
             line-height: 1.4;
             text-align: center;
@@ -143,22 +168,22 @@
         .watch-party-metric {
             min-height: 88px;
             padding: 1rem 1.1rem;
-            border: 1px solid rgba(255, 255, 255, 0.08);
+            border: 1px solid var(--wp-border);
             border-radius: var(--wp-radius-md);
-            background: rgba(5, 11, 15, 0.27);
-            backdrop-filter: blur(12px);
+            background: rgba(255, 255, 255, 0.82);
         }
 
         .watch-party-metric-label {
             display: block;
             margin-bottom: 0.35rem;
-            color: rgba(255, 255, 255, 0.56);
+            color: var(--wp-text-muted);
             font-size: 0.76rem;
             letter-spacing: 0.04em;
         }
 
         .watch-party-metric-value {
             display: block;
+            color: var(--wp-text-strong);
             font-size: 1.15rem;
             font-weight: 700;
             line-height: 1.35;
@@ -171,7 +196,7 @@
 
         .watch-party-workspace {
             display: grid;
-            grid-template-columns: 215px minmax(0, 1fr);
+            grid-template-columns: 228px minmax(0, 1fr);
             align-items: start;
             gap: 1.35rem;
         }
@@ -183,7 +208,7 @@
             border: 1px solid var(--wp-border);
             border-radius: var(--wp-radius-lg);
             background: var(--wp-surface);
-            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
+            box-shadow: var(--wp-shadow);
         }
 
         .watch-party-sidebar-title {
@@ -213,7 +238,7 @@
             min-height: 42px;
             padding: 0.65rem 0.75rem;
             border-radius: 11px;
-            color: rgba(255, 255, 255, 0.72);
+            color: #3f474e;
             font-size: 0.88rem;
             text-decoration: none;
             transition: background 160ms ease, color 160ms ease, transform 160ms ease;
@@ -222,7 +247,7 @@
         .watch-party-nav a:hover,
         .watch-party-nav a:focus-visible {
             background: var(--wp-accent-soft);
-            color: #b6f0d3;
+            color: var(--wp-accent-strong);
             transform: translateX(2px);
         }
 
@@ -240,9 +265,9 @@
             width: 1.55rem;
             height: 1.55rem;
             place-items: center;
-            border: 1px solid rgba(255, 255, 255, 0.12);
+            border: 1px solid var(--wp-border);
             border-radius: 8px;
-            color: rgba(255, 255, 255, 0.5);
+            color: #6a747d;
             font-size: 0.68rem;
             font-weight: 700;
         }
@@ -252,7 +277,7 @@
             padding: 0.9rem;
             border-radius: 12px;
             background: var(--wp-blue-soft);
-            color: rgba(255, 255, 255, 0.68);
+            color: #48647b;
             font-size: 0.78rem;
             line-height: 1.55;
         }
@@ -267,7 +292,7 @@
             border: 1px solid var(--wp-border);
             border-radius: var(--wp-radius-lg);
             background: var(--wp-surface);
-            box-shadow: 0 14px 36px rgba(0, 0, 0, 0.13);
+            box-shadow: var(--wp-shadow);
         }
 
         .watch-party-section-header {
@@ -280,7 +305,7 @@
 
         .watch-party-section-kicker {
             margin: 0 0 0.3rem;
-            color: var(--wp-accent);
+            color: var(--wp-accent-strong);
             font-size: 0.72rem;
             font-weight: 700;
             letter-spacing: 0.1em;
@@ -306,10 +331,10 @@
             gap: 0.4rem;
             flex: 0 0 auto;
             padding: 0.45rem 0.7rem;
-            border: 1px solid rgba(86, 197, 150, 0.23);
+            border: 1px solid #c9ddc0;
             border-radius: 999px;
             background: var(--wp-accent-soft);
-            color: #a7e9c9;
+            color: var(--wp-accent-strong);
             font-size: 0.76rem;
             font-weight: 650;
         }
@@ -324,7 +349,7 @@
 
         .watch-party-empty-state {
             padding: 2.2rem 1.25rem;
-            border: 1px dashed rgba(255, 255, 255, 0.15);
+            border: 1px dashed var(--wp-border-strong);
             border-radius: var(--wp-radius-md);
             background: var(--wp-surface-soft);
             color: var(--wp-text-muted);
@@ -334,7 +359,7 @@
         .watch-party-empty-state strong {
             display: block;
             margin-bottom: 0.35rem;
-            color: rgba(255, 255, 255, 0.9);
+            color: var(--wp-text-strong);
             font-size: 1rem;
         }
 
@@ -364,6 +389,7 @@
 
         .watch-party-list-title {
             margin: 0 0 0.35rem;
+            color: var(--wp-text-strong);
             font-size: 1.05rem;
         }
 
@@ -395,7 +421,7 @@
         }
 
         .watch-party-status.is-inactive {
-            color: rgba(255, 255, 255, 0.42);
+            color: #7a848d;
         }
 
         .watch-party-list-actions {
@@ -424,7 +450,7 @@
 
         .watch-party-queue summary {
             cursor: pointer;
-            color: #b9d6ff;
+            color: var(--wp-blue);
             font-size: 0.82rem;
         }
 
@@ -462,10 +488,10 @@
             width: 42px;
             height: 42px;
             place-items: center;
-            border: 1px solid rgba(86, 197, 150, 0.28);
+            border: 1px solid #c4dbb9;
             border-radius: 13px;
             background: var(--wp-accent-soft);
-            color: #a9e8ca;
+            color: var(--wp-accent-strong);
             font-size: 0.83rem;
             font-weight: 800;
         }
@@ -506,6 +532,9 @@
         .watch-party-page input:not([type="checkbox"]):not([type="hidden"]),
         .watch-party-page select {
             width: 100%;
+            border-color: var(--wp-border-strong) !important;
+            background-color: #ffffff !important;
+            color: var(--wp-text) !important;
         }
 
         .watch-party-page .fieldDescription {
@@ -515,7 +544,7 @@
 
         .watch-party-mode-card {
             padding: 0.9rem 1rem;
-            border: 1px solid rgba(86, 197, 150, 0.25);
+            border: 1px solid #c7ddbc;
             border-radius: 12px;
             background: var(--wp-accent-soft);
         }
@@ -533,11 +562,11 @@
             display: none;
             max-height: 300px;
             overflow-y: auto;
-            border: 1px solid rgba(255, 255, 255, 0.16);
+            border: 1px solid var(--wp-border-strong);
             border-top: 0;
             border-radius: 0 0 12px 12px;
-            background: #262a31;
-            box-shadow: 0 16px 30px rgba(0, 0, 0, 0.35);
+            background: #ffffff;
+            box-shadow: 0 12px 28px rgba(25, 32, 38, 0.16);
         }
 
         .autocomplete-dropdown.show {
@@ -546,8 +575,8 @@
 
         .autocomplete-item {
             padding: 0.78rem 0.9rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-            color: rgba(255, 255, 255, 0.86);
+            border-bottom: 1px solid var(--wp-border);
+            color: var(--wp-text);
             cursor: pointer;
             transition: background 140ms ease;
         }
@@ -574,7 +603,7 @@
             border-left: 3px solid var(--wp-blue);
             border-radius: 0 12px 12px 0;
             background: var(--wp-blue-soft);
-            color: rgba(255, 255, 255, 0.73);
+            color: #3e5e78;
             font-size: 0.84rem;
             line-height: 1.6;
         }
@@ -583,7 +612,7 @@
             overflow: hidden;
             border: 1px solid var(--wp-border);
             border-radius: var(--wp-radius-md);
-            background: rgba(7, 11, 15, 0.18);
+            background: var(--wp-surface-raised);
         }
 
         .watch-party-disclosure + .watch-party-disclosure {
@@ -644,7 +673,7 @@
 
         .watch-party-disclosure-content {
             padding: 0 1.1rem 1.15rem;
-            border-top: 1px solid rgba(255, 255, 255, 0.07);
+            border-top: 1px solid var(--wp-border);
         }
 
         .watch-party-disclosure-content > .watch-party-field-grid {
@@ -657,9 +686,9 @@
             align-items: center;
             gap: 1rem;
             padding: 1rem 1.1rem;
-            border: 1px solid rgba(86, 197, 150, 0.2);
+            border: 1px solid #c8ddbf;
             border-radius: var(--wp-radius-md);
-            background: linear-gradient(135deg, rgba(86, 197, 150, 0.12), rgba(107, 169, 255, 0.08));
+            background: linear-gradient(135deg, #f0f7ec, #f2f6fa);
         }
 
         .watch-party-draft-label {
@@ -673,7 +702,7 @@
 
         #roomDraftSummary {
             margin: 0;
-            color: rgba(255, 255, 255, 0.9);
+            color: var(--wp-text-strong);
             font-size: 0.9rem;
             line-height: 1.55;
         }
@@ -726,14 +755,14 @@
         .watch-party-platform-note strong {
             display: block;
             margin-bottom: 0.35rem;
-            color: rgba(255, 255, 255, 0.9);
+            color: var(--wp-text-strong);
         }
 
         .watch-party-page code {
             padding: 0.16rem 0.38rem;
             border-radius: 5px;
-            background: rgba(0, 0, 0, 0.32);
-            color: #cde3ff;
+            background: #eaf0f5;
+            color: #244e73;
         }
 
         .watch-party-help-grid {
@@ -778,10 +807,10 @@
             gap: 1rem;
             margin-top: 1.35rem;
             padding: 0.8rem 0.85rem 0.8rem 1rem;
-            border: 1px solid rgba(255, 255, 255, 0.13);
+            border: 1px solid var(--wp-border);
             border-radius: 16px;
-            background: rgba(24, 27, 32, 0.93);
-            box-shadow: 0 18px 38px rgba(0, 0, 0, 0.34);
+            background: rgba(255, 255, 255, 0.96);
+            box-shadow: 0 12px 30px rgba(25, 32, 38, 0.14);
             backdrop-filter: blur(18px);
         }
 
@@ -793,11 +822,11 @@
         }
 
         #configSaveFeedback[data-tone="success"] {
-            color: #99e7c1;
+            color: var(--wp-accent-strong);
         }
 
         #configSaveFeedback[data-tone="error"] {
-            color: #ff9b9b;
+            color: var(--wp-danger);
         }
 
         #btnSaveSettings {
@@ -974,8 +1003,8 @@
         }
     </style>
 
-    <div class="scrollSlider flex-direction-column padded-left padded-left-page padded-right padded-top-page padded-bottom-page">
-        <div class="readOnlyContent auto-center watch-party-page">
+    <div class="scrollSlider flex-direction-column padded-left padded-left-page padded-right padded-top-page padded-bottom-page watch-party-shell">
+        <div class="watch-party-page">
             <form id="watchPartyConfigForm" class="watchPartyConfigForm">
                 <header class="watch-party-hero">
                     <div class="watch-party-hero-main">

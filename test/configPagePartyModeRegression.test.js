@@ -615,6 +615,40 @@ test('embedded page presents a task-oriented configuration workspace', () => {
     assert.match(html, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
+test('embedded page stays legible and uses the full Emby settings width in a light theme', () => {
+    const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
+    const pageRule = html.match(/\.watch-party-page\s*\{([\s\S]*?)\n\s*\}/);
+    const formRule = html.match(/\.watchPartyConfigForm\s*\{([\s\S]*?)\n\s*\}/);
+    const luminance = hex => {
+        const channels = hex.match(/[0-9a-f]{2}/gi).map(channel => parseInt(channel, 16) / 255);
+        const linear = channels.map(channel => channel <= 0.04045
+            ? channel / 12.92
+            : ((channel + 0.055) / 1.055) ** 2.4);
+        return (0.2126 * linear[0]) + (0.7152 * linear[1]) + (0.0722 * linear[2]);
+    };
+    const contrast = (first, second) => {
+        const [lighter, darker] = [luminance(first), luminance(second)].sort((a, b) => b - a);
+        return (lighter + 0.05) / (darker + 0.05);
+    };
+    const variable = name => pageRule[1].match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6});`, 'i'))?.[1];
+
+    assert.ok(pageRule, 'watch-party-page styles should exist');
+    assert.ok(formRule, 'watchPartyConfigForm styles should exist');
+    assert.doesNotMatch(html, /class="readOnlyContent auto-center watch-party-page"/);
+    assert.match(pageRule[1], /--wp-surface:\s*#fff(?:fff)?;/i);
+    assert.match(pageRule[1], /--wp-text:\s*#[0-9a-f]{6};/i);
+    assert.match(pageRule[1], /max-width:\s*none\s*!important;/);
+    assert.match(pageRule[1], /width:\s*100%\s*!important;/);
+    assert.match(pageRule[1], /margin:\s*0\s*!important;/);
+    assert.match(pageRule[1], /color:\s*var\(--wp-text\);/);
+    assert.doesNotMatch(pageRule[1], /color:\s*inherit/);
+    assert.match(formRule[1], /max-width:\s*none\s*!important;/);
+    assert.match(formRule[1], /width:\s*100%\s*!important;/);
+    assert.ok(contrast(variable('wp-surface'), variable('wp-text')) >= 7, 'primary text should meet enhanced contrast');
+    assert.ok(contrast(variable('wp-surface'), variable('wp-text-muted')) >= 4.5, 'secondary text should meet normal contrast');
+    assert.doesNotMatch(html, /#202832|#17211f|#1b232d|background:\s*rgba\(24,\s*27,\s*32/);
+});
+
 test('embedded page exposes one ready-count input, accessible comboboxes, and mobile layout', () => {
     const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
     const script = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.js'), 'utf8');
