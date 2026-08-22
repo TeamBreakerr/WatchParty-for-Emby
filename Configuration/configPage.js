@@ -105,21 +105,65 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         return ApiClient.getUsers();
     }
 
+    function resolveRoomMasterUserId(availableUserIds, configuredDefaultMasterUserId) {
+        if (availableUserIds.has(configuredDefaultMasterUserId)) {
+            return configuredDefaultMasterUserId;
+        }
 
-    function populateUsersDropdown(view, select, selectedUserIds = [], usersPromise = null) {
-        (usersPromise || loadUsers()).then(users => {
+        const currentUserId = ApiClient.getCurrentUserId();
+        return availableUserIds.has(currentUserId) ? currentUserId : '';
+    }
+
+    function populateUsersDropdown(
+        view,
+        select,
+        selectedUserIds = [],
+        usersPromise = null,
+        options = {}) {
+        return (usersPromise || loadUsers()).then(users => {
             select.innerHTML = '';
+            const resolvedUserIds = typeof options.selectedUserIdsResolver === 'function'
+                ? options.selectedUserIdsResolver(users)
+                : selectedUserIds;
+            const availableUserIds = new Set(users.map(user => user.Id));
+            const effectiveSelectedUserIds = resolvedUserIds.filter(userId => availableUserIds.has(userId));
+
+            if (options.emptyOptionLabel) {
+                const emptyOption = document.createElement('option');
+                emptyOption.value = '';
+                emptyOption.textContent = options.emptyOptionLabel;
+                emptyOption.selected = effectiveSelectedUserIds.length === 0;
+                select.appendChild(emptyOption);
+            }
 
             users.forEach(user => {
                 const option = document.createElement('option');
                 option.value = user.Id;
                 option.textContent = user.Name;
-                option.selected = selectedUserIds.includes(user.Id);
+                option.selected = effectiveSelectedUserIds.includes(user.Id);
                 select.appendChild(option);
             });
+
+            if (effectiveSelectedUserIds.length > 0) {
+                select.value = effectiveSelectedUserIds[0];
+            } else {
+                select.value = '';
+                select.selectedIndex = options.emptyOptionLabel ? 0 : -1;
+            }
+
+            if (options.rememberSelectionAsDefault) {
+                select.dataset.defaultUserId = effectiveSelectedUserIds[0] || '';
+            }
+
+            return users;
         }).catch(error => {
             console.error('加载用户失败：', error);
             select.innerHTML = '<option value="">用户加载失败</option>';
+            select.value = '';
+            if (options.rememberSelectionAsDefault) {
+                select.dataset.defaultUserId = '';
+            }
+            return [];
         });
     }
 
@@ -215,6 +259,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 view.querySelector(`#${id}`).addEventListener('change', () => {
                     this.ensureMasterInWhitelistSelection(view);
                 });
+            });
+
+            view.querySelector('#defaultMasterUser').addEventListener('change', () => {
+                this.applyDefaultMasterToRoomDraft(view);
             });
 
             view.querySelector('#externalWebServerPort').addEventListener('input', (e) => {
@@ -1000,6 +1048,25 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             }
         }
 
+        applyDefaultMasterToRoomDraft(view) {
+            const defaultMasterUserId = view.querySelector('#defaultMasterUser').value;
+            const masterSelect = view.querySelector('#masterUser');
+            const masterOptions = Array.from(masterSelect.options || []);
+            const userOptions = masterOptions.filter(option => option.value);
+            const availableUserIds = new Set(userOptions.map(option => option.value));
+            const resolvedUserId = resolveRoomMasterUserId(
+                availableUserIds,
+                defaultMasterUserId);
+
+            masterOptions.forEach(option => {
+                option.selected = option.value === resolvedUserId;
+            });
+            masterSelect.value = resolvedUserId;
+            masterSelect.dataset.defaultUserId = resolvedUserId;
+            this.ensureMasterInWhitelistSelection(view);
+            this.updateRoomDraftSummary(view);
+        }
+
         resetCreatePartyForm(view) {
             view.querySelector('#selectedLibraryId').value = '';
 
@@ -1039,7 +1106,8 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 option.selected = false;
             });
             allowedUsers.selectedIndex = -1;
-            view.querySelector('#masterUser').value = '';
+            const masterUser = view.querySelector('#masterUser');
+            masterUser.value = masterUser.dataset.defaultUserId || '';
             view.querySelector('#partyPassword').value = '';
             view.querySelector('#isPartyActive').checked = true;
             view.querySelector('#maxParticipants').value = 50;
@@ -1301,8 +1369,32 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 const allowedUsersSelect = view.querySelector('#allowedUsers');
                 populateUsersDropdown(view, allowedUsersSelect, [], usersPromise);
 
+                const defaultMasterUserSelect = view.querySelector('#defaultMasterUser');
+                populateUsersDropdown(
+                    view,
+                    defaultMasterUserSelect,
+                    [config.DefaultMasterUserId || ''],
+                    usersPromise,
+                    { emptyOptionLabel: '未指定（使用当前登录用户）' });
+
                 const masterUserSelect = view.querySelector('#masterUser');
-                populateUsersDropdown(view, masterUserSelect, [], usersPromise);
+                populateUsersDropdown(
+                    view,
+                    masterUserSelect,
+                    [],
+                    usersPromise,
+                    {
+                        emptyOptionLabel: '-- 选择主控用户 --',
+                        selectedUserIdsResolver: users => {
+                            const availableUserIds = new Set(users.map(user => user.Id));
+                            const userId = resolveRoomMasterUserId(
+                                availableUserIds,
+                                config.DefaultMasterUserId);
+                            return userId ? [userId] : [];
+                        },
+                        rememberSelectionAsDefault: true
+                    })
+                    .then(() => this.updateRoomDraftSummary(view));
 
                 this.renderPartyList(view, config);
 
@@ -1539,6 +1631,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             getPluginConfiguration().then(async config => {
                 config.SyncIntervalSeconds = finiteInteger(view.querySelector('#syncIntervalSeconds').value, 5);
                 config.SyncOffsetMilliseconds = finiteInteger(view.querySelector('#syncOffsetMilliseconds').value, 1000);
+                config.DefaultMasterUserId = view.querySelector('#defaultMasterUser').value || '';
                 config.EnableExternalWebServer = view.querySelector('#enableExternalWebServer').checked;
                 config.ExternalWebServerPort = finiteInteger(view.querySelector('#externalWebServerPort').value, 8097);
                 config.ListenAddress = view.querySelector('#listenAddress').value.trim() || '127.0.0.1';

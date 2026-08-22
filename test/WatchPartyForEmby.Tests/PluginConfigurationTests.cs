@@ -23,6 +23,33 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void DefaultMasterIsUnspecifiedByDefault()
+        {
+            var configuration = new PluginConfiguration();
+
+            Assert.Equal(string.Empty, configuration.DefaultMasterUserId);
+        }
+
+        [Fact]
+        public void DefaultMasterRoundTripsThroughXmlConfiguration()
+        {
+            var serializer = new XmlSerializer(typeof(PluginConfiguration));
+            var source = new PluginConfiguration { DefaultMasterUserId = "team-id" };
+
+            PluginConfiguration restored;
+            using (var writer = new StringWriter())
+            {
+                serializer.Serialize(writer, source);
+                using (var reader = new StringReader(writer.ToString()))
+                {
+                    restored = (PluginConfiguration)serializer.Deserialize(reader);
+                }
+            }
+
+            Assert.Equal("team-id", restored.DefaultMasterUserId);
+        }
+
+        [Fact]
         public void NewRoomsUseTheTwoSecondSeekTolerance()
         {
             Assert.Equal(2, new WatchPartyItem().SyncToleranceSeconds);

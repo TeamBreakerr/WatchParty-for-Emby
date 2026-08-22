@@ -185,6 +185,7 @@ namespace WatchPartyForEmby
 
         public int SyncIntervalSeconds { get; set; } = 5;
         public int SyncOffsetMilliseconds { get; set; } = 1000;
+        public string DefaultMasterUserId { get; set; } = "";
 
         public bool EnableExternalWebServer { get; set; } = false;
         public int ExternalWebServerPort { get; set; } = 8097;
@@ -230,6 +231,7 @@ namespace WatchPartyForEmby
             WatchParties = new List<WatchPartyItem>();
             SyncIntervalSeconds = 5;
             SyncOffsetMilliseconds = 1000;
+            DefaultMasterUserId = string.Empty;
             ExternalWebServerPort = 8097;
             ListenAddress = "127.0.0.1";
             AllowedCorsOrigins = "";

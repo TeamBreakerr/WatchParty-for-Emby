@@ -131,6 +131,7 @@ function createView() {
     add('#syncToleranceSeconds', { value: '10' });
     add('#allowedUsers', { options: [] });
     add('#masterUser', { value: 'master-user' });
+    add('#defaultMasterUser', { value: '' });
     add('#partyPassword', { value: '' });
     add('#isPartyActive', { checked: false });
     add('#isWaitingRoom', { checked: false });
@@ -564,6 +565,88 @@ test('room count and default-disabled console status settle before ancillary dat
     assert.doesNotMatch(view.querySelector('#heroServerStatusText').textContent, /正在检查/);
 });
 
+test('configured default master takes precedence over the current user', async () => {
+    const view = createView();
+    view.querySelector('#masterUser').value = '';
+    const controller = loadController([], [], {
+        WatchParties: [],
+        DefaultMasterUserId: 'team-id'
+    });
+    global.ApiClient.getCurrentUserId = () => 'home-id';
+    global.ApiClient.getUsers = async () => [
+        { Id: 'home-id', Name: 'home' },
+        { Id: 'team-id', Name: 'Team Breaker' }
+    ];
+
+    controller.loadData(view);
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.equal(view.querySelector('#masterUser').value, 'team-id');
+    assert.equal(view.querySelector('#masterUser').dataset.defaultUserId, 'team-id');
+    assert.equal(view.querySelector('#defaultMasterUser').value, 'team-id');
+});
+
+test('master defaults to the current user when no default is configured', async () => {
+    const view = createView();
+    view.querySelector('#masterUser').value = '';
+    const controller = loadController([], [], { WatchParties: [] });
+    global.ApiClient.getCurrentUserId = () => 'home-id';
+    global.ApiClient.getUsers = async () => [
+        { Id: 'home-id', Name: 'home' },
+        { Id: 'team-id', Name: 'Team Breaker' }
+    ];
+
+    controller.loadData(view);
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.equal(view.querySelector('#masterUser').value, 'home-id');
+    assert.equal(view.querySelector('#masterUser').dataset.defaultUserId, 'home-id');
+    assert.equal(view.querySelector('#defaultMasterUser').value, '');
+});
+
+test('missing configured default master falls back to the current user', async () => {
+    const view = createView();
+    view.querySelector('#masterUser').value = '';
+    const controller = loadController([], [], {
+        WatchParties: [],
+        DefaultMasterUserId: 'deleted-user-id'
+    });
+    global.ApiClient.getCurrentUserId = () => 'home-id';
+    global.ApiClient.getUsers = async () => [
+        { Id: 'home-id', Name: 'home' },
+        { Id: 'team-id', Name: 'Team Breaker' }
+    ];
+
+    controller.loadData(view);
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.equal(view.querySelector('#masterUser').value, 'home-id');
+    assert.equal(view.querySelector('#masterUser').dataset.defaultUserId, 'home-id');
+    assert.equal(view.querySelector('#defaultMasterUser').value, '');
+});
+
+test('changing the default master updates and resets the room draft selection', async () => {
+    const view = createView();
+    const controller = loadController([], [], { WatchParties: [] });
+    global.ApiClient.getCurrentUserId = () => 'home-id';
+    global.ApiClient.getUsers = async () => [
+        { Id: 'home-id', Name: 'home' },
+        { Id: 'team-id', Name: 'Team Breaker' }
+    ];
+
+    controller.loadData(view);
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    view.querySelector('#defaultMasterUser').value = 'team-id';
+    controller.applyDefaultMasterToRoomDraft(view);
+    assert.equal(view.querySelector('#masterUser').value, 'team-id');
+    assert.equal(view.querySelector('#masterUser').dataset.defaultUserId, 'team-id');
+    assert.match(view.querySelector('#roomDraftSummary').textContent, /Master：Team Breaker/);
+
+    controller.resetCreatePartyForm(view);
+    assert.equal(view.querySelector('#masterUser').value, 'team-id');
+});
+
 test('external console status times out instead of remaining pending forever', async () => {
     const view = createView();
     const controller = loadController([], []);
@@ -598,14 +681,17 @@ test('room metric displays only an Arabic numeral without a unit suffix', () => 
 
 test('saving global settings exposes persistent success feedback', async () => {
     const view = createView();
-    const controller = loadController([], []);
+    const updatedConfigurations = [];
+    const controller = loadController([], updatedConfigurations);
     controller.checkWebServerStatus = () => {};
+    view.querySelector('#defaultMasterUser').value = 'team-id';
 
     controller.saveGlobalSettings(view);
     await new Promise(resolve => setTimeout(resolve, 20));
 
     assert.match(view.querySelector('#configSaveFeedback').textContent, /设置已保存/);
     assert.equal(view.querySelector('#configSaveFeedback').dataset.tone, 'success');
+    assert.equal(updatedConfigurations[0].DefaultMasterUserId, 'team-id');
 });
 
 test('global settings reject out-of-range numeric values before saving', async () => {
@@ -746,6 +832,7 @@ test('embedded page exposes one ready-count input, accessible comboboxes, and mo
     assert.doesNotMatch(script, /PauseControl|pauseControl|normalizePauseControl/);
     assert.match(html, /播放、暂停、进度和切集均以主控用户为准/);
     assert.match(html, /id="syncToleranceSeconds"[^>]+value="2"/);
+    assert.match(html, /id="defaultMasterUser"/);
     assert.match(html, /id="autoStartWhenReadyContainer"[\s\S]*?id="autoStartWhenReady"/);
     assert.match(html, /id="inactiveTimeoutContainer"[\s\S]*?id="inactiveTimeoutMinutes"/);
     assert.doesNotMatch(script, /(?:itemSelect|itemInput)\.innerHTML/);

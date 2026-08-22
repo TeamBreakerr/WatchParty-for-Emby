@@ -1387,6 +1387,14 @@
                                 </div>
                             </div>
                             <div class="watch-party-field-grid">
+                                <div class="selectContainer watch-party-span-2">
+                                    <label class="selectLabel" for="defaultMasterUser">默认 Master 用户</label>
+                                    <select is="emby-select" id="defaultMasterUser" class="emby-select-withcolor emby-select">
+                                        <option value="">未指定（使用当前登录用户）</option>
+                                    </select>
+                                    <div class="fieldDescription">创建新房间时自动预选此用户；仍可在每个房间中单独修改。</div>
+                                </div>
+
                                 <div class="inputContainer">
                                     <label class="inputLabel inputLabelUnfocused" for="syncIntervalSeconds">同步检查间隔（秒）</label>
                                     <input is="emby-input" type="number" id="syncIntervalSeconds" min="1" max="60" step="1" />
