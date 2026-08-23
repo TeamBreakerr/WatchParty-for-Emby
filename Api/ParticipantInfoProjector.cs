@@ -9,6 +9,10 @@ namespace WatchPartyForEmby.Api
         public string SessionId { get; set; }
         public string Client { get; set; }
         public bool SupportsRemoteControl { get; set; }
+        public bool IsOnline { get; set; }
+        public bool HasActiveWebSocket { get; set; }
+        public bool IsDormant { get; set; }
+        public bool CanReceiveCommands { get; set; }
     }
 
     /// <summary>
@@ -43,6 +47,10 @@ namespace WatchPartyForEmby.Api
                         SessionId = participant.SessionId,
                         Client = descriptor?.Client ?? string.Empty,
                         SupportsRemoteControl = descriptor?.SupportsRemoteControl == true,
+                        IsOnline = descriptor?.IsOnline == true,
+                        HasActiveWebSocket = descriptor?.HasActiveWebSocket == true,
+                        IsDormant = descriptor?.IsDormant == true,
+                        CanReceiveCommands = descriptor?.CanReceiveCommands == true,
                         IsHost = !string.IsNullOrEmpty(masterSessionId)
                             && string.Equals(
                                 participant.SessionId,
@@ -51,6 +59,7 @@ namespace WatchPartyForEmby.Api
                         IsReady = !string.IsNullOrEmpty(participant.UserId)
                             && readyUsers.Contains(participant.UserId),
                         IsBuffering = participant.IsBuffering,
+                        IsPaused = participant.IsPaused,
                         CurrentPositionTicks = participant.CurrentPositionTicks,
                         LastActivityAt = participant.LastActivityAt
                     };

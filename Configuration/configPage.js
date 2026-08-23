@@ -61,6 +61,64 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         return ApiClient.getItems(ApiClient.getCurrentUserId(), params);
     }
 
+    function loadRecentlyWatched(searchTerm = '') {
+        const baseParams = {
+            Recursive: true,
+            IncludeItemTypes: 'Movie,Episode',
+            SortBy: 'DatePlayed',
+            SortOrder: 'Descending',
+            Fields: 'Id,Name,ProductionYear,Type,ParentId,UserData,SeriesId,SeriesName',
+            Limit: 50
+        };
+
+        if (searchTerm) {
+            baseParams.SearchTerm = searchTerm;
+        }
+
+        const userId = ApiClient.getCurrentUserId();
+        return Promise.all([
+            ApiClient.getItems(userId, Object.assign({}, baseParams, { IsResumable: true })),
+            ApiClient.getItems(userId, Object.assign({}, baseParams, { IsPlayed: true }))
+        ]).then(results => {
+            const byId = new Map();
+            results.forEach(result => (result.Items || []).forEach(item => {
+                const normalized = item.Type === 'Episode'
+                    ? item.SeriesId
+                        ? Object.assign({}, item, {
+                            Id: item.SeriesId,
+                            Name: item.SeriesName || item.Name,
+                            Type: 'Series',
+                            ParentId: ''
+                        })
+                        : null
+                    : item;
+                if (normalized && !byId.has(String(normalized.Id))) {
+                    byId.set(String(normalized.Id), normalized);
+                }
+            }));
+            const items = Array.from(byId.values())
+                .sort((left, right) => {
+                    const leftDate = Date.parse(left.UserData?.LastPlayedDate || '') || 0;
+                    const rightDate = Date.parse(right.UserData?.LastPlayedDate || '') || 0;
+                    return rightDate - leftDate;
+                })
+                .slice(0, baseParams.Limit);
+            return { Items: items, TotalRecordCount: items.length };
+        });
+    }
+
+    function toContentOption(item) {
+        const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
+        const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
+        return {
+            id: item.Id,
+            text: `${item.Name}${year}${type}`,
+            type: item.Type,
+            name: item.Name,
+            libraryId: item.ParentId || ''
+        };
+    }
+
     function loadSeasons(seriesId, startIndex = 0, limit = 100, searchTerm = '') {
         const params = {
             userId: ApiClient.getCurrentUserId(),
@@ -210,6 +268,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
             view.querySelector('#selectedLibraryId').addEventListener('change', (e) => {
                 this.onLibraryChange(view, e.target.value);
+            });
+
+            view.querySelector('#contentSourceMode').addEventListener('change', (e) => {
+                this.onContentSourceChange(view, e.target.value);
             });
 
             this.setupAutocomplete(view, 'searchContent', 'selectedItemId', 'searchContentDropdown',
@@ -430,6 +492,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     hiddenInput.value = item.id;
                     hiddenInput.dataset.type = item.type || '';
                     hiddenInput.dataset.name = item.name || item.text;
+                    hiddenInput.dataset.libraryId = item.libraryId || '';
                     this.setAutocompleteOpen(searchInput, dropdown, false);
 
                     if (onSelectCallback) {
@@ -437,7 +500,8 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                             id: item.id,
                             text: item.text,
                             type: item.type,
-                            name: item.name || item.text
+                            name: item.name || item.text,
+                            libraryId: item.libraryId || ''
                         });
                     }
                 });
@@ -467,7 +531,9 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         performSearch(view, searchInputId, query, onSelectCallback, onLoadMoreCallback) {
             const dropdown = view.querySelector(`#${searchInputId}Dropdown`);
 
-            if (searchInputId === 'searchContent' && this.currentLibraryId) {
+            if (searchInputId === 'searchContent' && this.contentSourceMode === 'recent') {
+                this.loadRecentContent(view, query);
+            } else if (searchInputId === 'searchContent' && this.currentLibraryId) {
                 const libraryId = this.currentLibraryId;
                 const requestVersion = this.libraryRequestVersion || 0;
                 this[`${searchInputId}_searchMode`] = true;
@@ -480,16 +546,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     const items = result.Items || [];
                     const totalCount = result.TotalRecordCount || items.length;
 
-                    this[`${searchInputId}_items`] = items.map(item => {
-                        const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
-                        const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
-                        return {
-                            id: item.Id,
-                            text: `${item.Name}${year}${type}`,
-                            type: item.Type,
-                            name: item.Name
-                        };
-                    });
+                    this[`${searchInputId}_items`] = items.map(toContentOption);
 
                     this[`${searchInputId}_metadata`] = {
                         hasMore: false,
@@ -582,6 +639,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 view.querySelector('#selectedItemId').value = '';
                 view.querySelector('#selectedItemId').dataset.type = '';
                 view.querySelector('#selectedItemId').dataset.name = '';
+                view.querySelector('#selectedItemId').dataset.libraryId = '';
                 view.querySelector('#selectedSeasonId').value = '';
                 view.querySelector('#selectedEpisodeId').value = '';
                 view.querySelector('#searchSeason').value = '';
@@ -602,6 +660,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             view.querySelector('#selectedItemId').value = '';
             view.querySelector('#selectedItemId').dataset.type = '';
             view.querySelector('#selectedItemId').dataset.name = '';
+            view.querySelector('#selectedItemId').dataset.libraryId = '';
             this.hideSeriesControls(view);
 
             loading.show();
@@ -614,14 +673,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 const totalCount = result.TotalRecordCount || items.length;
 
                 this.searchContent_items = items.map(item => {
-                    const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
-                    const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
-                    return {
-                        id: item.Id,
-                        text: `${item.Name}${year}${type}`,
-                        type: item.Type,
-                        name: item.Name
-                    };
+                    return toContentOption(Object.assign({}, item, { ParentId: libraryId }));
                 });
 
                 this.searchContent_metadata = {
@@ -641,6 +693,80 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 }
                 loading.hide();
                 toast({ type: 'error', text: '加载内容失败。' });
+            });
+        }
+
+        onContentSourceChange(view, source) {
+            this.contentSourceMode = source === 'library' ? 'library' : 'recent';
+            this.recentContentRequestVersion = (this.recentContentRequestVersion || 0) + 1;
+            const libraryContainer = view.querySelector('#librarySourceContainer');
+            if (libraryContainer) {
+                libraryContainer.style.display = this.contentSourceMode === 'library'
+                    ? 'block'
+                    : 'none';
+            }
+
+            this.currentLibraryId = null;
+            this.currentSeriesId = null;
+            this.currentSeasonId = null;
+            this.searchContent_items = [];
+            this.searchContent_metadata = { hasMore: false, currentCount: 0, totalCount: 0 };
+            const itemInput = view.querySelector('#selectedItemId');
+            itemInput.value = '';
+            itemInput.dataset.type = '';
+            itemInput.dataset.name = '';
+            itemInput.dataset.libraryId = '';
+            view.querySelector('#searchContent').value = '';
+            this.hideSeriesControls(view);
+
+            if (this.contentSourceMode === 'recent') {
+                this.loadRecentContent(view);
+            }
+        }
+
+        loadRecentContent(view, searchTerm = '') {
+            loading.show();
+            if (this.contentSourceMode !== 'library') {
+                this.contentSourceMode = 'recent';
+            }
+            const requestVersion = (this.recentContentRequestVersion || 0) + 1;
+            this.recentContentRequestVersion = requestVersion;
+
+            return loadRecentlyWatched(searchTerm).then(result => {
+                if (this.contentSourceMode !== 'recent'
+                    || this.recentContentRequestVersion !== requestVersion) {
+                    return [];
+                }
+                const items = result.Items || [];
+                const totalCount = result.TotalRecordCount || items.length;
+                this.contentSourceMode = 'recent';
+                this.searchContent_items = items.map(toContentOption);
+                this.searchContent_metadata = {
+                    hasMore: false,
+                    currentCount: items.length,
+                    totalCount
+                };
+                this.libraryContentOffset = items.length;
+                if (searchTerm) {
+                    this.renderDropdown(
+                        view,
+                        'searchContent',
+                        'selectedItemId',
+                        'searchContentDropdown',
+                        searchTerm,
+                        itemData => this.onItemSelect(view, itemData),
+                        null);
+                }
+                loading.hide();
+                return items;
+            }).catch(() => {
+                if (this.contentSourceMode !== 'recent'
+                    || this.recentContentRequestVersion !== requestVersion) {
+                    return [];
+                }
+                loading.hide();
+                toast({ type: 'error', text: '加载最近观看失败。' });
+                return [];
             });
         }
 
@@ -754,16 +880,8 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 const items = result.Items || [];
                 const totalCount = result.TotalRecordCount || items.length;
 
-                const newItems = items.map(item => {
-                    const year = item.ProductionYear ? ` (${item.ProductionYear})` : '';
-                    const type = item.Type === 'Series' ? ' [电视剧]' : ' [电影]';
-                    return {
-                        id: item.Id,
-                        text: `${item.Name}${year}${type}`,
-                        type: item.Type,
-                        name: item.Name
-                    };
-                });
+                const newItems = items.map(item =>
+                    toContentOption(Object.assign({}, item, { ParentId: this.currentLibraryId })));
 
                 this.searchContent_items = this.searchContent_items.concat(newItems);
                 this.libraryContentOffset += items.length;
@@ -1079,6 +1197,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 input.value = '';
                 input.dataset.type = '';
                 input.dataset.name = '';
+                input.dataset.libraryId = '';
             });
 
             ['searchContentDropdown', 'searchSeasonDropdown', 'searchEpisodeDropdown'].forEach(id => {
@@ -1100,6 +1219,9 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             this.libraryContentOffset = 0;
             this.seasonsOffset = 0;
             this.episodesOffset = 0;
+            this.contentSourceMode = 'recent';
+            view.querySelector('#contentSourceMode').value = 'recent';
+            view.querySelector('#librarySourceContainer').style.display = 'none';
 
             const allowedUsers = view.querySelector('#allowedUsers');
             Array.from(allowedUsers.options || []).forEach(option => {
@@ -1130,8 +1252,41 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             return element.innerHTML;
         }
 
+        formatPosition(positionTicks) {
+            const totalSeconds = Math.max(0, Math.floor(Number(positionTicks || 0) / 10000000));
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+            return hours > 0
+                ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+                : `${minutes}:${String(seconds).padStart(2, '0')}`;
+        }
+
+        participantControlState(participant) {
+            if (participant.IsDormant) {
+                return { text: '已休眠', className: 'is-warning' };
+            }
+            if (!participant.IsOnline) {
+                return { text: '离线', className: 'is-warning' };
+            }
+            if (participant.CanReceiveCommands) {
+                return { text: '可控制', className: 'is-ready' };
+            }
+            if (participant.Client === 'Emby for iOS' && !participant.HasActiveWebSocket) {
+                return { text: '控制连接未建立', className: 'is-warning' };
+            }
+            return { text: '仅在线上报', className: 'is-warning' };
+        }
+
         renderPartyList(view, config) {
             const container = view.querySelector('#activePartiesList');
+            const focusedButton = container.querySelector
+                ? container.querySelector('button:focus')
+                : null;
+            const focusedPartyId = focusedButton?.dataset?.partyid || '';
+            const focusedAction = focusedButton
+                ? Array.from(focusedButton.classList || []).find(name => name.startsWith('btn')) || ''
+                : '';
             const parties = config.WatchParties || [];
             const activeCount = parties.filter(party => party.IsActive).length;
             view.querySelector('#partyCount').textContent = String(parties.length);
@@ -1150,6 +1305,38 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 <div class="watch-party-list">`;
 
             parties.forEach(party => {
+                const runtime = this.partyRuntimeById?.get(String(party.Id || '')) || party;
+                const participants = runtime.Participants || [];
+                const onlineCount = participants.filter(participant =>
+                    participant.IsOnline && !participant.IsDormant).length;
+                const masterOnline = runtime.MasterOnline === true
+                    || participants.some(participant => participant.IsHost && participant.IsOnline);
+                const playbackState = runtime.IsPlaying ? '播放中' : '已暂停';
+                const participantRows = participants.map(participant => {
+                    const controlState = this.participantControlState(participant);
+                    const role = participant.IsHost ? 'Master' : '参与者';
+                    const client = participant.Client || '未知客户端';
+                    const playback = participant.IsPaused ? '暂停' : '播放';
+                    return `
+                        <div class="watch-party-client">
+                            <div class="watch-party-client-main">
+                                <div class="watch-party-client-name">${this.escapeHtml(participant.UserName || '未知用户')}</div>
+                                <div class="watch-party-client-meta">${this.escapeHtml(client)} · ${role} · ${playback} · ${this.formatPosition(participant.CurrentPositionTicks)}</div>
+                            </div>
+                            <span class="watch-party-client-state ${controlState.className}">${controlState.text}</span>
+                        </div>`;
+                }).join('');
+                const runtimeDetails = `
+                    <div class="watch-party-runtime">
+                        <div class="watch-party-runtime-summary">
+                            <span>${playbackState} · ${this.formatPosition(runtime.CurrentPositionTicks)}</span>
+                            <span>Master：${masterOnline ? '在线' : '离线'}</span>
+                            <span>客户端：${onlineCount}/${participants.length} 在线</span>
+                        </div>
+                        ${participantRows
+                            ? `<div class="watch-party-client-list">${participantRows}</div>`
+                            : '<div class="watch-party-runtime-empty">当前还没有客户端进入这个房间。</div>'}
+                    </div>`;
                 const statusText = party.IsActive ? '已启用' : '已停用';
                 const statusClass = party.IsActive ? 'is-active' : 'is-inactive';
                 const created = party.CreatedDate
@@ -1204,8 +1391,13 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                                 创建日期：${created}${featuresText}
                             </div>
                             ${queueDetails}
+                            ${runtimeDetails}
                         </div>
                         <div class="watch-party-list-actions">
+                            ${party.IsActive ? `
+                            <button is="emby-button" type="button" class="button-flat btnSyncParty" data-partyid="${encodedPartyId}" title="同步已进入本房间、在线且可控的官方 iOS 客户端">
+                                <span>一键同步</span>
+                            </button>` : ''}
                             ${party.IsActive && party.IsWaitingRoom ? `
                             <button is="emby-button" type="button" class="button-flat btnStartParty" data-partyid="${encodedPartyId}">
                                 <span>开始播放</span>
@@ -1243,6 +1435,107 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     const partyId = decodeURIComponent(e.target.closest('button').dataset.partyid);
                     this.startParty(view, partyId);
                 });
+            });
+
+            container.querySelectorAll('.btnSyncParty').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const partyId = decodeURIComponent(e.target.closest('button').dataset.partyid);
+                    this.syncParty(view, partyId);
+                });
+            });
+
+            if (focusedPartyId && focusedAction && container.querySelectorAll) {
+                const replacement = Array.from(container.querySelectorAll('button'))
+                    .find(button => button.dataset.partyid === focusedPartyId
+                        && button.classList.contains(focusedAction));
+                replacement?.focus?.();
+            }
+        }
+
+        startPartyRuntimeRefresh(view) {
+            this.stopPartyRuntimeRefresh();
+            this.partyRuntimeRefreshTimer = setInterval(() => {
+                this.refreshPartyRuntimeStatus(view);
+            }, 5000);
+            this.partyRuntimeRefreshTimer?.unref?.();
+        }
+
+        stopPartyRuntimeRefresh() {
+            if (this.partyRuntimeRefreshTimer) {
+                clearInterval(this.partyRuntimeRefreshTimer);
+                this.partyRuntimeRefreshTimer = null;
+            }
+        }
+
+        refreshPartyRuntimeStatus(view) {
+            const requestVersion = (this.partyRuntimeRequestVersion || 0) + 1;
+            this.partyRuntimeRequestVersion = requestVersion;
+            return ApiClient.getJSON(ApiClient.getUrl('WatchParty/List')).then(result => {
+                if (this.isViewPaused || this.partyRuntimeRequestVersion !== requestVersion) {
+                    return [];
+                }
+                const parties = result.Parties || [];
+                this.partyRuntimeById = new Map(parties.map(party => [String(party.Id || ''), party]));
+                const fingerprint = JSON.stringify(parties.map(party => ({
+                    Id: party.Id,
+                    IsPlaying: party.IsPlaying,
+                    CurrentPositionTicks: party.CurrentPositionTicks,
+                    MasterOnline: party.MasterOnline,
+                    Participants: (party.Participants || []).map(participant => ({
+                        SessionId: participant.SessionId,
+                        UserName: participant.UserName,
+                        Client: participant.Client,
+                        IsOnline: participant.IsOnline,
+                        HasActiveWebSocket: participant.HasActiveWebSocket,
+                        IsDormant: participant.IsDormant,
+                        CanReceiveCommands: participant.CanReceiveCommands,
+                        IsPaused: participant.IsPaused,
+                        IsHost: participant.IsHost,
+                        CurrentPositionTicks: participant.CurrentPositionTicks
+                    }))
+                })));
+                if (this.config && fingerprint !== this.partyRuntimeFingerprint) {
+                    this.partyRuntimeFingerprint = fingerprint;
+                    this.renderPartyList(view, this.config);
+                }
+                const announcement = parties.length === 0
+                    ? '当前没有一起看房间'
+                    : parties.map(party => {
+                        const activeClients = (party.Participants || []).filter(participant =>
+                            participant.IsOnline && !participant.IsDormant).length;
+                        return `${party.ItemName || party.SeriesName || '未命名房间'}：${activeClients} 台客户端在线`;
+                    }).join('；');
+                const status = view.querySelector('#partyRuntimeStatus');
+                if (status && status.textContent !== announcement) {
+                    status.textContent = announcement;
+                }
+                return parties;
+            }).catch(() => {
+                this.partyRuntimeById = this.partyRuntimeById || new Map();
+                return [];
+            });
+        }
+
+        syncParty(view, partyId) {
+            loading.show();
+            return ApiClient.ajax({
+                type: 'POST',
+                url: ApiClient.getUrl(`WatchParty/${encodeURIComponent(partyId)}/Sync`)
+            }).then(result => {
+                loading.hide();
+                const message = result?.Message || (result?.Accepted
+                    ? '同步命令已发送。'
+                    : '没有客户端具备可用的控制连接。');
+                toast({
+                    type: result?.Accepted ? 'success' : 'error',
+                    text: message
+                });
+                this.refreshPartyRuntimeStatus(view);
+                return result;
+            }).catch(error => {
+                loading.hide();
+                toast({ type: 'error', text: `一键同步失败：${error.message || error}` });
+                throw error;
             });
         }
 
@@ -1304,12 +1597,21 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
         loadData(view) {
             loading.show();
+            const requestId = (this.dataLoadRequestId || 0) + 1;
+            this.dataLoadRequestId = requestId;
 
             getPluginConfiguration().then(config => {
+                if (this.isViewPaused || this.dataLoadRequestId !== requestId) {
+                    loading.hide();
+                    return;
+                }
                 this.config = config;
+                this.contentSourceMode = 'recent';
                 const librarySelect = view.querySelector('#selectedLibraryId');
                 librarySelect.innerHTML = '<option value="">媒体库加载中……</option>';
                 populateLibraryDropdown(view, librarySelect);
+                view.querySelector('#contentSourceMode').value = 'recent';
+                view.querySelector('#librarySourceContainer').style.display = 'none';
 
                 view.querySelector('#isPartyActive').checked = true;
                 view.querySelector('#maxParticipants').value = 50;
@@ -1397,6 +1699,11 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     .then(() => this.updateRoomDraftSummary(view));
 
                 this.renderPartyList(view, config);
+                this.refreshPartyRuntimeStatus(view);
+                if (!this.isViewPaused && this.dataLoadRequestId === requestId) {
+                    this.startPartyRuntimeRefresh(view);
+                }
+                this.loadRecentContent(view);
 
                 loading.hide();
 
@@ -1410,10 +1717,11 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             loading.show();
 
             const libraryId = view.querySelector('#selectedLibraryId').value;
+            const contentSourceMode = view.querySelector('#contentSourceMode').value;
             const itemInput = view.querySelector('#selectedItemId');
             const itemId = itemInput.value;
 
-            if (!libraryId) {
+            if (contentSourceMode === 'library' && !libraryId) {
                 loading.hide();
                 toast({ type: 'error', text: '请选择内容媒体库。' });
                 return;
@@ -1561,7 +1869,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
                 const newParty = {
                     Id: this.generateGuid(),
-                    LibraryId: libraryId,
+                    LibraryId: libraryId || itemInput.dataset.libraryId || '',
                     ItemId: finalItemId,
                     ItemName: finalItemName,
                     ItemType: finalItemType,
@@ -1853,8 +2161,25 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         }
 
         onResume(options) {
+            this.isViewPaused = false;
             super.onResume(options);
             this.loadData(this.view);
+        }
+
+        onPause(options) {
+            this.isViewPaused = true;
+            this.dataLoadRequestId = (this.dataLoadRequestId || 0) + 1;
+            this.recentContentRequestVersion = (this.recentContentRequestVersion || 0) + 1;
+            this.partyRuntimeRequestVersion = (this.partyRuntimeRequestVersion || 0) + 1;
+            this.stopPartyRuntimeRefresh();
+            if (this.webServerStatusAbortController) {
+                this.webServerStatusAbortController.abort();
+            }
+            if (this.webServerStatusTimeout) {
+                clearTimeout(this.webServerStatusTimeout);
+                this.webServerStatusTimeout = null;
+            }
+            if (super.onPause) super.onPause(options);
         }
     }
 });

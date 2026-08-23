@@ -47,6 +47,8 @@ namespace WatchPartyForEmby.Api
         public string CurrentEpisodeName { get; set; }
         public int CurrentEpisodeIndex { get; set; }
         public int EpisodeCount { get; set; }
+        public bool MasterOnline { get; set; }
+        public List<ParticipantInfo> Participants { get; set; }
     }
 
     [Route("/WatchParty/{Id}/Participants", "GET", Summary = "Get party participants")]
@@ -69,6 +71,11 @@ namespace WatchPartyForEmby.Api
         public string SessionId { get; set; }
         public string Client { get; set; }
         public bool SupportsRemoteControl { get; set; }
+        public bool IsOnline { get; set; }
+        public bool HasActiveWebSocket { get; set; }
+        public bool IsDormant { get; set; }
+        public bool CanReceiveCommands { get; set; }
+        public bool IsPaused { get; set; }
         public bool IsHost { get; set; }
         public bool IsReady { get; set; }
         public bool IsBuffering { get; set; }
@@ -99,6 +106,32 @@ namespace WatchPartyForEmby.Api
         
         [ApiMember(Name = "UserId", Description = "Deprecated; the authenticated Emby user is used", IsRequired = false)]
         public string UserId { get; set; }
+    }
+
+    [Route("/WatchParty/{Id}/Sync", "POST", Summary = "Synchronize online party clients")]
+    [Authenticated]
+    public class SynchronizePartyRequest : IReturn<SynchronizePartyResponse>
+    {
+        [ApiMember(Name = "Id", Description = "Party ID", IsRequired = true)]
+        public string Id { get; set; }
+    }
+
+    public class SynchronizePartyResponse
+    {
+        public bool Accepted { get; set; }
+        public string Message { get; set; }
+        public List<ParticipantSynchronizationInfo> Participants { get; set; }
+    }
+
+    public class ParticipantSynchronizationInfo
+    {
+        public string SessionId { get; set; }
+        public string UserName { get; set; }
+        public string Client { get; set; }
+        public bool Online { get; set; }
+        public bool HasControlConnection { get; set; }
+        public bool CommandSent { get; set; }
+        public string Message { get; set; }
     }
 
     [Route("/WatchParty/Users", "GET", Summary = "Get all Emby users")]
@@ -179,12 +212,12 @@ namespace WatchPartyForEmby.Api
 
             foreach (var party in partySnapshot)
             {
-                if (!string.IsNullOrEmpty(party.PasswordHash))
+                if (!WatchPartyAuthorizationPolicy.SatisfiesPartyPassword(
+                        party,
+                        request.Password,
+                        isAdministrator))
                 {
-                    if (string.IsNullOrEmpty(request.Password) || !PasswordHelper.VerifyPassword(request.Password, party.PasswordHash))
-                    {
-                        continue;
-                    }
+                    continue;
                 }
 
                 if (!WatchPartyAuthorizationPolicy.CanAccessParty(
@@ -207,6 +240,7 @@ namespace WatchPartyForEmby.Api
 
                 var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
                 var participantCount = Plugin.Instance.PartyParticipants.DistinctUserCount(party.Id);
+                var projectedParticipants = ProjectParticipants(party.Id);
                 
                 parties.Add(new WatchPartyInfo
                 {
@@ -227,7 +261,10 @@ namespace WatchPartyForEmby.Api
                     CurrentEpisodeId = party.CurrentEpisodeId,
                     CurrentEpisodeName = currentEpisode?.ItemName,
                     CurrentEpisodeIndex = party.CurrentEpisodeIndex,
-                    EpisodeCount = party.EpisodeQueue?.Count ?? 0
+                    EpisodeCount = party.EpisodeQueue?.Count ?? 0,
+                    MasterOnline = projectedParticipants.Any(participant =>
+                        participant.IsHost && participant.IsOnline),
+                    Participants = projectedParticipants
                 });
             }
 
@@ -256,20 +293,7 @@ namespace WatchPartyForEmby.Api
             {
                 throw new UnauthorizedAccessException("The current user cannot access this party");
             }
-            var readyUsers = plugin.PartyReadyUsers.GetReadyUsersSnapshot(request.Id);
-            var sessionDescriptors = _sessionManager.Sessions.Select(session =>
-                new ParticipantSessionDescriptor
-                {
-                    SessionId = session.Id,
-                    Client = session.Client,
-                    SupportsRemoteControl = session.SupportsRemoteControl
-                });
-            participants = ParticipantInfoProjector.Project(
-                plugin.PartyParticipants.GetSessions(request.Id)
-                    .OrderByDescending(participant => participant.LastActivityAt),
-                readyUsers,
-                plugin.PartyParticipants.GetMasterSession(request.Id),
-                sessionDescriptors);
+            participants = ProjectParticipants(request.Id);
 
             return new PartyParticipantsResponse
             {
@@ -330,6 +354,57 @@ namespace WatchPartyForEmby.Api
             }
 
             await plugin.WaitingRoomStarts.StartAsync(request.Id).ConfigureAwait(false);
+        }
+
+        public async Task<object> Post(SynchronizePartyRequest request)
+        {
+            var currentUser = GetAuthenticatedUser();
+            var plugin = Plugin.Instance;
+            WatchPartyItem party;
+            lock (plugin.ConfigurationSyncRoot)
+            {
+                party = plugin.Configuration.WatchParties.FirstOrDefault(p => p.Id == request.Id);
+            }
+
+            if (party == null)
+            {
+                throw new ArgumentException($"Party {request.Id} not found");
+            }
+
+            if (!WatchPartyAuthorizationPolicy.CanSynchronizeParty(
+                    party,
+                    currentUser.Id.ToString(),
+                    currentUser.Policy?.IsAdministrator == true))
+            {
+                throw new UnauthorizedAccessException("Only the master can synchronize a party");
+            }
+
+            var result = ServerEntryPoint.Current == null
+                ? new PartyManualSynchronizationResult
+                {
+                    Accepted = false,
+                    Message = "播放同步服务尚未启动"
+                }
+                : await ServerEntryPoint.Current
+                    .SynchronizePartyNowAsync(request.Id)
+                    .ConfigureAwait(false);
+
+            return new SynchronizePartyResponse
+            {
+                Accepted = result.Accepted,
+                Message = result.Message,
+                Participants = result.Participants.Select(participant =>
+                    new ParticipantSynchronizationInfo
+                    {
+                        SessionId = participant.SessionId,
+                        UserName = participant.UserName,
+                        Client = participant.Client,
+                        Online = participant.Online,
+                        HasControlConnection = participant.HasControlConnection,
+                        CommandSent = participant.CommandSent,
+                        Message = participant.Message
+                    }).ToList()
+            };
         }
 
         public async Task<object> Post(ExplicitMasterSeekRequest request)
@@ -402,6 +477,53 @@ namespace WatchPartyForEmby.Api
             }
 
             return authorization.User;
+        }
+
+        private List<ParticipantInfo> ProjectParticipants(string partyId)
+        {
+            var plugin = Plugin.Instance;
+            var participants = plugin.PartyParticipants.GetSessions(partyId)
+                .OrderByDescending(participant => participant.LastActivityAt)
+                .ToList();
+            var activeSessions = SessionInfoIndex.Build(_sessionManager.Sessions);
+            var entryPoint = ServerEntryPoint.Current;
+            var descriptors = participants.Select(participant =>
+            {
+                activeSessions.TryGetValue(participant.SessionId ?? string.Empty, out var session);
+                var dormant = entryPoint?.IsParticipantDormant(
+                    partyId,
+                    participant.SessionId) == true;
+                var hasActiveWebSocket = session != null
+                    && OfficialIosWebSocketTransport.HasActiveWebSocketController(
+                        session.SessionControllers);
+                var supportsPlayback = session != null
+                    && PlaybackControlCapabilities.CanReceivePlaybackCommand(
+                        session.SupportsRemoteControl,
+                        session.PlayableMediaTypes);
+                var needsIosWebSocket = string.Equals(
+                    session?.Client,
+                    "Emby for iOS",
+                    StringComparison.Ordinal);
+
+                return new ParticipantSessionDescriptor
+                {
+                    SessionId = participant.SessionId,
+                    Client = session?.Client ?? string.Empty,
+                    SupportsRemoteControl = session?.SupportsRemoteControl == true,
+                    IsOnline = session != null,
+                    HasActiveWebSocket = hasActiveWebSocket,
+                    IsDormant = dormant,
+                    CanReceiveCommands = supportsPlayback
+                        && !dormant
+                        && (!needsIosWebSocket || hasActiveWebSocket)
+                };
+            });
+
+            return ParticipantInfoProjector.Project(
+                participants,
+                plugin.PartyReadyUsers.GetReadyUsersSnapshot(partyId),
+                plugin.PartyParticipants.GetMasterSession(partyId),
+                descriptors);
         }
     }
 }

@@ -68,6 +68,35 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public async Task ExplicitManualPlayCanReachDormantSessionWithoutReactivatingIt()
+        {
+            using (var dormancies = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan))
+            {
+                var queue = new DormancyAwarePlaybackCommandQueue(dormancies, 8);
+                dormancies.MarkDormant(
+                    "party",
+                    "old-ios",
+                    "playback-1",
+                    DateTime.UtcNow);
+                var invocationCount = 0;
+
+                var sent = await queue.EnqueueExplicitPlayNowAsync(
+                    "party",
+                    "old-ios",
+                    _ =>
+                    {
+                        invocationCount++;
+                        return Task.CompletedTask;
+                    },
+                    CancellationToken.None);
+
+                Assert.True(sent);
+                Assert.Equal(1, invocationCount);
+                Assert.True(dormancies.IsDormant("party", "old-ios"));
+            }
+        }
+
+        [Fact]
         public async Task CommandQueuedBeforeStopIsDroppedWhenDormancyBegins()
         {
             using (var dormancies = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan))
@@ -114,6 +143,45 @@ namespace WatchPartyForEmby.Tests
                 Assert.True(await runningStop);
                 Assert.False(await queuedPlay);
                 Assert.Equal(0, queuedInvocationCount);
+            }
+        }
+
+        [Fact]
+        public async Task BlockedSessionDoesNotDelayAHealthySession()
+        {
+            using (var dormancies = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan))
+            {
+                var queue = new DormancyAwarePlaybackCommandQueue(dormancies, 8);
+                var blockedStarted = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var releaseBlocked = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+                var blocked = queue.EnqueueAsync(
+                    "party",
+                    "disconnected-ios",
+                    ParticipantRoomCommand.Pause,
+                    ParticipantCommandQueueMode.Ordered,
+                    async _ =>
+                    {
+                        blockedStarted.TrySetResult(true);
+                        await releaseBlocked.Task.ConfigureAwait(false);
+                    },
+                    CancellationToken.None);
+                await blockedStarted.Task;
+
+                var healthy = queue.EnqueueAsync(
+                    "party",
+                    "healthy-ios",
+                    ParticipantRoomCommand.Pause,
+                    ParticipantCommandQueueMode.Ordered,
+                    _ => Task.CompletedTask,
+                    CancellationToken.None);
+
+                Assert.True(await healthy);
+                Assert.False(blocked.IsCompleted);
+                releaseBlocked.TrySetResult(true);
+                Assert.True(await blocked);
             }
         }
     }

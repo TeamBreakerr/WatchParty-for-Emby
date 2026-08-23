@@ -479,6 +479,20 @@ namespace WatchPartyForEmby
             }
         }
 
+        /// <summary>
+        /// Removes an expectation only when its command never reached the client. Once a
+        /// Pause/Unpause was dispatched, a superseding master generation may stop retries
+        /// but must retain this marker so a delayed client echo is still consumed.
+        /// </summary>
+        public bool CompletePauseStateCommandAttempt(
+            string sessionId,
+            PauseStateExpectationToken token,
+            bool commandWasDispatched)
+        {
+            return !commandWasDispatched
+                && CancelExpectedPauseState(sessionId, token);
+        }
+
         public bool ConsumeExpectedPauseState(
             string sessionId,
             bool isPaused,

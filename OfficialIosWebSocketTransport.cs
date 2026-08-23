@@ -16,10 +16,13 @@ namespace WatchPartyForEmby
     {
         private const string OfficialIosClient = "Emby for iOS";
         private readonly TimeSpan _keepAliveInterval;
+        private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
         private readonly ConcurrentDictionary<string, DateTime> _lastKeepAliveUtc =
             new ConcurrentDictionary<string, DateTime>(StringComparer.Ordinal);
 
-        public OfficialIosWebSocketTransport(TimeSpan keepAliveInterval)
+        public OfficialIosWebSocketTransport(
+            TimeSpan keepAliveInterval,
+            Func<TimeSpan, CancellationToken, Task> delayAsync = null)
         {
             if (keepAliveInterval <= TimeSpan.Zero)
             {
@@ -27,6 +30,7 @@ namespace WatchPartyForEmby
             }
 
             _keepAliveInterval = keepAliveInterval;
+            _delayAsync = delayAsync ?? Task.Delay;
         }
 
         public async Task<bool> TrySendKeepAliveAsync(
@@ -90,6 +94,58 @@ namespace WatchPartyForEmby
                 return true;
             }
 
+            return HasActiveWebSocketController(controllers);
+        }
+
+        public async Task<bool> WaitForPlaybackCommandTransportAsync(
+            string client,
+            Func<IEnumerable<ISessionController>> controllerProvider,
+            TimeSpan timeout,
+            TimeSpan pollInterval,
+            CancellationToken cancellationToken)
+        {
+            if (!string.Equals(client, OfficialIosClient, StringComparison.Ordinal))
+            {
+                return true;
+            }
+            if (controllerProvider == null)
+            {
+                throw new ArgumentNullException(nameof(controllerProvider));
+            }
+            if (timeout <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(timeout));
+            }
+            if (pollInterval <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(pollInterval));
+            }
+
+            if (HasActiveWebSocketController(controllerProvider()))
+            {
+                return true;
+            }
+
+            var elapsed = TimeSpan.Zero;
+            while (elapsed < timeout)
+            {
+                var delay = timeout - elapsed < pollInterval
+                    ? timeout - elapsed
+                    : pollInterval;
+                await _delayAsync(delay, cancellationToken).ConfigureAwait(false);
+                elapsed += delay;
+                if (HasActiveWebSocketController(controllerProvider()))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public static bool HasActiveWebSocketController(
+            IEnumerable<ISessionController> controllers)
+        {
             return controllers != null
                 && controllers.Any(controller => controller != null
                     && controller.IsSessionActive

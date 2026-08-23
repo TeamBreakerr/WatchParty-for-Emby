@@ -131,6 +131,62 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public async Task PlaybackCommandWaitsForAReconnectingIosWebSocket()
+        {
+            var firebase = SessionControllerProxy.Create<FirebaseSessionControllerProxy>(
+                isSessionActive: true);
+            var webSocket = SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
+                isSessionActive: true);
+            IEnumerable<ISessionController> controllers = new[] { firebase.Controller };
+            var waits = 0;
+            var transport = new OfficialIosWebSocketTransport(
+                TimeSpan.FromSeconds(10),
+                (_, __) =>
+                {
+                    waits++;
+                    controllers = new[] { firebase.Controller, webSocket.Controller };
+                    return Task.CompletedTask;
+                });
+
+            var available = await transport.WaitForPlaybackCommandTransportAsync(
+                "Emby for iOS",
+                () => controllers,
+                TimeSpan.FromSeconds(4),
+                TimeSpan.FromMilliseconds(250),
+                CancellationToken.None);
+
+            Assert.True(available);
+            Assert.Equal(1, waits);
+            Assert.Empty(firebase.Messages);
+        }
+
+        [Fact]
+        public async Task PlaybackCommandWaitTimesOutWithoutFallingBackToFirebase()
+        {
+            var firebase = SessionControllerProxy.Create<FirebaseSessionControllerProxy>(
+                isSessionActive: true);
+            var waits = 0;
+            var transport = new OfficialIosWebSocketTransport(
+                TimeSpan.FromSeconds(10),
+                (_, __) =>
+                {
+                    waits++;
+                    return Task.CompletedTask;
+                });
+
+            var available = await transport.WaitForPlaybackCommandTransportAsync(
+                "Emby for iOS",
+                () => new[] { firebase.Controller },
+                TimeSpan.FromMilliseconds(500),
+                TimeSpan.FromMilliseconds(250),
+                CancellationToken.None);
+
+            Assert.False(available);
+            Assert.Equal(2, waits);
+            Assert.Empty(firebase.Messages);
+        }
+
+        [Fact]
         public void NonIosPlaybackCommandsKeepTheirExistingTransportBehavior()
         {
             var transport = new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));

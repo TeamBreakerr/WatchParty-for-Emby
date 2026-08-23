@@ -37,6 +37,41 @@ namespace WatchPartyForEmby
             Func<CancellationToken, Task> operation,
             CancellationToken cancellationToken)
         {
+            return await EnqueueCoreAsync(
+                partyId,
+                sessionId,
+                command,
+                mode,
+                operation,
+                cancellationToken,
+                allowDormant: false).ConfigureAwait(false);
+        }
+
+        public async Task<bool> EnqueueExplicitPlayNowAsync(
+            string partyId,
+            string sessionId,
+            Func<CancellationToken, Task> operation,
+            CancellationToken cancellationToken)
+        {
+            return await EnqueueCoreAsync(
+                partyId,
+                sessionId,
+                ParticipantRoomCommand.PlayNow,
+                ParticipantCommandQueueMode.Ordered,
+                operation,
+                cancellationToken,
+                allowDormant: true).ConfigureAwait(false);
+        }
+
+        private async Task<bool> EnqueueCoreAsync(
+            string partyId,
+            string sessionId,
+            ParticipantRoomCommand command,
+            ParticipantCommandQueueMode mode,
+            Func<CancellationToken, Task> operation,
+            CancellationToken cancellationToken,
+            bool allowDormant)
+        {
             if (string.IsNullOrEmpty(partyId) || string.IsNullOrEmpty(sessionId))
             {
                 throw new ArgumentException("partyId and sessionId are required");
@@ -45,7 +80,8 @@ namespace WatchPartyForEmby
             {
                 throw new ArgumentNullException(nameof(operation));
             }
-            if (!_dormancies.CanReceiveCommand(partyId, sessionId, command))
+            if (!allowDormant
+                && !_dormancies.CanReceiveCommand(partyId, sessionId, command))
             {
                 return false;
             }
@@ -53,7 +89,8 @@ namespace WatchPartyForEmby
             var commandSent = false;
             Func<CancellationToken, Task> guardedOperation = async queuedToken =>
             {
-                if (!_dormancies.CanReceiveCommand(partyId, sessionId, command))
+                if (!allowDormant
+                    && !_dormancies.CanReceiveCommand(partyId, sessionId, command))
                 {
                     return;
                 }

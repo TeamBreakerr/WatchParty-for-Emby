@@ -84,7 +84,9 @@ function loadController(toasts, updatedConfigurations, configuration = { WatchPa
             updatedConfigurations.push(configuration);
             return {};
         },
+        ajax: async options => options,
         getJSON: async () => ({ Items: [] }),
+        getItems: async () => ({ Items: [] }),
         getUrl: value => value,
         getUsers: async () => [],
         getCurrentUserId: () => 'admin-user',
@@ -121,6 +123,8 @@ function createView() {
     const add = (selector, overrides) => fields.set(selector, element(overrides));
 
     add('#selectedLibraryId', { value: 'source-library' });
+    add('#contentSourceMode', { value: 'recent' });
+    add('#librarySourceContainer');
     add('#selectedItemId', { value: 'series-1', dataset: { type: 'Series', name: 'Example Series' } });
     add('#searchContent', { value: 'Example Series [TV Show]' });
     add('#selectedSeasonId', { value: '' });
@@ -238,6 +242,7 @@ test('single-episode Party still requires an episode', async () => {
 
 test('clearing the library removes stale selection state and blocks room creation', async () => {
     const view = createView();
+    view.querySelector('#contentSourceMode').value = 'library';
     const toasts = [];
     const updatedConfigurations = [];
     const controller = loadController(toasts, updatedConfigurations);
@@ -280,6 +285,70 @@ test('Movie Party remains a single-item Party', async () => {
     assert.equal(party.ItemId, 'movie-1');
     assert.deepEqual(party.EpisodeQueue, []);
     assert.equal('TargetLibraryId' in party, false);
+});
+
+test('recently watched content creates a room without selecting a library first', async () => {
+    const view = createView();
+    view.querySelector('#contentSourceMode').value = 'recent';
+    view.querySelector('#selectedLibraryId').value = '';
+    view.querySelector('#selectedItemId').value = 'recent-movie';
+    view.querySelector('#selectedItemId').dataset = {
+        type: 'Movie',
+        name: 'Recently Watched',
+        libraryId: 'movies-library'
+    };
+    view.querySelector('#searchContent').value = 'Recently Watched';
+    view.querySelector('#isSeriesParty').checked = false;
+
+    const result = await submit(view);
+
+    assert.equal(result.updatedConfigurations.length, 1, result.toasts.join('\n'));
+    const party = result.updatedConfigurations[0].WatchParties[0];
+    assert.equal(party.ItemId, 'recent-movie');
+    assert.equal(party.LibraryId, 'movies-library');
+});
+
+test('recently watched is the default content source and requests DatePlayed order', async () => {
+    const view = createView();
+    const controller = loadController([], []);
+    const receivedParams = [];
+    global.ApiClient.getItems = async (_userId, params) => {
+        receivedParams.push(params);
+        return {
+            Items: params.IsResumable
+                ? [{ Id: 'episode-1', Name: 'Episode One', Type: 'Episode', SeriesId: 'series-1', SeriesName: 'Series One' }]
+                : [{ Id: 'movie-1', Name: 'Movie One', Type: 'Movie', ParentId: 'library-1' }],
+            TotalRecordCount: 1
+        };
+    };
+
+    await controller.loadRecentContent(view);
+
+    assert.equal(receivedParams.length, 2);
+    assert.ok(receivedParams.every(params => params.SortBy === 'DatePlayed'));
+    assert.ok(receivedParams.every(params => params.SortOrder === 'Descending'));
+    assert.ok(receivedParams.some(params => params.IsPlayed === true));
+    assert.ok(receivedParams.some(params => params.IsResumable === true));
+    assert.equal(controller.searchContent_items[0].id, 'series-1');
+    assert.equal(controller.searchContent_items[0].type, 'Series');
+});
+
+test('late recently-watched response cannot overwrite library mode', async () => {
+    const view = createView();
+    const controller = loadController([], []);
+    const resolveRecent = [];
+    global.ApiClient.getItems = () => new Promise(resolve => {
+        resolveRecent.push(resolve);
+    });
+    controller.contentSourceMode = 'recent';
+
+    const request = controller.loadRecentContent(view);
+    controller.onContentSourceChange(view, 'library');
+    resolveRecent.forEach(resolve => resolve({ Items: [], TotalRecordCount: 0 }));
+    await request;
+
+    assert.equal(controller.contentSourceMode, 'library');
+    assert.deepEqual(controller.searchContent_items, []);
 });
 
 test('restricted Party automatically includes its master and records the same host', async () => {
@@ -545,6 +614,60 @@ test('room overview count stays in sync with the rendered room list', () => {
     assert.match(view.querySelector('#activePartiesList').innerHTML, /1 个启用/);
 });
 
+test('room overview shows each client control state and offers one-click synchronization', () => {
+    const view = createView();
+    const controller = loadController([], []);
+    controller.escapeHtml = value => String(value ?? '');
+    controller.partyRuntimeById = new Map([
+        ['active', {
+            Id: 'active',
+            IsPlaying: true,
+            CurrentPositionTicks: 1250000000,
+            Participants: [
+                {
+                    UserName: 'xsq',
+                    Client: 'Emby for iOS',
+                    IsOnline: true,
+                    HasActiveWebSocket: true,
+                    CanReceiveCommands: true,
+                    IsHost: false
+                }
+            ]
+        }]
+    ]);
+
+    controller.renderPartyList(view, {
+        WatchParties: [
+            { Id: 'active', ItemName: 'Movie A', ItemType: 'Movie', IsActive: true, CreatedDate: '2026-08-22T00:00:00Z' }
+        ]
+    });
+
+    const html = view.querySelector('#activePartiesList').innerHTML;
+    assert.match(html, /xsq/);
+    assert.match(html, /Emby for iOS/);
+    assert.match(html, /可控制/);
+    assert.match(html, /btnSyncParty/);
+    assert.match(html, /一键同步/);
+});
+
+test('one-click synchronization posts to the selected room and reports success', async () => {
+    const view = createView();
+    const toasts = [];
+    const controller = loadController(toasts, []);
+    let request;
+    global.ApiClient.ajax = async options => {
+        request = options;
+        return { Accepted: true, Message: '已向 1 台客户端发送同步命令' };
+    };
+    controller.refreshPartyRuntimeStatus = async () => [];
+
+    await controller.syncParty(view, 'room-1');
+
+    assert.equal(request.type, 'POST');
+    assert.equal(request.url, 'WatchParty/room-1/Sync');
+    assert.match(toasts.join('\n'), /已向 1 台客户端发送同步命令/);
+});
+
 test('room count and default-disabled console status settle before ancillary data finishes loading', async () => {
     const configuration = {
         WatchParties: [
@@ -563,6 +686,24 @@ test('room count and default-disabled console status settle before ancillary dat
     assert.equal(view.querySelector('#partyCount').textContent, '1');
     assert.match(view.querySelector('#heroServerStatusText').textContent, /未启用/);
     assert.doesNotMatch(view.querySelector('#heroServerStatusText').textContent, /正在检查/);
+});
+
+test('leaving the page before configuration loads does not start runtime polling', async () => {
+    const view = createView();
+    const controller = loadController([], []);
+    let resolveConfiguration;
+    let pollingStarted = 0;
+    global.ApiClient.getPluginConfiguration = () => new Promise(resolve => {
+        resolveConfiguration = resolve;
+    });
+    controller.startPartyRuntimeRefresh = () => { pollingStarted++; };
+
+    controller.loadData(view);
+    controller.onPause();
+    resolveConfiguration({ WatchParties: [] });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    assert.equal(pollingStarted, 0);
 });
 
 test('configured default master takes precedence over the current user', async () => {
@@ -745,10 +886,14 @@ test('embedded page presents a task-oriented configuration workspace', () => {
     assert.match(html, /<details[^>]+id="roomAdvancedSettings"/);
     assert.match(html, /<details[^>]+id="securityAdvancedSettings"/);
     assert.match(html, /id="btnCreateParty"/);
+    assert.match(html, /id="contentSourceMode"/);
+    assert.match(html, /value="recent"[^>]*selected/);
     assert.match(html, /id="configSaveFeedback"[^>]+role="status"[^>]+aria-live="polite"/);
     assert.match(html, /id="partyCount"/);
     assert.match(html, /id="heroServerStatusText"[^>]+role="status"[^>]+aria-live="polite"/);
     assert.match(html, /id="webServerStatusText"[^>]+role="status"[^>]+aria-live="polite"/);
+    assert.match(html, /id="partyRuntimeStatus"[^>]+role="status"[^>]+aria-live="polite"/);
+    assert.match(html, /id="activePartiesList"[^>]+role="region"/);
     assert.match(html, /@media \(max-width: 760px\)/);
     assert.match(html, /@media \(prefers-reduced-motion: reduce\)/);
 });

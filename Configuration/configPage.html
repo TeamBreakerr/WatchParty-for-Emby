@@ -458,6 +458,98 @@
             color: #7a848d;
         }
 
+        .watch-party-runtime {
+            display: grid;
+            gap: 0.7rem;
+            margin-top: 0.85rem;
+            padding: 0.8rem;
+            border: 1px solid var(--wp-border);
+            border-radius: 11px;
+            background: var(--wp-surface-soft);
+        }
+
+        .watch-party-runtime-summary {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.45rem 0.8rem;
+            color: var(--wp-text-muted);
+            font-size: 0.8rem;
+        }
+
+        .watch-party-client-list {
+            display: grid;
+            gap: 0.45rem;
+        }
+
+        .watch-party-client {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.8rem;
+            padding: 0.55rem 0.7rem;
+            border: 1px solid var(--wp-border);
+            border-radius: 9px;
+            background: #ffffff;
+            font-size: 0.8rem;
+        }
+
+        .watch-party-client-main {
+            min-width: 0;
+        }
+
+        .watch-party-client-name {
+            overflow: hidden;
+            color: var(--wp-text-strong);
+            font-weight: 650;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .watch-party-client-meta {
+            overflow: hidden;
+            color: var(--wp-text-muted);
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .watch-party-client-state {
+            flex: 0 0 auto;
+            color: var(--wp-text-muted);
+            font-size: 0.74rem;
+            font-weight: 650;
+        }
+
+        .watch-party-client-state.is-ready {
+            color: var(--wp-accent-strong);
+        }
+
+        .watch-party-client-state.is-warning {
+            color: var(--wp-warning);
+        }
+
+        .watch-party-runtime-empty {
+            color: var(--wp-text-muted);
+            font-size: 0.8rem;
+        }
+
+        .watch-party-visually-hidden {
+            position: absolute !important;
+            width: 1px !important;
+            height: 1px !important;
+            padding: 0 !important;
+            margin: -1px !important;
+            overflow: hidden !important;
+            clip: rect(0, 0, 0, 0) !important;
+            white-space: nowrap !important;
+            border: 0 !important;
+        }
+
+        .watch-party-list-actions .btnSyncParty {
+            color: var(--wp-blue);
+            font-weight: 650;
+        }
+
         .watch-party-list-actions {
             display: flex;
             flex-wrap: wrap;
@@ -1161,11 +1253,12 @@
                                 <div>
                                     <p class="watch-party-section-kicker">Overview</p>
                                     <h2>房间概览</h2>
-                                    <p class="watch-party-section-description">在这里启用、停用、开始或删除已有房间。</p>
+                                    <p class="watch-party-section-description">在这里查看客户端并管理房间；一键同步只控制已进入该房间且在线的官方 iOS 客户端。</p>
                                 </div>
                                 <span class="watch-party-badge">实时配置</span>
                             </div>
-                            <div id="activePartiesList">
+                            <div id="partyRuntimeStatus" class="watch-party-visually-hidden" role="status" aria-live="polite"></div>
+                            <div id="activePartiesList" role="region" aria-label="当前一起看房间">
                                 <div class="watch-party-empty-state">
                                     <strong>还没有一起看房间</strong>
                                     完成下面四步即可创建第一个房间。
@@ -1190,12 +1283,21 @@
                                         <h3 class="watch-party-step-heading">选择要观看的内容</h3>
                                         <p class="watch-party-step-intro">房间绑定原始 Emby 条目，不创建副本，也不会改变媒体库。</p>
                                         <div class="watch-party-field-grid">
-                                            <div class="selectContainer">
+                                            <div class="selectContainer watch-party-span-2">
+                                                <label class="selectLabel" for="contentSourceMode">内容来源</label>
+                                                <select is="emby-select" id="contentSourceMode" class="emby-select-withcolor emby-select">
+                                                    <option value="recent" selected>最近观看</option>
+                                                    <option value="library">从媒体库搜索</option>
+                                                </select>
+                                                <div class="fieldDescription">默认显示你最近播放过的电影和电视剧；找不到时再切换到媒体库搜索。</div>
+                                            </div>
+
+                                            <div class="selectContainer watch-party-span-2" id="librarySourceContainer" style="display: none;">
                                                 <label class="selectLabel" for="selectedLibraryId">内容媒体库</label>
                                                 <select is="emby-select" id="selectedLibraryId" class="emby-select-withcolor emby-select">
                                                     <option value="">正在加载媒体库……</option>
                                                 </select>
-                                                <div class="fieldDescription">先选择插件页面中已添加内容所在的媒体库。</div>
+                                                <div class="fieldDescription">媒体库模式下先选择插件页面中已添加内容所在的媒体库。</div>
                                             </div>
 
                                             <div class="selectContainer">

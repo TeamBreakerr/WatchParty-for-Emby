@@ -116,6 +116,15 @@ namespace WatchPartyForEmby
             }
         }
 
+        public bool IsDormant(string partyId, string sessionId)
+        {
+            var key = Key(partyId, sessionId);
+            lock (_syncRoot)
+            {
+                return _registrations.ContainsKey(key);
+            }
+        }
+
         public bool TryClaim(Registration registration)
         {
             if (registration == null)

@@ -959,6 +959,49 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void SupersededDispatchedPauseRetainsItsLateEchoMarker()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 24, 12, 0, 0, DateTimeKind.Utc);
+            var pause = coordinator.ExpectPauseState("ios-session", true, now);
+
+            Assert.False(coordinator.CompletePauseStateCommandAttempt(
+                "ios-session",
+                pause,
+                commandWasDispatched: true));
+            coordinator.ExpectPauseState(
+                "ios-session",
+                false,
+                now.AddMilliseconds(50));
+
+            Assert.True(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                true,
+                now.AddSeconds(1)));
+            Assert.True(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                false,
+                now.AddSeconds(1).AddMilliseconds(50)));
+        }
+
+        [Fact]
+        public void NeverDispatchedPauseDropsItsEchoMarker()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 24, 12, 5, 0, DateTimeKind.Utc);
+            var pause = coordinator.ExpectPauseState("ios-session", true, now);
+
+            Assert.True(coordinator.CompletePauseStateCommandAttempt(
+                "ios-session",
+                pause,
+                commandWasDispatched: false));
+            Assert.False(coordinator.ConsumeExpectedPauseState(
+                "ios-session",
+                true,
+                now.AddSeconds(1)));
+        }
+
+        [Fact]
         public void OutOfOrderUnpauseAndPauseEchoesAreBothConsumed()
         {
             var coordinator = new PlaybackSyncCoordinator();

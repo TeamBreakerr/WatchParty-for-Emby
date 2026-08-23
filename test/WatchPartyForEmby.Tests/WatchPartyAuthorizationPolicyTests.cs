@@ -41,6 +41,37 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void OnlyMasterHostOrAdministratorCanForceRoomSynchronization()
+        {
+            var party = Party("master", "host", "viewer");
+
+            Assert.True(WatchPartyAuthorizationPolicy.CanSynchronizeParty(party, "master", false));
+            Assert.True(WatchPartyAuthorizationPolicy.CanSynchronizeParty(party, "HOST", false));
+            Assert.True(WatchPartyAuthorizationPolicy.CanSynchronizeParty(party, "admin", true));
+            Assert.False(WatchPartyAuthorizationPolicy.CanSynchronizeParty(party, "viewer", false));
+        }
+
+        [Fact]
+        public void AdministratorCanInspectPasswordProtectedRoomWithoutSupplyingItsPassword()
+        {
+            var party = Party("master", "host");
+            party.PasswordHash = PasswordHelper.HashPassword("secret");
+
+            Assert.True(WatchPartyAuthorizationPolicy.SatisfiesPartyPassword(
+                party,
+                password: null,
+                isAdministrator: true));
+            Assert.False(WatchPartyAuthorizationPolicy.SatisfiesPartyPassword(
+                party,
+                password: null,
+                isAdministrator: false));
+            Assert.True(WatchPartyAuthorizationPolicy.SatisfiesPartyPassword(
+                party,
+                password: "secret",
+                isAdministrator: false));
+        }
+
+        [Fact]
         public void ReadyRequiresBothRoomAccessAndAnActivePartySession()
         {
             var party = Party("master", "host", "viewer");
@@ -67,6 +98,7 @@ namespace WatchPartyForEmby.Tests
         [InlineData(typeof(PartyParticipantsRequest))]
         [InlineData(typeof(SetReadyRequest))]
         [InlineData(typeof(StartPartyRequest))]
+        [InlineData(typeof(SynchronizePartyRequest))]
         [InlineData(typeof(GetUsersRequest))]
         public void StateAndIdentityEndpointsRequireAnAuthenticatedEmbySession(Type requestType)
         {
