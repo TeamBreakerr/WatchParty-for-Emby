@@ -25,6 +25,147 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void MatchesAConcreteMovieVersionToItsLogicalMovieParty()
+        {
+            var party = new WatchPartyItem
+            {
+                Id = "bouquet-party",
+                ItemId = "2188714",
+                IsActive = true
+            };
+            var partyItem = new WatchPartyMediaIdentity
+            {
+                InternalItemId = 2188714,
+                PresentationUniqueKey = "b225fbeb90004720b1be420af6ebe338_"
+            };
+            var playingVersion = new WatchPartyMediaIdentity
+            {
+                InternalItemId = 2276737,
+                PresentationUniqueKey = "b225fbeb90004720b1be420af6ebe338_"
+            };
+
+            var match = WatchPartyItemMatcher.FindActiveParty(
+                new[] { party },
+                playingVersion,
+                configuredItemId => configuredItemId == party.ItemId ? partyItem : null);
+
+            Assert.Same(party, match);
+        }
+
+        [Fact]
+        public void MatchesAConcreteMovieVersionFromTheParentsMediaSources()
+        {
+            var party = new WatchPartyItem
+            {
+                Id = "movie-party",
+                ItemId = "2188714",
+                IsActive = true
+            };
+
+            var match = WatchPartyItemMatcher.FindActiveParty(
+                new[] { party },
+                new WatchPartyMediaIdentity { InternalItemId = 2276737 },
+                _ => new WatchPartyMediaIdentity
+                {
+                    InternalItemId = 2188714,
+                    MediaSourceItemIds = new[] { "mediasource_2276737" }
+                });
+
+            Assert.Same(party, match);
+        }
+
+        [Fact]
+        public void DoesNotMatchDifferentLogicalMovies()
+        {
+            var party = new WatchPartyItem
+            {
+                Id = "bouquet-party",
+                ItemId = "2188714",
+                IsActive = true
+            };
+
+            var match = WatchPartyItemMatcher.FindActiveParty(
+                new[] { party },
+                new WatchPartyMediaIdentity
+                {
+                    InternalItemId = 9000000,
+                    PresentationUniqueKey = "another-movie"
+                },
+                _ => new WatchPartyMediaIdentity
+                {
+                    InternalItemId = 2188714,
+                    PresentationUniqueKey = "b225fbeb90004720b1be420af6ebe338_"
+                });
+
+            Assert.Null(match);
+        }
+
+        [Fact]
+        public void RejectsAmbiguousEquivalentMovieRooms()
+        {
+            var firstParty = new WatchPartyItem
+            {
+                Id = "first",
+                ItemId = "2188714",
+                IsActive = true
+            };
+            var secondParty = new WatchPartyItem
+            {
+                Id = "second",
+                ItemId = "2831958",
+                IsActive = true
+            };
+            var playingVersion = new WatchPartyMediaIdentity
+            {
+                InternalItemId = 2276737,
+                PresentationUniqueKey = "b225fbeb90004720b1be420af6ebe338_"
+            };
+
+            var match = WatchPartyItemMatcher.FindActiveParty(
+                new[] { firstParty, secondParty },
+                playingVersion,
+                configuredItemId => new WatchPartyMediaIdentity
+                {
+                    InternalItemId = long.Parse(configuredItemId),
+                    PresentationUniqueKey = "b225fbeb90004720b1be420af6ebe338_"
+                });
+
+            Assert.Null(match);
+        }
+
+        [Fact]
+        public void ExactMovieRoomWinsOverAnEquivalentRoom()
+        {
+            var exactParty = new WatchPartyItem
+            {
+                Id = "exact",
+                ItemId = "2276737",
+                IsActive = true
+            };
+            var equivalentParty = new WatchPartyItem
+            {
+                Id = "equivalent",
+                ItemId = "2188714",
+                IsActive = true
+            };
+
+            var match = WatchPartyItemMatcher.FindActiveParty(
+                new[] { equivalentParty, exactParty },
+                new WatchPartyMediaIdentity
+                {
+                    InternalItemId = 2276737,
+                    PresentationUniqueKey = "b225fbeb90004720b1be420af6ebe338_"
+                },
+                configuredItemId => new WatchPartyMediaIdentity
+                {
+                    InternalItemId = long.Parse(configuredItemId),
+                    PresentationUniqueKey = "b225fbeb90004720b1be420af6ebe338_"
+                });
+
+            Assert.Same(exactParty, match);
+        }
+
+        [Fact]
         public void MatchesAnyOriginalEpisodeInAWholeSeriesParty()
         {
             var party = new WatchPartyItem
@@ -52,6 +193,38 @@ namespace WatchPartyForEmby.Tests
             Assert.Equal(
                 "2001",
                 WatchPartyItemMatcher.FindEpisodeItemId(party, Guid.NewGuid(), 2001));
+        }
+
+        [Fact]
+        public void LogicalMovieMatchingDoesNotChangeSeriesEpisodeMatching()
+        {
+            var party = new WatchPartyItem
+            {
+                Id = "series-party",
+                ItemId = "1001",
+                IsSeriesParty = true,
+                IsActive = true,
+                EpisodeQueue = new List<WatchPartyEpisode>
+                {
+                    Episode("1001", 1, 1),
+                    Episode("1002", 1, 2)
+                }
+            };
+
+            var match = WatchPartyItemMatcher.FindActiveParty(
+                new[] { party },
+                new WatchPartyMediaIdentity
+                {
+                    InternalItemId = 1002,
+                    PresentationUniqueKey = "episode-two"
+                },
+                _ => new WatchPartyMediaIdentity
+                {
+                    InternalItemId = 9999,
+                    PresentationUniqueKey = "episode-two"
+                });
+
+            Assert.Same(party, match);
         }
 
         [Fact]

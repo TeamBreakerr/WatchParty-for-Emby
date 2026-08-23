@@ -11,12 +11,31 @@ namespace WatchPartyForEmby
             Guid itemId,
             long internalItemId)
         {
-            if (parties == null)
+            return FindActiveParty(
+                parties,
+                new WatchPartyMediaIdentity
+                {
+                    ItemId = itemId,
+                    InternalItemId = internalItemId
+                },
+                configuredItemResolver: null);
+        }
+
+        public static WatchPartyItem FindActiveParty(
+            IEnumerable<WatchPartyItem> parties,
+            WatchPartyMediaIdentity playingItem,
+            Func<string, WatchPartyMediaIdentity> configuredItemResolver)
+        {
+            if (parties == null || playingItem == null)
             {
                 return null;
             }
 
-            WatchPartyItem match = null;
+            WatchPartyItem exactMatch = null;
+            WatchPartyItem equivalentMatch = null;
+            var exactMatchCount = 0;
+            var equivalentMatchCount = 0;
+
             foreach (var party in parties)
             {
                 if (party?.IsActive != true)
@@ -24,19 +43,44 @@ namespace WatchPartyForEmby
                     continue;
                 }
 
-                if (MatchesItemId(party.ItemId, itemId, internalItemId)
-                    || !string.IsNullOrEmpty(FindEpisodeItemId(party, itemId, internalItemId)))
+                if (MatchesItemId(
+                        party.ItemId,
+                        playingItem.ItemId,
+                        playingItem.InternalItemId)
+                    || !string.IsNullOrEmpty(FindEpisodeItemId(
+                        party,
+                        playingItem.ItemId,
+                        playingItem.InternalItemId)))
                 {
-                    if (match != null)
-                    {
-                        return null;
-                    }
-
-                    match = party;
+                    exactMatch = party;
+                    exactMatchCount++;
+                    continue;
                 }
+
+                if (party.IsSeriesParty
+                    || configuredItemResolver == null
+                    || !AreEquivalent(
+                        configuredItemResolver(party.ItemId),
+                        playingItem))
+                {
+                    continue;
+                }
+
+                equivalentMatch = party;
+                equivalentMatchCount++;
             }
 
-            return match;
+            if (exactMatchCount > 1)
+            {
+                return null;
+            }
+
+            if (exactMatchCount == 1)
+            {
+                return exactMatch;
+            }
+
+            return equivalentMatchCount == 1 ? equivalentMatch : null;
         }
 
         public static bool HasActiveBindingConflict(IEnumerable<WatchPartyItem> parties)
@@ -122,6 +166,69 @@ namespace WatchPartyForEmby
                     CultureInfo.InvariantCulture,
                     out var configuredInternalId)
                 && configuredInternalId == internalItemId;
+        }
+
+        private static bool AreEquivalent(
+            WatchPartyMediaIdentity configuredItem,
+            WatchPartyMediaIdentity playingItem)
+        {
+            if (configuredItem == null || playingItem == null)
+            {
+                return false;
+            }
+
+            if (KnownItemIds(configuredItem).Overlaps(KnownItemIds(playingItem)))
+            {
+                return true;
+            }
+
+            return !string.IsNullOrWhiteSpace(configuredItem.PresentationUniqueKey)
+                && !string.IsNullOrWhiteSpace(playingItem.PresentationUniqueKey)
+                && string.Equals(
+                    configuredItem.PresentationUniqueKey,
+                    playingItem.PresentationUniqueKey,
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static HashSet<string> KnownItemIds(WatchPartyMediaIdentity item)
+        {
+            var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (item.ItemId != Guid.Empty)
+            {
+                ids.Add(CanonicalizeItemId(item.ItemId.ToString()));
+            }
+
+            if (item.InternalItemId > 0)
+            {
+                ids.Add(CanonicalizeItemId(
+                    item.InternalItemId.ToString(CultureInfo.InvariantCulture)));
+            }
+
+            if (item.MediaSourceItemIds == null)
+            {
+                return ids;
+            }
+
+            foreach (var mediaSourceItemId in item.MediaSourceItemIds)
+            {
+                if (string.IsNullOrWhiteSpace(mediaSourceItemId))
+                {
+                    continue;
+                }
+
+                var normalizedItemId = mediaSourceItemId.Trim();
+                const string mediaSourcePrefix = "mediasource_";
+                if (normalizedItemId.StartsWith(
+                    mediaSourcePrefix,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    normalizedItemId = normalizedItemId.Substring(mediaSourcePrefix.Length);
+                }
+
+                ids.Add(CanonicalizeItemId(normalizedItemId));
+            }
+
+            return ids;
         }
 
         private static string CanonicalizeItemId(string configuredItemId)

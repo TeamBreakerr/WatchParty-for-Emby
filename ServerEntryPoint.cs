@@ -32,6 +32,7 @@ namespace WatchPartyForEmby
         private readonly object _seriesTransitionLock = new object();
         private readonly object _configurationMaintenanceLock = new object();
         private readonly ConcurrentDictionary<string, DateTime> _lastProgressCheckpoint = new ConcurrentDictionary<string, DateTime>();
+        private readonly WatchPartyMediaIdentityResolver _mediaIdentityResolver;
         private readonly PlaybackSyncCoordinator _playbackSyncCoordinator = new PlaybackSyncCoordinator();
         private readonly MasterSeekSourceTracker _masterSeekSources =
             new MasterSeekSourceTracker();
@@ -131,6 +132,9 @@ namespace WatchPartyForEmby
             _libraryManager = libraryManager;
             _logger = logManager.GetLogger(GetType().Name);
             _plugin = Plugin.Instance;
+            _mediaIdentityResolver = new WatchPartyMediaIdentityResolver(
+                _libraryManager,
+                _logger);
             _playbackCommandQueue = new DormancyAwarePlaybackCommandQueue(
                 _participantDormancies,
                 capacityPerSession: 256);
@@ -204,6 +208,7 @@ namespace WatchPartyForEmby
         {
             _logger.Info("Configuration updated, refreshing collections and timer");
 
+            _mediaIdentityResolver.ClearConfiguredItemCache();
             NormalizePartyConfiguration();
             var config = _plugin.Configuration;
             var intervalMs = Math.Max(1, config.SyncIntervalSeconds) * 1000;
@@ -2924,8 +2929,8 @@ namespace WatchPartyForEmby
 
             return WatchPartyItemMatcher.FindActiveParty(
                 partySnapshot,
-                item.Id,
-                item.InternalId);
+                _mediaIdentityResolver.FromPlaybackItem(item),
+                _mediaIdentityResolver.ResolveConfiguredItem);
         }
 
         private static bool IsEmbyWebSession(SessionInfo session)
