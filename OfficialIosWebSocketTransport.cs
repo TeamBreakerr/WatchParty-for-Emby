@@ -154,10 +154,15 @@ namespace WatchPartyForEmby
         public static bool HasActiveWebSocketController(
             IEnumerable<ISessionController> controllers)
         {
-            return controllers != null
-                && controllers.Any(controller => controller != null
-                    && controller.IsSessionActive
-                    && IsWebSocketController(controller));
+            return CountActiveWebSocketControllers(controllers) > 0;
+        }
+
+        public static int CountActiveWebSocketControllers(
+            IEnumerable<ISessionController> controllers)
+        {
+            return controllers?.Count(controller => controller != null
+                && controller.IsSessionActive
+                && IsWebSocketController(controller)) ?? 0;
         }
 
         public void ClearSession(string sessionId)

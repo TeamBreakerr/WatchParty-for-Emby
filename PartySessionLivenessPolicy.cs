@@ -14,6 +14,11 @@ namespace WatchPartyForEmby
         public static readonly TimeSpan DefaultOnlineWindow =
             TimeSpan.FromMinutes(3);
 
+        public static bool IsWebClient(string client)
+        {
+            return client?.IndexOf("Web", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         public static bool IsOnline(
             SessionInfo session,
             DateTime nowUtc,

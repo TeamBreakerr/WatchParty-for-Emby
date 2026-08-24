@@ -57,22 +57,6 @@ namespace WatchPartyForEmby
             return CanStartParty(party, userId, isAdministrator);
         }
 
-        public static bool SatisfiesPartyPassword(
-            WatchPartyItem party,
-            string password,
-            bool isAdministrator)
-        {
-            if (party == null)
-            {
-                return false;
-            }
-
-            return isAdministrator
-                || string.IsNullOrEmpty(party.PasswordHash)
-                || (!string.IsNullOrEmpty(password)
-                    && PasswordHelper.VerifyPassword(password, party.PasswordHash));
-        }
-
         private static bool IsSameUser(string left, string right)
         {
             return !string.IsNullOrWhiteSpace(left)

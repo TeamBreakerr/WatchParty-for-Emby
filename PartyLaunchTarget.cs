@@ -17,6 +17,8 @@ namespace WatchPartyForEmby
         public bool InRoom { get; set; }
         public bool SupportsRemoteControl { get; set; }
         public bool HasActiveWebSocket { get; set; }
+        public int ActiveControllerCount { get; set; }
+        public bool HasAmbiguousWebControllers { get; set; }
         public bool CanLaunch { get; set; }
         public string Message { get; set; }
     }
@@ -36,6 +38,12 @@ namespace WatchPartyForEmby
             if (!facts.IsOnline)
             {
                 return Denied("客户端已离线");
+            }
+            if (facts.HasAmbiguousWebControllers)
+            {
+                return Denied(
+                    $"检测到 {facts.ActiveControllerCount} 个活动 Web 控制连接共享此 Session；" +
+                    "通常是同一浏览器打开了多个 Emby 标签页，请关闭多余标签页后重试");
             }
             if (!facts.CanJoin)
             {
@@ -71,5 +79,7 @@ namespace WatchPartyForEmby
         public bool CanJoin { get; set; }
         public bool SupportsRemoteControl { get; set; }
         public bool InRoom { get; set; }
+        public int ActiveControllerCount { get; set; }
+        public bool HasAmbiguousWebControllers { get; set; }
     }
 }

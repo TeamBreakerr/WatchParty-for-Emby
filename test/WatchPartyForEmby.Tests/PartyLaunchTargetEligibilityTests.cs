@@ -133,6 +133,88 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void ProjectorRejectsAWebSessionSharedByMultipleActiveControllers()
+        {
+            var firstTab =
+                SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
+                    isSessionActive: true);
+            var secondTab =
+                SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
+                    isSessionActive: true);
+            var session = Session(
+                "shared-web-session",
+                firstTab.Controller,
+                "master",
+                "Emby Web",
+                DateTime.UtcNow);
+            session.SessionControllers = new[]
+            {
+                firstTab.Controller,
+                secondTab.Controller
+            };
+
+            var target = PartyLaunchTargetProjector.Project(
+                new[] { session },
+                masterSessionId: session.Id,
+                masterUserId: session.UserId,
+                canJoin: _ => true,
+                isInRoom: _ => false,
+                nowUtc: DateTime.UtcNow).Single();
+
+            Assert.False(target.CanLaunch);
+            Assert.Equal(2, target.ActiveControllerCount);
+            Assert.True(target.HasAmbiguousWebControllers);
+            Assert.Equal(
+                "检测到 2 个活动 Web 控制连接共享此 Session；" +
+                "通常是同一浏览器打开了多个 Emby 标签页，请关闭多余标签页后重试",
+                target.Message);
+            Assert.Empty(PartySessionDiscovery.SelectRequested(
+                new[] { session },
+                DateTime.UtcNow,
+                new[] { session.Id },
+                candidate => PartyLaunchTargetProjector.BuildEvaluatedTarget(
+                    candidate,
+                    masterSessionId: session.Id,
+                    masterUserId: session.UserId,
+                    canJoin: true,
+                    inRoom: false,
+                    nowUtc: DateTime.UtcNow).CanLaunch));
+        }
+
+        [Fact]
+        public void ProjectorRejectsVariantWebClientNamesWithMultipleControllers()
+        {
+            var firstController =
+                SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
+                    isSessionActive: true);
+            var secondController =
+                SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
+                    isSessionActive: true);
+            var session = Session(
+                "shared-versioned-web-session",
+                firstController.Controller,
+                "master",
+                "Emby Web 4.9",
+                DateTime.UtcNow);
+            session.SessionControllers = new[]
+            {
+                firstController.Controller,
+                secondController.Controller
+            };
+
+            var target = PartyLaunchTargetProjector.BuildEvaluatedTarget(
+                session,
+                masterSessionId: session.Id,
+                masterUserId: session.UserId,
+                canJoin: true,
+                inRoom: false,
+                nowUtc: DateTime.UtcNow);
+
+            Assert.False(target.CanLaunch);
+            Assert.True(target.HasAmbiguousWebControllers);
+        }
+
+        [Fact]
         public void LowercaseIosWithoutWebSocketIsOfflineAndCannotBeSelected()
         {
             var firebase = SessionControllerProxy.Create<FirebaseSessionControllerProxy>(

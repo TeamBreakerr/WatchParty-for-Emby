@@ -3313,7 +3313,7 @@ namespace WatchPartyForEmby
 
         private static bool IsEmbyWebSession(SessionInfo session)
         {
-            return session?.Client?.IndexOf("Web", StringComparison.OrdinalIgnoreCase) >= 0;
+            return PartySessionLivenessPolicy.IsWebClient(session?.Client);
         }
 
         private string FindSeriesEpisodeId(WatchPartyItem party, BaseItem item)

@@ -252,28 +252,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 this.saveGlobalSettings(view);
             });
 
-            view.querySelector('#btnOpenDashboard').addEventListener('click', () => {
-                const currentSettings = Object.assign({}, this.config || {}, {
-                    ExternalWebServerPort: finiteInteger(
-                        view.querySelector('#externalWebServerPort').value,
-                        8097),
-                    EnableHttps: view.querySelector('#enableHttps').checked,
-                    UseReverseProxy: view.querySelector('#useReverseProxy').checked,
-                    ExternalServerUrl: view.querySelector('#externalServerUrl').value.trim(),
-                    EmbyServerUrl: view.querySelector('#embyServerUrl').value.trim(),
-                    ListenAddress: view.querySelector('#listenAddress').value.trim()
-                });
-                const dashboardUrl = this.getDashboardUrl(currentSettings);
-                if (!dashboardUrl) {
-                    toast({
-                        type: 'error',
-                        text: '反向代理模式无法自动推断公开控制台地址，请使用你在代理中配置的地址。'
-                    });
-                    return;
-                }
-                window.open(dashboardUrl, '_blank');
-            });
-
             view.querySelector('#contentSourceMode').addEventListener('change', (e) => {
                 this.onContentSourceChange(view, e.target.value);
             });
@@ -317,18 +295,9 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 this.updateDependentFields(view);
             });
 
-            view.querySelector('#useReverseProxy').addEventListener('change', () => {
-                this.updateDependentFields(view);
-            });
-
             view.querySelector('#isWaitingRoom').addEventListener('change', () => {
                 this.updateDependentFields(view);
             });
-
-            ['enableHttps', 'enableSecurityHeaders', 'enableHsts', 'enableAccountLockout']
-                .forEach(id => view.querySelector(`#${id}`).addEventListener('change', () => {
-                    this.updateDependentFields(view);
-                }));
 
             ['allowedUsers', 'masterUser'].forEach(id => {
                 view.querySelector(`#${id}`).addEventListener('change', () => {
@@ -340,11 +309,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 this.applyDefaultMasterToRoomDraft(view);
             });
 
-            view.querySelector('#externalWebServerPort').addEventListener('input', (e) => {
-                const port = e.target.value || '8097';
-                const placeholders = view.querySelectorAll('#portPlaceholder, #portPlaceholderDocker, #portPlaceholderDocker2');
-                placeholders.forEach(el => el.textContent = port);
-            });
         }
 
         setupAutocomplete(view, searchInputId, hiddenInputId, dropdownId, onSelectCallback, onLoadMoreCallback) {
@@ -1095,28 +1059,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             this.setContainerVisible(view, 'inactiveTimeoutContainer', autoKickEnabled);
             view.querySelector('#inactiveTimeoutMinutes').disabled = !autoKickEnabled;
 
-            const useReverseProxy = view.querySelector('#useReverseProxy').checked;
-            const httpsEnabled = !useReverseProxy && view.querySelector('#enableHttps').checked;
-            const securityHeadersEnabled = !useReverseProxy && view.querySelector('#enableSecurityHeaders').checked;
-            const hstsEnabled = httpsEnabled && view.querySelector('#enableHsts').checked;
-
-            this.setContainerVisible(view, 'corsOriginsContainer', !useReverseProxy);
-            this.setContainerVisible(view, 'httpsContainer', !useReverseProxy);
-            this.setContainerVisible(view, 'certThumbprintContainer', httpsEnabled);
-            this.setContainerVisible(view, 'securityHeadersContainer', !useReverseProxy);
-            this.setContainerVisible(view, 'cspContainer', securityHeadersEnabled);
-            this.setContainerVisible(view, 'hstsContainer', httpsEnabled);
-            this.setContainerVisible(view, 'hstsMaxAgeContainer', hstsEnabled);
-            view.querySelector('#hstsMaxAge').disabled = !hstsEnabled;
-
-            const accountLockoutEnabled = view.querySelector('#enableAccountLockout').checked;
-            this.setContainerVisible(view, 'maxFailedLoginAttemptsContainer', accountLockoutEnabled);
-            this.setContainerVisible(view, 'lockoutDurationContainer', accountLockoutEnabled);
-            this.setContainerVisible(view, 'lockoutWindowContainer', accountLockoutEnabled);
-            ['maxFailedLoginAttempts', 'lockoutDurationMinutes', 'lockoutWindowMinutes']
-                .forEach(id => {
-                    view.querySelector(`#${id}`).disabled = !accountLockoutEnabled;
-                });
         }
 
         updateRoomDraftSummary(view) {
@@ -1156,16 +1098,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         validateGlobalSettings(view) {
             const numericFields = [
                 ['syncIntervalSeconds', '同步检查间隔'],
-                ['syncOffsetMilliseconds', '恢复播放偏移'],
-                ['externalWebServerPort', '控制台端口'],
-                ['sessionExpirationMinutes', '登录会话有效期'],
-                ['rateLimitRequestsPerMinute', '请求频率限制'],
-                ['rateLimitBlockDurationMinutes', '超限封禁时长'],
-                ['hstsMaxAge', 'HSTS 有效期'],
-                ['maxFailedLoginAttempts', '最大登录失败次数'],
-                ['lockoutDurationMinutes', '锁定时长'],
-                ['lockoutWindowMinutes', '失败统计窗口'],
-                ['maxAuditLogEntries', '审计日志最大条数']
+                ['syncOffsetMilliseconds', '恢复播放偏移']
             ];
 
             for (const [id, label] of numericFields) {
@@ -1184,10 +1117,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             }
 
             return null;
-        }
-
-        toggleReverseProxySettings(view) {
-            this.updateDependentFields(view);
         }
 
         ensureMasterInWhitelistSelection(view) {
@@ -1271,7 +1200,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             allowedUsers.selectedIndex = -1;
             const masterUser = view.querySelector('#masterUser');
             masterUser.value = masterUser.dataset.defaultUserId || '';
-            view.querySelector('#partyPassword').value = '';
             view.querySelector('#isPartyActive').checked = true;
             view.querySelector('#maxParticipants').value = 50;
             view.querySelector('#isWaitingRoom').checked = true;
@@ -1418,12 +1346,15 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     const sessionSuffix = sessionId ? sessionId.slice(-8) : '未知';
                     const device = target.DeviceName || target.Client || '未知设备';
                     const statusClass = target.CanLaunch ? 'is-ready' : 'is-warning';
+                    const tabDetail = target.HasAmbiguousWebControllers
+                        ? ` · ${Number(target.ActiveControllerCount || 0)} 个活动 Web 控制连接`
+                        : '';
                     return `
-                        <label class="watch-party-launch-target${target.CanLaunch ? '' : ' is-disabled'}">
+                        <label class="watch-party-launch-target${target.CanLaunch ? '' : ' is-disabled'}" title="${this.escapeHtml(target.Message || '')}">
                             <input type="checkbox" class="launchTargetCheckbox" data-partyid="${encodeURIComponent(partyId)}" data-sessionid="${encodedSessionId}"${selected ? ' checked' : ''}${target.CanLaunch ? '' : ' disabled'}>
                             <span class="watch-party-launch-target-main">
                                 <span class="watch-party-launch-target-name">${this.escapeHtml(target.UserName || '未知用户')} · ${this.escapeHtml(device)}</span>
-                            <span class="watch-party-launch-target-meta">${this.escapeHtml(target.Client || '未知客户端')} · Session …${this.escapeHtml(sessionSuffix)}${target.IsMaster ? ' · Master' : ''}${target.InRoom ? ' · 已在房间' : ''}</span>
+                            <span class="watch-party-launch-target-meta">${this.escapeHtml(target.Client || '未知客户端')} · Session …${this.escapeHtml(sessionSuffix)}${target.IsMaster ? ' · Master' : ''}${target.InRoom ? ' · 已在房间' : ''}${tabDetail}</span>
                             </span>
                             <span class="watch-party-client-state ${statusClass}">${this.escapeHtml(target.Message || (target.CanLaunch ? '可开播' : '不可开播'))}</span>
                         </label>`;
@@ -1760,44 +1691,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 view.querySelector('#maxParticipants').value = 50;
                 view.querySelector('#syncIntervalSeconds').value = finiteInteger(config.SyncIntervalSeconds, 5);
                 view.querySelector('#syncOffsetMilliseconds').value = finiteInteger(config.SyncOffsetMilliseconds, 1000);
-                view.querySelector('#enableExternalWebServer').checked = config.EnableExternalWebServer === true;
-                view.querySelector('#externalWebServerPort').value = finiteInteger(config.ExternalWebServerPort, 8097);
-                view.querySelector('#listenAddress').value = config.ListenAddress || '127.0.0.1';
-                view.querySelector('#useReverseProxy').checked = config.UseReverseProxy === true;
-                view.querySelector('#allowedCorsOrigins').value = config.AllowedCorsOrigins || '';
-                view.querySelector('#sessionExpirationMinutes').value = finiteInteger(config.SessionExpirationMinutes, 60);
-                view.querySelector('#rateLimitRequestsPerMinute').value = finiteInteger(config.RateLimitRequestsPerMinute, 60);
-                view.querySelector('#rateLimitBlockDurationMinutes').value = finiteInteger(config.RateLimitBlockDurationMinutes, 15);
-                view.querySelector('#externalServerUrl').value = config.ExternalServerUrl || '';
-                view.querySelector('#embyServerUrl').value = config.EmbyServerUrl || '';
-                view.querySelector('#embyApiKey').value = config.EmbyApiKey || '';
-
-                view.querySelector('#enableHttps').checked = config.EnableHttps === true;
-                view.querySelector('#httpsCertificateThumbprint').value = config.HttpsCertificateThumbprint || '';
-                view.querySelector('#enableCsrfProtection').checked = config.EnableCsrfProtection !== false;
-                view.querySelector('#enableSecurityHeaders').checked = config.EnableSecurityHeaders !== false;
-                view.querySelector('#contentSecurityPolicy').value = config.ContentSecurityPolicy || "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;";
-                view.querySelector('#enableHsts').checked = config.EnableHsts !== false;
-                view.querySelector('#hstsMaxAge').value = finiteInteger(config.HstsMaxAge, 31536000);
-                view.querySelector('#enableAccountLockout').checked = config.EnableAccountLockout !== false;
-                view.querySelector('#maxFailedLoginAttempts').value = finiteInteger(config.MaxFailedLoginAttempts, 5);
-                view.querySelector('#lockoutDurationMinutes').value = finiteInteger(config.LockoutDurationMinutes, 15);
-                view.querySelector('#lockoutWindowMinutes').value = finiteInteger(config.LockoutWindowMinutes, 10);
-                view.querySelector('#enableAuditLogging').checked = config.EnableAuditLogging !== false;
-                view.querySelector('#maxAuditLogEntries').value = finiteInteger(config.MaxAuditLogEntries, 1000);
-
-                const port = finiteInteger(config.ExternalWebServerPort, 8097);
-                const placeholders = view.querySelectorAll('#portPlaceholder, #portPlaceholderDocker, #portPlaceholderDocker2');
-                placeholders.forEach(el => el.textContent = port);
-
-                const adminPasswordField = view.querySelector('#adminPassword');
-                if (config.AdminPasswordHash) {
-                    adminPasswordField.placeholder = '已设置密码；输入新密码可修改';
-                } else {
-                    adminPasswordField.placeholder = '尚未设置密码';
-                }
-
-                this.checkWebServerStatus(view, config);
 
                 view.querySelector('#isWaitingRoom').checked = true;
                 view.querySelector('#autoStartWhenReady').checked = true;
@@ -1962,10 +1855,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 return;
             }
 
-            const partyPassword = view.querySelector('#partyPassword').value || '';
-
             getPluginConfiguration().then(async config => {
-                const partyPasswordHash = partyPassword ? await this.hashPassword(partyPassword) : '';
                 let episodeQueue = [];
                 let currentEpisodeIndex = -1;
 
@@ -2037,7 +1927,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     AllowedUserIds: allowedUserIds,
                     MasterUserId: masterUserId,
                     HostUserId: masterUserId,
-                    PasswordHash: partyPasswordHash,
                     IsWaitingRoom: isWaitingRoom,
                     AutoStartWhenReady: autoStartWhenReady,
                     MinReadyCount: minReadyCount,
@@ -2090,38 +1979,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 config.SyncIntervalSeconds = finiteInteger(view.querySelector('#syncIntervalSeconds').value, 5);
                 config.SyncOffsetMilliseconds = finiteInteger(view.querySelector('#syncOffsetMilliseconds').value, 1000);
                 config.DefaultMasterUserId = view.querySelector('#defaultMasterUser').value || '';
-                config.EnableExternalWebServer = view.querySelector('#enableExternalWebServer').checked;
-                config.ExternalWebServerPort = finiteInteger(view.querySelector('#externalWebServerPort').value, 8097);
-                config.ListenAddress = view.querySelector('#listenAddress').value.trim() || '127.0.0.1';
-                config.UseReverseProxy = view.querySelector('#useReverseProxy').checked;
-                config.AllowedCorsOrigins = view.querySelector('#allowedCorsOrigins').value.trim();
-                config.SessionExpirationMinutes = finiteInteger(view.querySelector('#sessionExpirationMinutes').value, 60);
-                config.RateLimitRequestsPerMinute = finiteInteger(view.querySelector('#rateLimitRequestsPerMinute').value, 60);
-                config.RateLimitBlockDurationMinutes = finiteInteger(view.querySelector('#rateLimitBlockDurationMinutes').value, 15);
-                config.ExternalServerUrl = view.querySelector('#externalServerUrl').value.trim();
-                config.EmbyServerUrl = view.querySelector('#embyServerUrl').value.trim();
-                config.EmbyApiKey = view.querySelector('#embyApiKey').value.trim();
-
-                config.EnableHttps = !config.UseReverseProxy && view.querySelector('#enableHttps').checked;
-                config.HttpsCertificateThumbprint = view.querySelector('#httpsCertificateThumbprint').value.trim();
-                config.EnableCsrfProtection = view.querySelector('#enableCsrfProtection').checked;
-                config.EnableSecurityHeaders = !config.UseReverseProxy && view.querySelector('#enableSecurityHeaders').checked;
-                config.ContentSecurityPolicy = view.querySelector('#contentSecurityPolicy').value.trim();
-                config.EnableHsts = config.EnableHttps && view.querySelector('#enableHsts').checked;
-                config.HstsMaxAge = finiteInteger(view.querySelector('#hstsMaxAge').value, 31536000);
-                config.EnableAccountLockout = view.querySelector('#enableAccountLockout').checked;
-                config.MaxFailedLoginAttempts = finiteInteger(view.querySelector('#maxFailedLoginAttempts').value, 5);
-                config.LockoutDurationMinutes = finiteInteger(view.querySelector('#lockoutDurationMinutes').value, 15);
-                config.LockoutWindowMinutes = finiteInteger(view.querySelector('#lockoutWindowMinutes').value, 10);
-                config.EnableAuditLogging = view.querySelector('#enableAuditLogging').checked;
-                config.MaxAuditLogEntries = finiteInteger(view.querySelector('#maxAuditLogEntries').value, 1000);
-
-                const adminPassword = view.querySelector('#adminPassword').value.trim();
-                if (adminPassword) {
-                    config.AdminPasswordHash = await this.hashPassword(adminPassword);
-                    view.querySelector('#adminPassword').value = '';
-                    view.querySelector('#adminPassword').placeholder = '已设置密码；输入新密码可修改';
-                }
 
                 updatePluginConfiguration(config).then(result => {
                     loading.hide();
@@ -2129,9 +1986,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
                     this.config = config;
                     this.setStatusElement(view, '#configSaveFeedback', '设置已保存并应用。', 'success');
-                    setTimeout(() => {
-                        this.checkWebServerStatus(view, config);
-                    }, 2000);
                 }).catch(() => {
                     loading.hide();
                     this.setStatusElement(view, '#configSaveFeedback', '保存失败，请检查服务器日志后重试。', 'error');
@@ -2142,164 +1996,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 this.setStatusElement(view, '#configSaveFeedback', '无法读取当前设置，未保存任何更改。', 'error');
                 toast({ type: 'error', text: '加载设置失败，未保存任何更改。' });
             });
-        }
-
-        getDashboardUrl(config) {
-            config = config || {};
-            if (config.UseReverseProxy === true) {
-                return null;
-            }
-
-            const protocol = config.EnableHttps === true ? 'https' : 'http';
-            const port = finiteInteger(config.ExternalWebServerPort, 8097);
-            const addressCandidates = [
-                config.ExternalServerUrl,
-                config.EmbyServerUrl,
-                typeof ApiClient.serverAddress === 'function' ? ApiClient.serverAddress() : null
-            ];
-            let host = null;
-            for (const candidate of addressCandidates) {
-                if (!candidate) continue;
-                try {
-                    host = new URL(candidate).hostname;
-                    if (host) break;
-                } catch (_) {
-                    // Fall through to the configured listener or localhost.
-                }
-            }
-
-            if (!host) {
-                const listenAddress = String(config.ListenAddress || '')
-                    .split(',')[0]
-                    .trim();
-                if (listenAddress
-                    && !['*', '+', '0.0.0.0', '127.0.0.1', '::1', '[::1]']
-                        .includes(listenAddress)) {
-                    host = listenAddress.includes(':') && !listenAddress.startsWith('[')
-                        ? `[${listenAddress}]`
-                        : listenAddress;
-                }
-            }
-
-            return `${protocol}://${host || 'localhost'}:${port}/`;
-        }
-
-        checkWebServerStatus(view, config) {
-            const statusElement = view.querySelector('#webServerStatusText');
-            const port = finiteInteger(config.ExternalWebServerPort, 8097);
-            const enabled = config.EnableExternalWebServer === true;
-            const checkId = (this.webServerStatusCheckId || 0) + 1;
-            this.webServerStatusCheckId = checkId;
-
-            if (this.webServerStatusTimeout) {
-                clearTimeout(this.webServerStatusTimeout);
-                this.webServerStatusTimeout = null;
-            }
-            if (this.webServerStatusAbortController) {
-                this.webServerStatusAbortController.abort();
-                this.webServerStatusAbortController = null;
-            }
-
-            if (!enabled) {
-                statusElement.textContent = '外部控制台未启用；不影响 Emby 内的一起看同步。';
-                statusElement.style.color = '#999';
-                this.setStatusElement(view, '#heroServerStatusText', '未启用', 'neutral');
-                return;
-            }
-
-            const dashboardUrl = this.getDashboardUrl(config);
-            if (!dashboardUrl) {
-                statusElement.textContent = '反向代理模式：请通过代理公开地址检查控制台。';
-                statusElement.style.color = '#2196F3';
-                this.setStatusElement(view, '#heroServerStatusText', '由反向代理提供', 'info');
-                return;
-            }
-
-            statusElement.textContent = '正在检查……';
-            statusElement.style.color = '#FFA500';
-            this.setStatusElement(view, '#heroServerStatusText', '正在检查……', 'pending');
-
-            const abortController = typeof AbortController === 'function'
-                ? new AbortController()
-                : null;
-            const timeoutMs = Number.isFinite(this.statusCheckTimeoutMs)
-                ? this.statusCheckTimeoutMs
-                : 5000;
-            this.webServerStatusAbortController = abortController;
-
-            const timeoutPromise = new Promise((_, reject) => {
-                this.webServerStatusTimeout = setTimeout(() => {
-                    if (abortController) abortController.abort();
-                    const timeoutError = new Error('status check timed out');
-                    timeoutError.name = 'TimeoutError';
-                    reject(timeoutError);
-                }, timeoutMs);
-            });
-            const requestOptions = { cache: 'no-store' };
-            if (abortController) requestOptions.signal = abortController.signal;
-
-            Promise.race([fetch(dashboardUrl, requestOptions), timeoutPromise])
-                .then(response => {
-                    if (checkId !== this.webServerStatusCheckId) return;
-                    if (response.ok) {
-                        statusElement.innerHTML = `✓ 正在端口 ${port} 上运行<br><a href="${dashboardUrl}" target="_blank" style="color: #4CAF50;">打开控制台</a>`;
-                        statusElement.style.color = '#4CAF50';
-                        this.setStatusElement(view, '#heroServerStatusText', `端口 ${port} 正在运行`, 'success');
-                    } else {
-                        statusElement.textContent = `错误：HTTP ${response.status}`;
-                        statusElement.style.color = '#F44336';
-                        this.setStatusElement(view, '#heroServerStatusText', `HTTP ${response.status}`, 'error');
-                    }
-                })
-                .catch(error => {
-                    if (checkId !== this.webServerStatusCheckId) return;
-                    const timedOut = error && (error.name === 'TimeoutError'
-                        || (abortController && abortController.signal.aborted));
-                    statusElement.innerHTML = timedOut
-                        ? '连接检查超时；外部控制台当前未启用。请确认控制台端口和网络配置。'
-                        : `✗ 未运行<br><small style="color: #999;">Windows 可能需要执行：<code style="background: #222; padding: 0.2em 0.4em; border-radius: 3px;">netsh http add urlacl url=http://*:${port}/ user="Everyone"</code></small>`;
-                    statusElement.style.color = '#F44336';
-                    this.setStatusElement(
-                        view,
-                        '#heroServerStatusText',
-                        timedOut ? '未启用' : '未运行',
-                        timedOut ? 'neutral' : 'error');
-                })
-                .finally(() => {
-                    if (checkId !== this.webServerStatusCheckId) return;
-                    if (this.webServerStatusTimeout) {
-                        clearTimeout(this.webServerStatusTimeout);
-                        this.webServerStatusTimeout = null;
-                    }
-                    this.webServerStatusAbortController = null;
-                });
-        }
-
-        async hashPassword(password) {
-            const passwordBytes = new TextEncoder().encode(password);
-            const salt = globalThis.crypto.getRandomValues(new Uint8Array(16));
-            const key = await globalThis.crypto.subtle.importKey(
-                'raw',
-                passwordBytes,
-                { name: 'PBKDF2' },
-                false,
-                ['deriveBits']
-            );
-            const derivedBits = await globalThis.crypto.subtle.deriveBits(
-                {
-                    name: 'PBKDF2',
-                    salt: salt,
-                    iterations: 600000,
-                    hash: 'SHA-1'
-                },
-                key,
-                256
-            );
-            const hashBytes = new Uint8Array(derivedBits);
-            const encoded = new Uint8Array(salt.length + hashBytes.length);
-            encoded.set(salt, 0);
-            encoded.set(hashBytes, salt.length);
-            return btoa(String.fromCharCode.apply(null, Array.from(encoded)));
         }
 
         generateGuid() {
@@ -2322,13 +2018,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             this.recentContentRequestVersion = (this.recentContentRequestVersion || 0) + 1;
             this.partyRuntimeRequestVersion = (this.partyRuntimeRequestVersion || 0) + 1;
             this.stopPartyRuntimeRefresh();
-            if (this.webServerStatusAbortController) {
-                this.webServerStatusAbortController.abort();
-            }
-            if (this.webServerStatusTimeout) {
-                clearTimeout(this.webServerStatusTimeout);
-                this.webServerStatusTimeout = null;
-            }
             if (super.onPause) super.onPause(options);
         }
     }

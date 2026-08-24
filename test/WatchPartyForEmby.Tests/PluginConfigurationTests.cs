@@ -7,22 +7,6 @@ namespace WatchPartyForEmby.Tests
     public sealed class PluginConfigurationTests
     {
         [Fact]
-        public void ExternalDashboardIsDisabledByDefault()
-        {
-            var configuration = new PluginConfiguration();
-
-            Assert.False(configuration.EnableExternalWebServer);
-        }
-
-        [Fact]
-        public void ExternalDashboardDefaultsToLoopbackOnly()
-        {
-            var configuration = new PluginConfiguration();
-
-            Assert.Equal("127.0.0.1", configuration.ListenAddress);
-        }
-
-        [Fact]
         public void DefaultMasterIsUnspecifiedByDefault()
         {
             var configuration = new PluginConfiguration();
@@ -72,6 +56,49 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void EmbeddedControlCenterUpgradePreservesRoomsAndIsIdempotent()
+        {
+            var room = new WatchPartyItem { Id = "preserved-room" };
+            var configuration = new PluginConfiguration
+            {
+                ConfigurationVersion =
+                    PluginConfigurationMigration.DirectItemBindingVersion
+            };
+            configuration.WatchParties.Add(room);
+
+            Assert.True(
+                PluginConfigurationMigration.UpgradeToEmbeddedControlCenter(
+                    configuration));
+            Assert.Equal(
+                PluginConfigurationMigration.EmbeddedControlCenterVersion,
+                configuration.ConfigurationVersion);
+            Assert.Same(room, Assert.Single(configuration.WatchParties));
+            Assert.False(
+                PluginConfigurationMigration.UpgradeToEmbeddedControlCenter(
+                    configuration));
+        }
+
+        [Fact]
+        public void EmbeddedControlCenterUpgradeRunsEarlierSchemaStepsFirst()
+        {
+            var configuration = new PluginConfiguration
+            {
+                ConfigurationVersion = 0,
+                WatchParties = null
+            };
+
+            Assert.True(
+                PluginConfigurationMigration.UpgradeToEmbeddedControlCenter(
+                    configuration));
+
+            Assert.Equal(
+                PluginConfigurationMigration.EmbeddedControlCenterVersion,
+                configuration.ConfigurationVersion);
+            Assert.NotNull(configuration.WatchParties);
+            Assert.Empty(configuration.WatchParties);
+        }
+
+        [Fact]
         public void LegacyPauseControlElementIsIgnoredWithoutLosingRoomConfiguration()
         {
             var serializer = new XmlSerializer(typeof(PluginConfiguration));
@@ -109,6 +136,41 @@ namespace WatchPartyForEmby.Tests
             Assert.Equal("master-user", room.MasterUserId);
             Assert.Equal(7, room.SyncToleranceSeconds);
             Assert.Equal(12, room.MaxParticipants);
+        }
+
+        [Fact]
+        public void RetiredExternalConsoleElementsAreIgnoredByXmlConfiguration()
+        {
+            const string xml =
+                "<?xml version=\"1.0\" encoding=\"utf-16\"?>" +
+                "<PluginConfiguration xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" " +
+                "xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">" +
+                "<EnableExternalWebServer>true</EnableExternalWebServer>" +
+                "<ExternalWebServerPort>8097</ExternalWebServerPort>" +
+                "<EmbyApiKey>retired-secret</EmbyApiKey>" +
+                "<SyncIntervalSeconds>8</SyncIntervalSeconds>" +
+                "<WatchParties />" +
+                "</PluginConfiguration>";
+            var serializer = new XmlSerializer(typeof(PluginConfiguration));
+
+            PluginConfiguration restored;
+            using (var reader = new StringReader(xml))
+            {
+                restored = (PluginConfiguration)serializer.Deserialize(reader);
+            }
+
+            Assert.Equal(8, restored.SyncIntervalSeconds);
+            Assert.Empty(restored.WatchParties);
+
+            string rewrittenXml;
+            using (var writer = new StringWriter())
+            {
+                serializer.Serialize(writer, restored);
+                rewrittenXml = writer.ToString();
+            }
+            Assert.DoesNotContain("EnableExternalWebServer", rewrittenXml);
+            Assert.DoesNotContain("ExternalWebServerPort", rewrittenXml);
+            Assert.DoesNotContain("EmbyApiKey", rewrittenXml);
         }
     }
 }

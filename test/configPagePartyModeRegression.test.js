@@ -139,7 +139,6 @@ function createView() {
     add('#allowedUsers', { options: [] });
     add('#masterUser', { value: 'master-user' });
     add('#defaultMasterUser', { value: '' });
-    add('#partyPassword', { value: '' });
     add('#isPartyActive', { checked: false });
     add('#isWaitingRoom', { checked: false });
     add('#autoStartWhenReady', { checked: false });
@@ -149,15 +148,6 @@ function createView() {
     add('#inactiveTimeoutMinutes', { value: '15' });
     add('#syncIntervalSeconds', { value: '5', min: '1', max: '60' });
     add('#syncOffsetMilliseconds', { value: '1000', min: '-10000', max: '10000' });
-    add('#externalWebServerPort', { value: '8097', min: '1024', max: '65535' });
-    add('#sessionExpirationMinutes', { value: '60', min: '5', max: '1440' });
-    add('#rateLimitRequestsPerMinute', { value: '60', min: '0', max: '1000' });
-    add('#rateLimitBlockDurationMinutes', { value: '15', min: '1', max: '1440' });
-    add('#hstsMaxAge', { value: '31536000', min: '0', max: '63072000' });
-    add('#maxFailedLoginAttempts', { value: '5', min: '1', max: '20' });
-    add('#lockoutDurationMinutes', { value: '15', min: '1', max: '1440' });
-    add('#lockoutWindowMinutes', { value: '10', min: '1', max: '60' });
-    add('#maxAuditLogEntries', { value: '1000', min: '0', max: '100000' });
     add('#seriesContainer');
     add('#episodeContainer');
     add('#seriesPartyContainer');
@@ -452,11 +442,10 @@ test('waiting-room auto start is disabled when the waiting room is off', async (
     assert.equal(party.AutoStartWhenReady, false);
 });
 
-test('successful creation completely clears content, identity, password, and whitelist selections', async () => {
+test('successful creation completely clears content, identity, and whitelist selections', async () => {
     const view = createView();
     const selectedViewer = element({ value: 'viewer-user', selected: true });
     view.querySelector('#allowedUsers').options = [selectedViewer];
-    view.querySelector('#partyPassword').value = 'secret';
 
     const result = await submit(view);
 
@@ -470,7 +459,6 @@ test('successful creation completely clears content, identity, password, and whi
     assert.equal(view.querySelector('#selectedItemId').dataset.type, '');
     assert.equal(view.querySelector('#searchContent').value, '');
     assert.equal(view.querySelector('#masterUser').value, '');
-    assert.equal(view.querySelector('#partyPassword').value, '');
     assert.equal(selectedViewer.selected, false);
     assert.equal(view.querySelector('#selectedItemId').innerHTML, '');
 });
@@ -478,80 +466,29 @@ test('successful creation completely clears content, identity, password, and whi
 test('global settings preserve legitimate zero values', async () => {
     const view = createView();
     view.querySelector('#syncOffsetMilliseconds').value = '0';
-    view.querySelector('#rateLimitRequestsPerMinute').value = '0';
-    view.querySelector('#hstsMaxAge').value = '0';
-    view.querySelector('#enableHttps').checked = true;
-    view.querySelector('#enableHsts').checked = true;
-    view.querySelector('#useReverseProxy').checked = false;
 
     const toasts = [];
     const updatedConfigurations = [];
     const controller = loadController(toasts, updatedConfigurations);
-    controller.checkWebServerStatus = () => {};
-
-    const nativeSetTimeout = global.setTimeout;
-    global.setTimeout = (callback, delay) => {
-        if (delay === 2000) {
-            callback();
-            return 0;
-        }
-        return nativeSetTimeout(callback, delay);
-    };
-
-    try {
-        controller.saveGlobalSettings(view);
-        await new Promise(resolve => nativeSetTimeout(resolve, 20));
-    } finally {
-        global.setTimeout = nativeSetTimeout;
-    }
+    controller.saveGlobalSettings(view);
+    await new Promise(resolve => setTimeout(resolve, 20));
 
     assert.equal(updatedConfigurations.length, 1, toasts.join('\n'));
     assert.equal(updatedConfigurations[0].SyncOffsetMilliseconds, 0);
-    assert.equal(updatedConfigurations[0].RateLimitRequestsPerMinute, 0);
-    assert.equal(updatedConfigurations[0].HstsMaxAge, 0);
-});
-
-test('new browser-side password hashes use the server PBKDF2 format', async () => {
-    const controller = loadController([], []);
-
-    const hash = await controller.hashPassword('strong-password');
-
-    assert.equal(Buffer.from(hash, 'base64').length, 48);
 });
 
 test('loading global settings preserves legitimate zero values', async () => {
     const configuration = {
         WatchParties: [],
-        SyncOffsetMilliseconds: 0,
-        RateLimitRequestsPerMinute: 0,
-        HstsMaxAge: 0
+        SyncOffsetMilliseconds: 0
     };
     const view = createView();
     const controller = loadController([], [], configuration);
-    controller.checkWebServerStatus = () => {};
 
     controller.loadData(view);
     await new Promise(resolve => setTimeout(resolve, 20));
 
     assert.equal(view.querySelector('#syncOffsetMilliseconds').value, 0);
-    assert.equal(view.querySelector('#rateLimitRequestsPerMinute').value, 0);
-    assert.equal(view.querySelector('#hstsMaxAge').value, 0);
-});
-
-test('dashboard URL follows direct HTTPS and avoids guessing reverse-proxy routes', () => {
-    const controller = loadController([], []);
-
-    assert.equal(controller.getDashboardUrl({
-        EnableHttps: true,
-        UseReverseProxy: false,
-        ExternalWebServerPort: 9443,
-        EmbyServerUrl: 'http://192.0.2.50:8096'
-    }), 'https://192.0.2.50:9443/');
-    assert.equal(controller.getDashboardUrl({
-        EnableHttps: true,
-        UseReverseProxy: true,
-        ExternalWebServerPort: 9443
-    }), null);
 });
 
 test('autocomplete supports ARIA state and Arrow, Enter, and Escape keyboard control', () => {
@@ -594,47 +531,24 @@ test('autocomplete supports ARIA state and Arrow, Enter, and Escape keyboard con
     assert.equal(input.getAttribute('aria-expanded'), 'false');
 });
 
-test('dependent room and security fields are progressively disclosed', () => {
+test('dependent room fields are progressively disclosed', () => {
     const view = createView();
     const controller = loadController([], []);
 
     view.querySelector('#isWaitingRoom').checked = false;
     view.querySelector('#autoStartWhenReady').checked = true;
     view.querySelector('#autoKickInactive').checked = false;
-    view.querySelector('#useReverseProxy').checked = false;
-    view.querySelector('#enableHttps').checked = false;
-    view.querySelector('#enableSecurityHeaders').checked = false;
-    view.querySelector('#enableAccountLockout').checked = false;
     controller.updateDependentFields(view);
 
     assert.equal(view.querySelector('#autoStartWhenReadyContainer').style.display, 'none');
     assert.equal(view.querySelector('#minReadyCountContainer').style.display, 'none');
     assert.equal(view.querySelector('#inactiveTimeoutContainer').style.display, 'none');
-    assert.equal(view.querySelector('#certThumbprintContainer').style.display, 'none');
-    assert.equal(view.querySelector('#cspContainer').style.display, 'none');
-    assert.equal(view.querySelector('#maxFailedLoginAttemptsContainer').style.display, 'none');
-    assert.equal(view.querySelector('#hstsMaxAge').disabled, true);
-    assert.equal(view.querySelector('#maxFailedLoginAttempts').disabled, true);
-    assert.equal(view.querySelector('#lockoutDurationMinutes').disabled, true);
-    assert.equal(view.querySelector('#lockoutWindowMinutes').disabled, true);
 
     view.querySelector('#isWaitingRoom').checked = true;
-    view.querySelector('#enableHttps').checked = true;
-    view.querySelector('#enableHsts').checked = true;
-    view.querySelector('#enableSecurityHeaders').checked = true;
-    view.querySelector('#enableAccountLockout').checked = true;
     controller.updateDependentFields(view);
 
     assert.equal(view.querySelector('#autoStartWhenReadyContainer').style.display, 'block');
     assert.equal(view.querySelector('#minReadyCountContainer').style.display, 'block');
-    assert.equal(view.querySelector('#certThumbprintContainer').style.display, 'block');
-    assert.equal(view.querySelector('#cspContainer').style.display, 'block');
-    assert.equal(view.querySelector('#hstsMaxAgeContainer').style.display, 'block');
-    assert.equal(view.querySelector('#maxFailedLoginAttemptsContainer').style.display, 'block');
-    assert.equal(view.querySelector('#hstsMaxAge').disabled, false);
-    assert.equal(view.querySelector('#maxFailedLoginAttempts').disabled, false);
-    assert.equal(view.querySelector('#lockoutDurationMinutes').disabled, false);
-    assert.equal(view.querySelector('#lockoutWindowMinutes').disabled, false);
 });
 
 test('room draft summary reflects the content, master, and launch mode', () => {
@@ -718,6 +632,18 @@ test('room overview separates room clients from selectable online sessions on ev
                 CanLaunch: false,
                 IsOnline: false,
                 Message: '客户端已离线'
+            },
+            {
+                SessionId: 'shared-web-session-55667788',
+                UserName: 'team breaker',
+                DeviceName: 'Chromium macOS',
+                Client: 'Emby Web',
+                IsMaster: true,
+                InRoom: false,
+                CanLaunch: false,
+                HasAmbiguousWebControllers: true,
+                ActiveControllerCount: 2,
+                Message: '检测到 2 个活动 Web 控制连接共享此 Session；通常是同一浏览器打开了多个 Emby 标签页，请关闭多余标签页后重试'
             }
         ]]
     ]);
@@ -740,6 +666,9 @@ test('room overview separates room clients from selectable online sessions on ev
     assert.match(html, /iPhone 16/);
     assert.match(html, /online-session-12345678[^>]* checked/);
     assert.match(html, /stale-session-87654321[^>]* disabled/);
+    assert.match(html, /shared-web-session-55667788[^>]* disabled/);
+    assert.match(html, /2 个活动 Web 控制连接/);
+    assert.match(html, /通常是同一浏览器打开了多个 Emby 标签页/);
     assert.match(html, /btnSyncParty/);
     assert.match(html, /一键开播/);
     assert.doesNotMatch(html, /一键同步/);
@@ -794,7 +723,7 @@ test('one-click launch refuses an empty selection without sending a request', as
     assert.match(toasts.join('\n'), /请先勾选至少一个在线 Session/);
 });
 
-test('room count and default-disabled console status settle before ancillary data finishes loading', async () => {
+test('room count settles before ancillary data finishes loading', async () => {
     const configuration = {
         WatchParties: [
             { Id: 'configured-room', ItemName: 'Configured Room', ItemType: 'Movie', IsActive: true, CreatedDate: '2026-08-22T00:00:00Z' }
@@ -810,8 +739,6 @@ test('room count and default-disabled console status settle before ancillary dat
     await new Promise(resolve => setTimeout(resolve, 20));
 
     assert.equal(view.querySelector('#partyCount').textContent, '1');
-    assert.match(view.querySelector('#heroServerStatusText').textContent, /未启用/);
-    assert.doesNotMatch(view.querySelector('#heroServerStatusText').textContent, /正在检查/);
 });
 
 test('leaving the page before configuration loads does not start runtime polling', async () => {
@@ -914,31 +841,6 @@ test('changing the default master updates and resets the room draft selection', 
     assert.equal(view.querySelector('#masterUser').value, 'team-id');
 });
 
-test('external console status times out instead of remaining pending forever', async () => {
-    const view = createView();
-    const controller = loadController([], []);
-    controller.statusCheckTimeoutMs = 5;
-    const nativeFetch = global.fetch;
-    global.fetch = (_url, options = {}) => new Promise((_resolve, reject) => {
-        options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
-    });
-
-    try {
-        controller.checkWebServerStatus(view, {
-            EnableExternalWebServer: true,
-            UseReverseProxy: false,
-            ExternalWebServerPort: 8097,
-            EmbyServerUrl: 'http://127.0.0.1:8096'
-        });
-        await new Promise(resolve => setTimeout(resolve, 30));
-    } finally {
-        global.fetch = nativeFetch;
-    }
-
-    assert.equal(view.querySelector('#heroServerStatusText').textContent, '未启用');
-    assert.match(view.querySelector('#webServerStatusText').innerHTML, /连接检查超时/);
-});
-
 test('room metric displays only an Arabic numeral without a unit suffix', () => {
     const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
 
@@ -950,7 +852,6 @@ test('saving global settings exposes persistent success feedback', async () => {
     const view = createView();
     const updatedConfigurations = [];
     const controller = loadController([], updatedConfigurations);
-    controller.checkWebServerStatus = () => {};
     view.querySelector('#defaultMasterUser').value = 'team-id';
 
     controller.saveGlobalSettings(view);
@@ -976,24 +877,6 @@ test('global settings reject out-of-range numeric values before saving', async (
     assert.equal(view.querySelector('#configSaveFeedback').dataset.tone, 'error');
 });
 
-test('hidden advanced numeric settings do not block saving', async () => {
-    const view = createView();
-    const toasts = [];
-    const updatedConfigurations = [];
-    const controller = loadController(toasts, updatedConfigurations);
-    view.querySelector('#enableHttps').checked = false;
-    view.querySelector('#enableHsts').checked = false;
-    view.querySelector('#hstsMaxAge').value = '999999999';
-    view.querySelector('#enableAccountLockout').checked = false;
-    view.querySelector('#maxFailedLoginAttempts').value = '999';
-
-    controller.saveGlobalSettings(view);
-    await new Promise(resolve => setTimeout(resolve, 20));
-
-    assert.equal(updatedConfigurations.length, 1, toasts.join('\n'));
-    assert.equal(view.querySelector('#configSaveFeedback').dataset.tone, 'success');
-});
-
 test('embedded page presents a task-oriented configuration workspace', () => {
     const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
 
@@ -1002,26 +885,24 @@ test('embedded page presents a task-oriented configuration workspace', () => {
     assert.match(html, /href="#partyOverview"/);
     assert.match(html, /href="#createParty"/);
     assert.match(html, /href="#syncSettings"/);
-    assert.match(html, /href="#externalConsole"/);
-    assert.match(html, /href="#securitySettings"/);
 
-    ['partyOverview', 'createParty', 'syncSettings', 'externalConsole', 'securitySettings', 'usageHelp']
+    ['partyOverview', 'createParty', 'syncSettings', 'usageHelp']
         .forEach(sectionId => assert.match(html, new RegExp(`id="${sectionId}"`)));
 
     assert.equal((html.match(/class="setup-step/g) || []).length, 4);
     assert.match(html, /<details[^>]+id="roomAdvancedSettings"/);
-    assert.match(html, /<details[^>]+id="securityAdvancedSettings"/);
     assert.match(html, /id="btnCreateParty"/);
     assert.match(html, /id="contentSourceMode"/);
     assert.match(html, /value="recent"[^>]*selected/);
     assert.match(html, /id="configSaveFeedback"[^>]+role="status"[^>]+aria-live="polite"/);
     assert.match(html, /id="partyCount"/);
-    assert.match(html, /id="heroServerStatusText"[^>]+role="status"[^>]+aria-live="polite"/);
-    assert.match(html, /id="webServerStatusText"[^>]+role="status"[^>]+aria-live="polite"/);
     assert.match(html, /id="partyRuntimeStatus"[^>]+role="status"[^>]+aria-live="polite"/);
     assert.match(html, /id="activePartiesList"[^>]+role="region"/);
     assert.match(html, /@media \(max-width: 760px\)/);
     assert.match(html, /@media \(prefers-reduced-motion: reduce\)/);
+
+    const ids = Array.from(html.matchAll(/\sid="([^"]+)"/g), match => match[1]);
+    assert.equal(new Set(ids).size, ids.length, 'embedded page IDs must stay unique');
 });
 
 test('plugin keeps the existing admin menu item without adding a duplicate user-menu entry', () => {
@@ -1070,13 +951,11 @@ test('embedded page stays legible and uses the full Emby settings width in a lig
     assert.doesNotMatch(html, /#202832|#17211f|#1b232d|background:\s*rgba\(24,\s*27,\s*32/);
 });
 
-test('form controls and the dashboard action use polished interaction states', () => {
+test('form controls use polished interaction states', () => {
     const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
     const controlRule = html.match(/\.watch-party-page input:not\(\[type="checkbox"\]\):not\(\[type="hidden"\]\),\s*\n\s*\.watch-party-page select\s*\{([\s\S]*?)\n\s*\}/);
-    const actionRule = html.match(/\.watch-party-primary-action\s*\{([\s\S]*?)\n\s*\}/);
 
     assert.ok(controlRule, 'shared input and select styles should exist');
-    assert.ok(actionRule, 'dashboard action styles should exist');
     assert.match(controlRule[1], /min-height:\s*46px;/);
     assert.match(controlRule[1], /border-radius:\s*10px\s*!important;/);
     assert.match(controlRule[1], /transition:/);
@@ -1084,11 +963,6 @@ test('form controls and the dashboard action use polished interaction states', (
     assert.match(html, /\.watch-party-page input:not\([^}]+:hover,[\s\S]*?\.watch-party-page select:hover\s*\{/);
     assert.match(html, /\.watch-party-page input:not\([^}]+:focus,[\s\S]*?\.watch-party-page select:focus\s*\{[\s\S]*?box-shadow:\s*0 0 0 3px/);
     assert.match(html, /\.watch-party-page input:disabled,[\s\S]*?\.watch-party-page select:disabled\s*\{/);
-    assert.match(actionRule[1], /border-radius:\s*10px\s*!important;/);
-    assert.match(actionRule[1], /background:\s*var\(--wp-action-bg\)\s*!important;/);
-    assert.doesNotMatch(actionRule[1], /999px|linear-gradient/);
-    assert.match(html, /\.watch-party-primary-action:hover\s*\{/);
-    assert.match(html, /\.watch-party-primary-action:active\s*\{/);
 });
 
 test('single-line selects keep a fixed height and do not overlap following fields', () => {
@@ -1118,14 +992,37 @@ test('embedded page exposes one ready-count input, accessible comboboxes, and mo
     assert.doesNotMatch(html, /id="(?:hostOnlySeek|lockSeekAhead|enableNetworkLatencyCompensation|networkLatencyMeasurementIntervalSeconds|autoAdjustForLatency|maxLatencyCompensationMs)"/);
     assert.doesNotMatch(script, /querySelector\('#(?:hostOnlySeek|lockSeekAhead|enableNetworkLatencyCompensation|networkLatencyMeasurementIntervalSeconds|autoAdjustForLatency|maxLatencyCompensationMs)'\)/);
     assert.doesNotMatch(html, /id="enableDebugLogging"/);
-    assert.match(html, /id="maxAuditLogEntries" min="0" max="100000"/);
-    assert.match(html, /id="listenAddress"[^>]+placeholder="127\.0\.0\.1"/);
     assert.doesNotMatch(script, /Promise\.all\(\[getPluginConfiguration\(\),\s*loadLibraries\(\)\]\)/);
     assert.match(script, /const usersPromise = loadUsers\(\);/);
-    assert.match(script, /enableExternalWebServer'\)\.checked = config\.EnableExternalWebServer === true/);
     assert.match(script, /class="button-flat btnStartParty"/);
     assert.match(script, /WatchParty\/\$\{encodeURIComponent\(partyId\)\}\/Start/);
     assert.doesNotMatch(script, /data-partyid="\$\{party\.Id\}"/);
+});
+
+test('retired external console has no UI, listener settings, or embedded resource', () => {
+    const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
+    const script = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.js'), 'utf8');
+    const project = fs.readFileSync(path.resolve(__dirname, '../WatchPartyForEmby.csproj'), 'utf8');
+    const plugin = fs.readFileSync(path.resolve(__dirname, '../Plugin.cs'), 'utf8');
+
+    assert.doesNotMatch(html, /externalConsole|securitySettings|外部控制台|Emby API 密钥/);
+    assert.doesNotMatch(script, /ExternalWebServer|checkWebServerStatus|getDashboardUrl|EmbyApiKey/);
+    assert.doesNotMatch(project, /Configuration\\external\.html/);
+    assert.doesNotMatch(plugin, /ExternalWebServer|StartWebServer|RestartWebServer/);
+});
+
+test('room actions are a centered full-width footer and media paths wrap in full', () => {
+    const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
+    const cardRule = html.match(/\.watch-party-list-card\s*\{([\s\S]*?)\n\s*\}/);
+    const actionRule = html.match(/\.watch-party-list-actions\s*\{([\s\S]*?)\n\s*\}/);
+    const pathRule = html.match(/\.watch-party-media-version-path\s*\{([\s\S]*?)\n\s*\}/);
+
+    assert.match(cardRule[1], /grid-template-columns:\s*minmax\(0, 1fr\);/);
+    assert.match(actionRule[1], /justify-content:\s*center;/);
+    assert.match(actionRule[1], /border-top:/);
+    assert.match(pathRule[1], /white-space:\s*normal;/);
+    assert.match(pathRule[1], /overflow-wrap:\s*anywhere;/);
+    assert.doesNotMatch(pathRule[1], /text-overflow:\s*ellipsis|overflow:\s*hidden/);
 });
 
 test('media version selection exposes the concrete file path returned by Emby', async () => {

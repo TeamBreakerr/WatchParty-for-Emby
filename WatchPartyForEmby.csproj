@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
-    <AssemblyVersion>1.7.8</AssemblyVersion>
-    <FileVersion>1.7.8</FileVersion>
+    <AssemblyVersion>1.7.9</AssemblyVersion>
+    <FileVersion>1.7.9</FileVersion>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <NoWarn>CS1591</NoWarn>
@@ -16,7 +16,6 @@
   <ItemGroup>
     <EmbeddedResource Include="Configuration\configPage.html" />
     <EmbeddedResource Include="Configuration\configPage.js" />
-    <EmbeddedResource Include="Configuration\external.html" />
     <EmbeddedResource Include="images\logo.jpg" />
   </ItemGroup>
 

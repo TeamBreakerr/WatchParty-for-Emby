@@ -18,8 +18,6 @@ namespace WatchPartyForEmby.Api
         [ApiMember(Name = "UserId", Description = "User ID to filter accessible parties", IsRequired = false)]
         public string UserId { get; set; }
         
-        [ApiMember(Name = "Password", Description = "Party password for external access", IsRequired = false)]
-        public string Password { get; set; }
     }
 
     public class WatchPartyListResponse
@@ -40,7 +38,6 @@ namespace WatchPartyForEmby.Api
         public string HostUserName { get; set; }
         public long CurrentPositionTicks { get; set; }
         public bool IsPlaying { get; set; }
-        public bool RequiresPassword { get; set; }
         public bool IsSeriesParty { get; set; }
         public string SeriesName { get; set; }
         public string CurrentEpisodeId { get; set; }
@@ -228,14 +225,6 @@ namespace WatchPartyForEmby.Api
 
             foreach (var party in partySnapshot)
             {
-                if (!WatchPartyAuthorizationPolicy.SatisfiesPartyPassword(
-                        party,
-                        request.Password,
-                        isAdministrator))
-                {
-                    continue;
-                }
-
                 if (!WatchPartyAuthorizationPolicy.CanAccessParty(
                         party,
                         currentUserId,
@@ -271,7 +260,6 @@ namespace WatchPartyForEmby.Api
                     HostUserName = hostUserName,
                     CurrentPositionTicks = party.CurrentPositionTicks,
                     IsPlaying = party.IsPlaying,
-                    RequiresPassword = !string.IsNullOrEmpty(party.PasswordHash),
                     IsSeriesParty = party.IsSeriesParty,
                     SeriesName = party.SeriesName,
                     CurrentEpisodeId = party.CurrentEpisodeId,

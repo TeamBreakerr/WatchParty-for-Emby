@@ -9,18 +9,12 @@ namespace WatchPartyForEmby.Tests
         {
             var configuration = new PluginConfiguration
             {
-                SyncOffsetMilliseconds = 0,
-                RateLimitRequestsPerMinute = 0,
-                HstsMaxAge = 0,
-                MaxAuditLogEntries = 0
+                SyncOffsetMilliseconds = 0
             };
 
             PluginConfigurationPolicy.Normalize(configuration);
 
             Assert.Equal(0, configuration.SyncOffsetMilliseconds);
-            Assert.Equal(0, configuration.RateLimitRequestsPerMinute);
-            Assert.Equal(0, configuration.HstsMaxAge);
-            Assert.Equal(0, configuration.MaxAuditLogEntries);
         }
 
         [Fact]
@@ -29,24 +23,12 @@ namespace WatchPartyForEmby.Tests
             var configuration = new PluginConfiguration
             {
                 SyncIntervalSeconds = 0,
-                SyncOffsetMilliseconds = 50000,
-                ExternalWebServerPort = 0,
-                ListenAddress = " ",
-                SessionExpirationMinutes = -1,
-                RateLimitRequestsPerMinute = -1,
-                HstsMaxAge = -1,
-                MaxFailedLoginAttempts = 0
+                SyncOffsetMilliseconds = 50000
             };
 
             Assert.True(PluginConfigurationPolicy.Normalize(configuration));
             Assert.Equal(5, configuration.SyncIntervalSeconds);
             Assert.Equal(10000, configuration.SyncOffsetMilliseconds);
-            Assert.Equal(8097, configuration.ExternalWebServerPort);
-            Assert.Equal("127.0.0.1", configuration.ListenAddress);
-            Assert.Equal(5, configuration.SessionExpirationMinutes);
-            Assert.Equal(0, configuration.RateLimitRequestsPerMinute);
-            Assert.Equal(0, configuration.HstsMaxAge);
-            Assert.Equal(5, configuration.MaxFailedLoginAttempts);
         }
 
         [Fact]

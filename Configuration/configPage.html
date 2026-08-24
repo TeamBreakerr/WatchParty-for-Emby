@@ -144,52 +144,6 @@
             line-height: 1.75;
         }
 
-        .watch-party-hero-actions {
-            display: flex;
-            flex: 0 0 auto;
-            flex-direction: column;
-            align-items: stretch;
-            gap: 0.7rem;
-            min-width: 190px;
-        }
-
-        .watch-party-primary-action {
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: center;
-            min-height: 46px;
-            padding: 0 1.2rem !important;
-            border: 1px solid var(--wp-action-border) !important;
-            border-radius: 10px !important;
-            background: var(--wp-action-bg) !important;
-            color: #ffffff !important;
-            font-weight: 700 !important;
-            letter-spacing: 0.01em;
-            box-shadow: 0 3px 8px rgba(63, 120, 39, 0.18) !important;
-            transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
-        }
-
-        .watch-party-primary-action:hover {
-            border-color: var(--wp-action-border) !important;
-            background: var(--wp-action-hover-bg) !important;
-            box-shadow: 0 5px 12px rgba(63, 120, 39, 0.22) !important;
-            transform: translateY(-1px);
-        }
-
-        .watch-party-primary-action:active {
-            border-color: var(--wp-action-border) !important;
-            background: var(--wp-action-active-bg) !important;
-            box-shadow: 0 1px 3px rgba(63, 120, 39, 0.18) !important;
-            transform: translateY(0);
-        }
-
-        .watch-party-hero-action-note {
-            color: var(--wp-text-muted);
-            font-size: 0.76rem;
-            line-height: 1.4;
-            text-align: center;
-        }
-
         .watch-party-metrics {
             position: relative;
             z-index: 1;
@@ -412,9 +366,9 @@
 
         .watch-party-list-card {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            align-items: center;
-            gap: 1rem;
+            grid-template-columns: minmax(0, 1fr);
+            align-items: stretch;
+            gap: 0.85rem;
             padding: 1.1rem;
             border: 1px solid var(--wp-border);
             border-radius: var(--wp-radius-md);
@@ -673,12 +627,18 @@
         .watch-party-list-actions {
             display: flex;
             flex-wrap: wrap;
-            justify-content: flex-end;
+            justify-content: center;
             gap: 0.45rem;
+            padding-top: 0.85rem;
+            border-top: 1px solid var(--wp-border);
         }
 
         .watch-party-list-actions .emby-button {
+            min-width: 7rem;
             margin: 0;
+            border: 1px solid #d7e1e8 !important;
+            border-radius: 9px !important;
+            background: #f7fafc !important;
         }
 
         .watch-party-list-actions .btnStartParty {
@@ -859,7 +819,6 @@
             max-width: 100%;
             margin-top: 0.55rem;
             padding: 0.55rem 0.7rem;
-            overflow: hidden;
             border: 1px solid #d7e1d2;
             border-radius: 8px;
             background: #f5f9f3;
@@ -867,8 +826,9 @@
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-size: 0.72rem;
             line-height: 1.45;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            overflow-wrap: anywhere;
+            white-space: normal;
+            word-break: break-all;
         }
 
         .watch-party-mode-card {
@@ -948,8 +908,7 @@
             margin-top: 0.8rem;
         }
 
-        .watch-party-disclosure + .watch-party-draft,
-        .watch-party-status-panel + .watch-party-disclosure {
+        .watch-party-disclosure + .watch-party-draft {
             margin-top: 0.8rem;
         }
 
@@ -1039,52 +998,6 @@
         #btnCreateParty {
             min-width: 170px;
             border-radius: 999px;
-        }
-
-        .watch-party-status-panel {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            align-items: center;
-            gap: 1rem;
-            margin-top: 1rem;
-            padding: 1rem;
-            border: 1px solid var(--wp-border);
-            border-radius: var(--wp-radius-md);
-            background: var(--wp-surface-soft);
-        }
-
-        .watch-party-status-panel strong {
-            display: block;
-            margin-bottom: 0.28rem;
-        }
-
-        #webServerStatusText {
-            color: var(--wp-text-muted);
-            font-size: 0.84rem;
-            line-height: 1.55;
-        }
-
-        .watch-party-platform-notes {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.8rem;
-            margin-top: 1rem;
-        }
-
-        .watch-party-platform-note {
-            padding: 1rem;
-            border: 1px solid var(--wp-border);
-            border-radius: 12px;
-            background: var(--wp-surface-soft);
-            color: var(--wp-text-muted);
-            font-size: 0.8rem;
-            line-height: 1.6;
-        }
-
-        .watch-party-platform-note strong {
-            display: block;
-            margin-bottom: 0.35rem;
-            color: var(--wp-text-strong);
         }
 
         .watch-party-page code {
@@ -1194,22 +1107,11 @@
                 flex-direction: column;
             }
 
-            .watch-party-hero-actions {
-                flex-direction: row;
-                align-items: center;
-                min-width: 0;
-            }
-
-            .watch-party-hero-action-note {
-                max-width: 220px;
-                text-align: left;
-            }
         }
 
         @media (max-width: 760px) {
             .watch-party-metrics,
             .watch-party-field-grid,
-            .watch-party-platform-notes,
             .watch-party-help-grid {
                 grid-template-columns: 1fr;
             }
@@ -1230,8 +1132,7 @@
                 border-radius: 10px;
             }
 
-            .watch-party-draft,
-            .watch-party-status-panel {
+            .watch-party-draft {
                 grid-template-columns: 1fr;
             }
 
@@ -1244,7 +1145,7 @@
             }
 
             .watch-party-list-actions {
-                justify-content: flex-start;
+                justify-content: center;
             }
         }
 
@@ -1262,17 +1163,6 @@
 
             .watch-party-hero h1 {
                 font-size: 2rem;
-            }
-
-            .watch-party-hero-actions {
-                flex-direction: column;
-                align-items: stretch;
-                width: 100%;
-            }
-
-            .watch-party-hero-action-note {
-                max-width: none;
-                text-align: center;
             }
 
             .watch-party-metrics {
@@ -1344,12 +1234,6 @@
                                 选择原媒体、指定主控并创建房间。主控负责播放、暂停、拖动与切集，其他客户端稳定跟随。
                             </p>
                         </div>
-                        <div class="watch-party-hero-actions">
-                            <button is="emby-button" type="button" id="btnOpenDashboard" class="raised watch-party-primary-action">
-                                <span>打开一起看控制台</span>
-                            </button>
-                            <span class="watch-party-hero-action-note">用于查看参与者状态与控制已创建的房间</span>
-                        </div>
                     </div>
                     <div class="watch-party-metrics" aria-label="一起看状态摘要">
                         <div class="watch-party-metric">
@@ -1361,8 +1245,8 @@
                             <span class="watch-party-metric-value">Master 单向控制</span>
                         </div>
                         <div class="watch-party-metric">
-                            <span class="watch-party-metric-label">外部控制台</span>
-                            <span class="watch-party-metric-value" id="heroServerStatusText" role="status" aria-live="polite">等待配置加载……</span>
+                            <span class="watch-party-metric-label">在线开播</span>
+                            <span class="watch-party-metric-value">勾选 Session 精准下发</span>
                         </div>
                     </div>
                 </header>
@@ -1374,12 +1258,10 @@
                             <a href="#partyOverview"><span class="watch-party-nav-index">01</span>房间概览</a>
                             <a href="#createParty"><span class="watch-party-nav-index">02</span>创建房间</a>
                             <a href="#syncSettings"><span class="watch-party-nav-index">03</span>同步设置</a>
-                            <a href="#externalConsole"><span class="watch-party-nav-index">04</span>外部控制台</a>
-                            <a href="#securitySettings"><span class="watch-party-nav-index">05</span>安全与高级</a>
-                            <a href="#usageHelp"><span class="watch-party-nav-index">06</span>使用帮助</a>
+                            <a href="#usageHelp"><span class="watch-party-nav-index">04</span>使用帮助</a>
                         </nav>
                         <div class="watch-party-sidebar-tip">
-                            常用操作都在前两项。网络和安全参数保持默认即可，只有部署方式变化时才需要调整。
+                            常用操作都在前两项；同步偏移与检查间隔通常保持默认即可。
                         </div>
                     </aside>
 
@@ -1510,11 +1392,6 @@
                                                 <div class="fieldDescription">按住 Ctrl/Cmd 可多选；选择白名单后会自动包含主控用户。</div>
                                             </div>
 
-                                            <div class="inputContainer watch-party-span-2">
-                                                <label class="inputLabel" for="partyPassword">房间密码（可选）</label>
-                                                <input is="emby-input" type="password" id="partyPassword" class="emby-input" autocomplete="new-password" />
-                                                <div class="fieldDescription">只用于访问外部控制台；留空表示无需房间密码。</div>
-                                            </div>
                                         </div>
                                     </div>
                                 </article>
@@ -1650,238 +1527,6 @@
                             </div>
                         </section>
 
-                        <section id="externalConsole" class="watch-party-section">
-                            <div class="watch-party-section-header">
-                                <div>
-                                    <p class="watch-party-section-kicker">External dashboard</p>
-                                    <h2>外部控制台</h2>
-                                    <p class="watch-party-section-description">启用独立控制台后，可以更直观地查看房间和参与者状态。</p>
-                                </div>
-                            </div>
-
-                            <div class="watch-party-field-grid">
-                                <div class="checkboxContainer watch-party-span-2">
-                                    <label>
-                                        <input is="emby-checkbox" type="checkbox" id="enableExternalWebServer" />
-                                        <span>启用外部 Web 服务器</span>
-                                    </label>
-                                    <div class="fieldDescription">关闭后外部控制台不可访问，但 Emby 内的同步房间仍可工作。</div>
-                                </div>
-
-                                <div class="inputContainer">
-                                    <label class="inputLabel inputLabelUnfocused" for="externalWebServerPort">控制台端口</label>
-                                    <input is="emby-input" type="number" id="externalWebServerPort" min="1024" max="65535" step="1" />
-                                    <div class="fieldDescription">默认 8097；保存后 Web 服务器会自动重启。</div>
-                                </div>
-
-                                <div class="inputContainer">
-                                    <label class="inputLabel inputLabelUnfocused" for="listenAddress">监听地址</label>
-                                    <input is="emby-input" type="text" id="listenAddress" placeholder="127.0.0.1" />
-                                    <div class="fieldDescription">默认仅监听本机；0.0.0.0 会暴露到所有网卡。</div>
-                                </div>
-
-                                <div class="checkboxContainer watch-party-span-2">
-                                    <label>
-                                        <input is="emby-checkbox" type="checkbox" id="useReverseProxy" />
-                                        <span>正在使用反向代理（nginx、Caddy、IIS 等）</span>
-                                    </label>
-                                    <div class="fieldDescription">启用后，HTTPS、安全响应头和 CORS 交由反向代理处理。</div>
-                                </div>
-
-                                <div class="inputContainer">
-                                    <label class="inputLabel inputLabelUnfocused" for="externalServerUrl">外部访问地址</label>
-                                    <input is="emby-input" type="text" id="externalServerUrl" placeholder="https://emby.example.com" />
-                                    <div class="fieldDescription">从外网访问 Emby 的公开地址。</div>
-                                </div>
-
-                                <div class="inputContainer">
-                                    <label class="inputLabel inputLabelUnfocused" for="embyServerUrl">Emby 内部地址</label>
-                                    <input is="emby-input" type="text" id="embyServerUrl" placeholder="http://192.168.50.146:8096" />
-                                    <div class="fieldDescription">控制台连接 Emby 时使用的服务器地址。</div>
-                                </div>
-
-                                <div class="inputContainer watch-party-span-2">
-                                    <label class="inputLabel inputLabelUnfocused" for="embyApiKey">Emby API 密钥</label>
-                                    <input is="emby-input" type="password" id="embyApiKey" autocomplete="off" />
-                                    <div class="fieldDescription"><strong>外部控制台必填。</strong>在 Emby 控制台 → API 密钥中创建并粘贴到这里。</div>
-                                </div>
-                            </div>
-
-                            <div id="webServerStatus" class="watch-party-status-panel">
-                                <div>
-                                    <strong>控制台运行状态</strong>
-                                    <span id="webServerStatusText" role="status" aria-live="polite">等待配置加载……</span>
-                                </div>
-                                <span class="watch-party-badge">连接检测</span>
-                            </div>
-
-                            <details class="watch-party-disclosure">
-                                <summary>
-                                    <span>
-                                        <span class="watch-party-summary-title">查看平台端口说明</span>
-                                        <span class="watch-party-summary-description">Windows URL ACL 与 Docker 端口映射</span>
-                                    </span>
-                                </summary>
-                                <div class="watch-party-disclosure-content">
-                                    <div class="watch-party-platform-notes">
-                                        <div class="watch-party-platform-note">
-                                            <strong>Windows</strong>
-                                            以管理员身份运行：
-                                            <code>netsh http add urlacl url=http://*:<span id="portPlaceholder">8097</span>/ user="Everyone"</code>
-                                        </div>
-                                        <div class="watch-party-platform-note">
-                                            <strong>Linux / Docker</strong>
-                                            创建容器时增加端口映射：
-                                            <code>-p <span id="portPlaceholderDocker">8097</span>:<span id="portPlaceholderDocker2">8097</span></code>
-                                        </div>
-                                    </div>
-                                </div>
-                            </details>
-                        </section>
-
-                        <section id="securitySettings" class="watch-party-section">
-                            <div class="watch-party-section-header">
-                                <div>
-                                    <p class="watch-party-section-kicker">Security & advanced</p>
-                                    <h2>安全与高级设置</h2>
-                                    <p class="watch-party-section-description">这些设置影响外部控制台的访问边界。使用反向代理时，优先在代理层完成 HTTPS 和响应头配置。</p>
-                                </div>
-                                <span class="watch-party-badge">低频</span>
-                            </div>
-
-                            <details class="watch-party-disclosure" id="securityAdvancedSettings">
-                                <summary>
-                                    <span>
-                                        <span class="watch-party-summary-title">展开安全与访问参数</span>
-                                        <span class="watch-party-summary-description">身份验证、限流、HTTPS、防护响应头与审计</span>
-                                    </span>
-                                </summary>
-                                <div class="watch-party-disclosure-content">
-                                    <div class="watch-party-field-grid">
-                                        <div class="inputContainer" id="corsOriginsContainer">
-                                            <label class="inputLabel inputLabelUnfocused" for="allowedCorsOrigins">允许的 CORS 来源</label>
-                                            <input is="emby-input" type="text" id="allowedCorsOrigins" placeholder="http://localhost:8097,http://192.168.1.100:8097" />
-                                            <div class="fieldDescription">英文逗号分隔；“*”允许所有来源，不建议在公网使用。</div>
-                                        </div>
-
-                                        <div class="inputContainer">
-                                            <label class="inputLabel inputLabelUnfocused" for="sessionExpirationMinutes">登录会话有效期（分钟）</label>
-                                            <input is="emby-input" type="number" id="sessionExpirationMinutes" min="5" max="1440" step="5" value="60" />
-                                            <div class="fieldDescription">范围 5–1440 分钟，默认 60 分钟。</div>
-                                        </div>
-
-                                        <div class="inputContainer">
-                                            <label class="inputLabel inputLabelUnfocused" for="rateLimitRequestsPerMinute">请求频率限制（次/分钟）</label>
-                                            <input is="emby-input" type="number" id="rateLimitRequestsPerMinute" min="0" max="1000" step="10" value="60" />
-                                            <div class="fieldDescription">每个 IP 的请求上限；设为 0 可关闭限制。</div>
-                                        </div>
-
-                                        <div class="inputContainer">
-                                            <label class="inputLabel inputLabelUnfocused" for="rateLimitBlockDurationMinutes">超限封禁时长（分钟）</label>
-                                            <input is="emby-input" type="number" id="rateLimitBlockDurationMinutes" min="1" max="1440" step="5" value="15" />
-                                            <div class="fieldDescription">IP 超过限制后的封禁时间，默认 15 分钟。</div>
-                                        </div>
-
-                                        <div class="inputContainer watch-party-span-2">
-                                            <label class="inputLabel inputLabelUnfocused" for="adminPassword">外部控制台管理员密码</label>
-                                            <input is="emby-input" type="password" id="adminPassword" autocomplete="new-password" />
-                                            <div class="fieldDescription">设置后才能从外部控制台创建房间；留空不会清除已有密码。</div>
-                                        </div>
-
-                                        <div class="checkboxContainer" id="httpsContainer">
-                                            <label>
-                                                <input is="emby-checkbox" type="checkbox" id="enableHttps" />
-                                                <span>由插件直接启用 HTTPS</span>
-                                            </label>
-                                            <div class="fieldDescription">仅用于未部署反向代理的环境，并且必须先完成证书绑定。</div>
-                                        </div>
-
-                                        <div class="inputContainer" id="certThumbprintContainer">
-                                            <label class="inputLabel inputLabelUnfocused" for="httpsCertificateThumbprint">证书指纹</label>
-                                            <input is="emby-input" type="text" id="httpsCertificateThumbprint" placeholder="2F3AB9..." maxlength="40" />
-                                            <div class="fieldDescription">Windows 证书管理器中的 40 位十六进制 SSL 证书指纹。</div>
-                                        </div>
-
-                                        <div class="checkboxContainer">
-                                            <label>
-                                                <input is="emby-checkbox" type="checkbox" id="enableCsrfProtection" />
-                                                <span>启用 CSRF 防护</span>
-                                            </label>
-                                            <div class="fieldDescription">服务器暴露在互联网时建议保持启用。</div>
-                                        </div>
-
-                                        <div class="checkboxContainer" id="securityHeadersContainer">
-                                            <label>
-                                                <input is="emby-checkbox" type="checkbox" id="enableSecurityHeaders" />
-                                                <span>启用安全响应头</span>
-                                            </label>
-                                            <div class="fieldDescription">添加 X-Frame-Options、CSP 和 X-Content-Type-Options 等响应头。</div>
-                                        </div>
-
-                                        <div class="inputContainer watch-party-span-2" id="cspContainer">
-                                            <label class="inputLabel inputLabelUnfocused" for="contentSecurityPolicy">内容安全策略（CSP）</label>
-                                            <input is="emby-input" type="text" id="contentSecurityPolicy" />
-                                            <div class="fieldDescription">保持默认值即可兼顾控制台功能和基本 XSS 防护。</div>
-                                        </div>
-
-                                        <div class="checkboxContainer" id="hstsContainer">
-                                            <label>
-                                                <input is="emby-checkbox" type="checkbox" id="enableHsts" />
-                                                <span>启用 HSTS</span>
-                                            </label>
-                                            <div class="fieldDescription">只在 HTTPS 已正常工作时启用。</div>
-                                        </div>
-
-                                        <div class="inputContainer" id="hstsMaxAgeContainer">
-                                            <label class="inputLabel inputLabelUnfocused" for="hstsMaxAge">HSTS 有效期（秒）</label>
-                                            <input is="emby-input" type="number" id="hstsMaxAge" min="0" max="63072000" value="31536000" />
-                                            <div class="fieldDescription">默认一年，最大两年；0 表示立即失效。</div>
-                                        </div>
-
-                                        <div class="checkboxContainer">
-                                            <label>
-                                                <input is="emby-checkbox" type="checkbox" id="enableAccountLockout" />
-                                                <span>启用登录锁定</span>
-                                            </label>
-                                            <div class="fieldDescription">多次登录失败后临时封禁来源 IP。</div>
-                                        </div>
-
-                                        <div class="inputContainer" id="maxFailedLoginAttemptsContainer">
-                                            <label class="inputLabel inputLabelUnfocused" for="maxFailedLoginAttempts">最大登录失败次数</label>
-                                            <input is="emby-input" type="number" id="maxFailedLoginAttempts" min="1" max="20" value="5" />
-                                            <div class="fieldDescription">范围 1–20 次，默认 5 次。</div>
-                                        </div>
-
-                                        <div class="inputContainer" id="lockoutDurationContainer">
-                                            <label class="inputLabel inputLabelUnfocused" for="lockoutDurationMinutes">锁定时长（分钟）</label>
-                                            <input is="emby-input" type="number" id="lockoutDurationMinutes" min="1" max="1440" value="15" />
-                                            <div class="fieldDescription">触发锁定后的封禁时间。</div>
-                                        </div>
-
-                                        <div class="inputContainer" id="lockoutWindowContainer">
-                                            <label class="inputLabel inputLabelUnfocused" for="lockoutWindowMinutes">失败统计窗口（分钟）</label>
-                                            <input is="emby-input" type="number" id="lockoutWindowMinutes" min="1" max="60" value="10" />
-                                            <div class="fieldDescription">统计连续登录失败的时间窗口。</div>
-                                        </div>
-
-                                        <div class="checkboxContainer">
-                                            <label>
-                                                <input is="emby-checkbox" type="checkbox" id="enableAuditLogging" />
-                                                <span>启用审计日志</span>
-                                            </label>
-                                            <div class="fieldDescription">记录登录、创建和删除房间等安全事件。</div>
-                                        </div>
-
-                                        <div class="inputContainer">
-                                            <label class="inputLabel inputLabelUnfocused" for="maxAuditLogEntries">审计日志最大条数</label>
-                                            <input is="emby-input" type="number" id="maxAuditLogEntries" min="0" max="100000" step="100" value="1000" />
-                                            <div class="fieldDescription">设为 0 不在内存保留，但安全事件仍写入 Emby 日志。</div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </details>
-                        </section>
-
                         <section id="usageHelp" class="watch-party-section">
                             <div class="watch-party-section-header">
                                 <div>
@@ -1913,7 +1558,7 @@
                 </div>
 
                 <div class="watch-party-savebar">
-                    <span id="configSaveFeedback" role="status" aria-live="polite">修改全局、控制台或安全设置后，请在这里保存。</span>
+                    <span id="configSaveFeedback" role="status" aria-live="polite">修改默认 Master 或同步设置后，请在这里保存。</span>
                     <button is="emby-button" type="button" id="btnSaveSettings" class="raised button-submit">
                         <span>保存所有设置</span>
                     </button>

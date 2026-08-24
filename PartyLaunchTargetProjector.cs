@@ -95,11 +95,15 @@ namespace WatchPartyForEmby
                         session.UserId,
                         masterUserId,
                         StringComparison.OrdinalIgnoreCase));
-            var hasActiveWebSocket =
-                OfficialIosWebSocketTransport.HasActiveWebSocketController(
+            var activeWebSocketControllerCount =
+                OfficialIosWebSocketTransport.CountActiveWebSocketControllers(
                     session.SessionControllers);
+            var hasActiveWebSocket = activeWebSocketControllerCount > 0;
             var isOfficialIos =
                 OfficialIosWebSocketTransport.IsOfficialIosClient(session.Client);
+            var hasAmbiguousWebControllers =
+                PartySessionLivenessPolicy.IsWebClient(session.Client)
+                && activeWebSocketControllerCount > 1;
             var isOnline = PartySessionLivenessPolicy.IsOnline(session, nowUtc);
             // Keep the projected facts internally consistent if the controller closes
             // between discovery and projection. The next poll will remove the target.
@@ -117,7 +121,9 @@ namespace WatchPartyForEmby
                 IsOnline = isOnline,
                 CanJoin = canJoin,
                 SupportsRemoteControl = supportsRemoteControl,
-                InRoom = inRoom
+                InRoom = inRoom,
+                ActiveControllerCount = activeWebSocketControllerCount,
+                HasAmbiguousWebControllers = hasAmbiguousWebControllers
             };
             var eligibility = PartyLaunchTargetEligibility.Decide(facts);
 
@@ -133,6 +139,8 @@ namespace WatchPartyForEmby
                 InRoom = inRoom,
                 SupportsRemoteControl = supportsRemoteControl,
                 HasActiveWebSocket = hasActiveWebSocket,
+                ActiveControllerCount = activeWebSocketControllerCount,
+                HasAmbiguousWebControllers = hasAmbiguousWebControllers,
                 CanLaunch = eligibility.CanLaunch,
                 Message = eligibility.Message
             };

@@ -15,10 +15,6 @@ namespace WatchPartyForEmby
     {
         public event EventHandler ConfigurationUpdated;
         private readonly ILogger _logger;
-        private readonly IJsonSerializer _jsonSerializer;
-        private ExternalWebServer _externalWebServer;
-        private ExternalWebServerBinding _lastBinding;
-        public static string ExternalWebServerStatus { get; private set; } = "Not Enabled";
 
         public PartySessionRegistry PartyParticipants { get; } = new PartySessionRegistry();
         public PartyReadyRegistry PartyReadyUsers { get; } = new PartyReadyRegistry();
@@ -26,14 +22,14 @@ namespace WatchPartyForEmby
             new WaitingRoomStartCoordinator();
         public object ConfigurationSyncRoot { get; } = new object();
 
-        public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer, ILogManager logManager, IJsonSerializer jsonSerializer)
+        public Plugin(
+            IApplicationPaths applicationPaths,
+            IXmlSerializer xmlSerializer,
+            ILogManager logManager)
             : base(applicationPaths, xmlSerializer)
         {
             Instance = this;
             _logger = logManager.GetLogger(GetType().Name);
-            _jsonSerializer = jsonSerializer;
-            
-            ConfigurationUpdated += OnConfigurationUpdated;
         }
 
         public override string Name => "一起看";
@@ -104,64 +100,23 @@ namespace WatchPartyForEmby
 
         public void Run()
         {
-            if (PluginConfigurationPolicy.Normalize(Configuration))
+            var upgradedToEmbeddedControlCenter =
+                PluginConfigurationMigration.UpgradeToEmbeddedControlCenter(
+                    Configuration);
+            var normalizedConfiguration =
+                PluginConfigurationPolicy.Normalize(Configuration);
+            if (normalizedConfiguration || upgradedToEmbeddedControlCenter)
             {
                 SaveConfigurationSafely();
-                _logger.Info("[Watch Party] Normalized persisted plugin configuration");
+                _logger.Info(upgradedToEmbeddedControlCenter
+                    ? "[Watch Party] Upgraded configuration to the embedded control center schema"
+                    : "[Watch Party] Normalized persisted plugin configuration");
             }
 
-            StartWebServer();
-        }
-
-        private void OnConfigurationUpdated(object sender, EventArgs e)
-        {
-            var currentBinding = ExternalWebServerBinding.From(Configuration);
-            
-            if (_lastBinding == null || !_lastBinding.Equals(currentBinding))
-            {
-                _logger.Info("[Watch Party] Web server configuration changed, restarting...");
-                RestartWebServer();
-            }
-        }
-
-        private void StartWebServer()
-        {
-            var binding = ExternalWebServerBinding.From(Configuration);
-            if (binding.Enabled)
-            {
-                _externalWebServer = new ExternalWebServer(
-                    _logger,
-                    _jsonSerializer,
-                    binding.Port,
-                    binding.ListenAddress);
-                ExternalWebServerStatus = _externalWebServer.Start();
-                _logger.Info($"[Watch Party] External web server status: {ExternalWebServerStatus}");
-            }
-            else
-            {
-                ExternalWebServerStatus = "Not Enabled";
-                _logger.Info("[Watch Party] External web server is disabled in configuration");
-                
-            }
-
-            _lastBinding = binding;
-        }
-
-        private void RestartWebServer()
-        {
-            if (_externalWebServer != null)
-            {
-                _logger.Info("[Watch Party] Stopping existing web server...");
-                _externalWebServer.Stop();
-                _externalWebServer = null;
-            }
-            
-            StartWebServer();
         }
 
         public void Dispose()
         {
-            _externalWebServer?.Stop();
         }
     }
 }

@@ -52,26 +52,6 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
-        public void AdministratorCanInspectPasswordProtectedRoomWithoutSupplyingItsPassword()
-        {
-            var party = Party("master", "host");
-            party.PasswordHash = PasswordHelper.HashPassword("secret");
-
-            Assert.True(WatchPartyAuthorizationPolicy.SatisfiesPartyPassword(
-                party,
-                password: null,
-                isAdministrator: true));
-            Assert.False(WatchPartyAuthorizationPolicy.SatisfiesPartyPassword(
-                party,
-                password: null,
-                isAdministrator: false));
-            Assert.True(WatchPartyAuthorizationPolicy.SatisfiesPartyPassword(
-                party,
-                password: "secret",
-                isAdministrator: false));
-        }
-
-        [Fact]
         public void ReadyRequiresBothRoomAccessAndAnActivePartySession()
         {
             var party = Party("master", "host", "viewer");
