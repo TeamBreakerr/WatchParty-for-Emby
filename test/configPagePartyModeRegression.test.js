@@ -122,9 +122,11 @@ function createView() {
     const fields = new Map();
     const add = (selector, overrides) => fields.set(selector, element(overrides));
 
-    add('#selectedLibraryId', { value: 'source-library' });
     add('#contentSourceMode', { value: 'recent' });
-    add('#librarySourceContainer');
+    add('#mediaVersionContainer');
+    add('#mediaVersionId');
+    add('#selectedMediaSourceId');
+    add('#selectedMediaVersionItemId');
     add('#selectedItemId', { value: 'series-1', dataset: { type: 'Series', name: 'Example Series' } });
     add('#searchContent', { value: 'Example Series [TV Show]' });
     add('#selectedSeasonId', { value: '' });
@@ -230,6 +232,23 @@ test('Series Party with a selected episode starts from that episode', async () =
     assert.equal(party.ItemId, 's1e2');
 });
 
+test('Series Party keeps a concrete source on the selected starting episode only', async () => {
+    const view = createView();
+    view.querySelector('#selectedSeasonId').value = 'season-1';
+    view.querySelector('#selectedEpisodeId').value = 's1e2';
+    view.querySelector('#searchEpisode').value = 'S1E2 - Second';
+    view.querySelector('#selectedMediaSourceId').value = 'source-s1e2';
+    view.querySelector('#selectedMediaVersionItemId').value = 's1e2-version';
+
+    const result = await submit(view);
+
+    assert.equal(result.updatedConfigurations.length, 1, result.toasts.join('\n'));
+    const party = result.updatedConfigurations[0].WatchParties[0];
+    assert.equal(party.MediaSourceId, null);
+    assert.equal(party.EpisodeQueue.find(episode => episode.ItemId === 's1e2').MediaSourceId, 'source-s1e2');
+    assert.equal(party.EpisodeQueue.find(episode => episode.ItemId === 's1e1').MediaSourceId, null);
+});
+
 test('single-episode Party still requires an episode', async () => {
     const view = createView();
     view.querySelector('#isSeriesParty').checked = false;
@@ -240,34 +259,31 @@ test('single-episode Party still requires an episode', async () => {
     assert.equal(result.updatedConfigurations.length, 0);
 });
 
-test('clearing the library removes stale selection state and blocks room creation', async () => {
+test('switching to unified library search removes stale selection state without requiring a library id', async () => {
     const view = createView();
     view.querySelector('#contentSourceMode').value = 'library';
     const toasts = [];
     const updatedConfigurations = [];
     const controller = loadController(toasts, updatedConfigurations);
-    controller.currentLibraryId = 'old-library';
     controller.currentSeriesId = 'old-series';
     controller.currentSeasonId = 'old-season';
     view.querySelector('#selectedSeasonId').value = 'old-season';
     view.querySelector('#selectedEpisodeId').value = 'old-episode';
 
-    controller.onLibraryChange(view, '');
+    controller.onContentSourceChange(view, 'library');
 
-    assert.equal(controller.currentLibraryId, null);
     assert.equal(controller.currentSeriesId, null);
     assert.equal(controller.currentSeasonId, null);
     assert.equal(view.querySelector('#selectedItemId').value, '');
     assert.equal(view.querySelector('#selectedSeasonId').value, '');
     assert.equal(view.querySelector('#selectedEpisodeId').value, '');
 
-    view.querySelector('#selectedLibraryId').value = '';
     view.querySelector('#selectedItemId').value = 'stale-item';
     controller.saveData(view);
     await new Promise(resolve => setTimeout(resolve, 10));
 
-    assert.match(toasts.join('\n'), /请选择内容媒体库/);
-    assert.equal(updatedConfigurations.length, 0);
+    assert.doesNotMatch(toasts.join('\n'), /请选择内容媒体库/);
+    assert.equal(updatedConfigurations.length, 1);
 });
 
 test('Movie Party remains a single-item Party', async () => {
@@ -285,6 +301,26 @@ test('Movie Party remains a single-item Party', async () => {
     assert.equal(party.ItemId, 'movie-1');
     assert.deepEqual(party.EpisodeQueue, []);
     assert.equal('TargetLibraryId' in party, false);
+});
+
+test('Movie Party persists the selected concrete media version', async () => {
+    const view = createView();
+    view.querySelector('#selectedItemId').value = 'movie-parent';
+    view.querySelector('#selectedItemId').dataset = {
+        type: 'Movie',
+        name: 'Concrete Movie'
+    };
+    view.querySelector('#searchContent').value = 'Concrete Movie';
+    view.querySelector('#selectedMediaSourceId').value = 'source-1080p';
+    view.querySelector('#selectedMediaVersionItemId').value = 'movie-1080p';
+    view.querySelector('#isSeriesParty').checked = false;
+
+    const result = await submit(view);
+
+    assert.equal(result.updatedConfigurations.length, 1, result.toasts.join('\n'));
+    const party = result.updatedConfigurations[0].WatchParties[0];
+    assert.equal(party.ItemId, 'movie-1080p');
+    assert.equal(party.MediaSourceId, 'source-1080p');
 });
 
 test('recently watched content creates a room without selecting a library first', async () => {

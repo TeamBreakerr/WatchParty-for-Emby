@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -106,6 +107,40 @@ namespace WatchPartyForEmby.Tests
             Assert.True(result.Participants[0].CommandSent);
             Assert.False(result.Participants[1].CommandSent);
             Assert.Equal("客户端在线，但控制连接未建立", result.Participants[1].Message);
+        }
+
+        [Fact]
+        public async Task OnlineClientsAreDispatchedInParallel()
+        {
+            var entered = 0;
+            var bothEntered = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var coordinator = new PartyManualSynchronizationCoordinator();
+            var operations = Operations(dispatch: _ => true);
+            operations.EnsureControlConnectionAsync = async (_, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref entered) == 2)
+                {
+                    bothEntered.TrySetResult(true);
+                }
+
+                var completed = await Task.WhenAny(
+                    bothEntered.Task,
+                    Task.Delay(TimeSpan.FromSeconds(1), cancellationToken));
+                return completed == bothEntered.Task;
+            };
+
+            var result = await coordinator.SynchronizeAsync(
+                new[]
+                {
+                    Target("first", true, true),
+                    Target("second", true, true)
+                },
+                operations,
+                CancellationToken.None);
+
+            Assert.True(result.Accepted);
+            Assert.Equal(2, result.Participants.Count(participant => participant.CommandSent));
         }
 
         private static PartyManualSynchronizationTarget Target(

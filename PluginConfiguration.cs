@@ -121,6 +121,12 @@ namespace WatchPartyForEmby
     public class WatchPartyEpisode
     {
         public string ItemId { get; set; }
+        /// <summary>
+        /// The concrete Emby media-source identifier selected for this room. The
+        /// logical ItemId remains the item used for party matching; this value makes
+        /// PlayNow select the exact file/version instead of the server default.
+        /// </summary>
+        public string MediaSourceId { get; set; }
         public string ItemName { get; set; }
         public string SeasonId { get; set; }
         public int SeasonNumber { get; set; }
@@ -132,6 +138,11 @@ namespace WatchPartyForEmby
         public string Id { get; set; }
         public string LibraryId { get; set; }
         public string ItemId { get; set; }
+        /// <summary>
+        /// The concrete media source selected for a movie or single-episode room.
+        /// Series rooms store a source on the corresponding queue episode instead.
+        /// </summary>
+        public string MediaSourceId { get; set; }
         public string ItemName { get; set; }
         public string ItemType { get; set; }
         public string SeriesId { get; set; }

@@ -158,9 +158,10 @@ namespace WatchPartyForEmby
                 };
             }
 
-            var targetItemId = party.IsSeriesParty
-                ? SeriesPartyQueue.GetCurrentEpisode(party)?.ItemId
-                : party.ItemId;
+            var targetEpisode = party.IsSeriesParty
+                ? SeriesPartyQueue.GetCurrentEpisode(party)
+                : null;
+            var targetItemId = targetEpisode?.ItemId ?? party.ItemId;
             var targetItem = string.IsNullOrEmpty(targetItemId)
                 ? null
                 : _libraryManager.GetItemById(targetItemId);
@@ -180,42 +181,62 @@ namespace WatchPartyForEmby
                 party.Id,
                 party.CurrentPositionTicks,
                 DateTime.UtcNow);
-            var targets = _plugin.PartyParticipants.GetSessions(party.Id)
-                .Where(participant => participant != null
-                    && !string.IsNullOrEmpty(participant.SessionId)
-                    && !string.Equals(
-                        participant.SessionId,
-                        masterSessionId,
-                        StringComparison.Ordinal))
-                .Select(participant =>
+            // A manual sync is also the explicit join action. Discover every current
+            // official iOS session instead of requiring a prior PlaybackStart/Progress
+            // report, then register eligible users before dispatching PlayNow.
+            var targetSessions = OfficialIosPartySessionDiscovery.Select(
+                activeSessions.Values,
+                masterSessionId,
+                session => CanUserJoinParty(party, session.UserId));
+            var targets = new List<PartyManualSynchronizationTarget>();
+            foreach (var session in targetSessions)
+            {
+                if (GetOrCreateParticipant(
+                        party.Id,
+                        session,
+                        maxParticipants: party.MaxParticipants) == null)
                 {
-                    activeSessions.TryGetValue(participant.SessionId, out var session);
-                    return new PartyManualSynchronizationTarget
-                    {
-                        SessionId = participant.SessionId,
-                        UserName = participant.UserName,
-                        Client = session?.Client ?? string.Empty,
-                        IsOnline = session != null,
-                        SupportsRemotePlayback = session != null
-                            && SupportsRemoteControlledPlayback(session),
-                        IsDormant = _participantDormancies.IsDormant(
-                            party.Id,
-                            participant.SessionId)
-                    };
-                })
-                .Where(target => string.Equals(
-                    target.Client,
-                    "Emby for iOS",
-                    StringComparison.Ordinal))
-                .ToList();
+                    continue;
+                }
+
+                targets.Add(new PartyManualSynchronizationTarget
+                {
+                    SessionId = session.Id,
+                    UserName = session.UserName ?? session.UserId,
+                    Client = session.Client ?? string.Empty,
+                    IsOnline = true,
+                    SupportsRemotePlayback = SupportsRemoteControlledPlayback(session),
+                    IsDormant = _participantDormancies.IsDormant(party.Id, session.Id)
+                });
+            }
             var request = new PlayRequest
             {
                 ItemIds = new[] { targetItem.InternalId },
+                MediaSourceId = targetEpisode?.MediaSourceId ?? party.MediaSourceId,
                 PlayCommand = PlayCommand.PlayNow,
                 StartPositionTicks = Math.Max(0, positionTicks)
             };
 
-            return await _manualSynchronizationCoordinator.SynchronizeAsync(
+            var wasWaitingRoom = party.IsWaitingRoom;
+            var wasPlaying = party.IsPlaying;
+            var nowUtc = DateTime.UtcNow;
+            if (wasWaitingRoom || !wasPlaying)
+            {
+                // The button is an explicit override of the waiting-room gate: its
+                // contract is to start the selected media now, not merely mark users
+                // ready for a later Start action.
+                party.IsWaitingRoom = false;
+                party.IsPlaying = true;
+                _playbackSyncCoordinator.UpdateMasterPosition(
+                    party.Id,
+                    positionTicks,
+                    true,
+                    nowUtc,
+                    TimeSpan.FromSeconds(party.SyncToleranceSeconds).Ticks);
+                _plugin.SaveConfigurationSafely();
+            }
+
+            var result = await _manualSynchronizationCoordinator.SynchronizeAsync(
                 targets,
                 new PartyManualSynchronizationOperations
                 {
@@ -240,6 +261,22 @@ namespace WatchPartyForEmby
                         ex)
                 },
                 _lifetimeCts.Token).ConfigureAwait(false);
+
+            if (!result.Accepted && (wasWaitingRoom || !wasPlaying))
+            {
+                party.IsWaitingRoom = wasWaitingRoom;
+                party.IsPlaying = wasPlaying;
+                if (!wasPlaying)
+                {
+                    _playbackSyncCoordinator.StopMasterClock(
+                        party.Id,
+                        positionTicks,
+                        DateTime.UtcNow);
+                }
+                _plugin.SaveConfigurationSafely();
+            }
+
+            return result;
         }
 
         private bool HasPlaybackControlConnection(string sessionId)
@@ -4196,6 +4233,7 @@ namespace WatchPartyForEmby
                     var playRequest = new PlayRequest
                     {
                         ItemIds = new[] { episodeItem.InternalId },
+                        MediaSourceId = episode.MediaSourceId,
                         PlayCommand = PlayCommand.PlayNow,
                         StartPositionTicks = Math.Max(0, startPositionTicks)
                     };

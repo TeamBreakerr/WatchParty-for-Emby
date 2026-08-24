@@ -1253,7 +1253,7 @@
                                 <div>
                                     <p class="watch-party-section-kicker">Overview</p>
                                     <h2>房间概览</h2>
-                                    <p class="watch-party-section-description">在这里查看客户端并管理房间；一键同步只控制已进入该房间且在线的官方 iOS 客户端。</p>
+                <p class="watch-party-section-description">在这里查看客户端并管理房间；“一键同步”会结束等候、把当前在线且可远程控制的官方 iOS 客户端加入房间，并立即播放已选具体版本。</p>
                                 </div>
                                 <span class="watch-party-badge">实时配置</span>
                             </div>
@@ -1287,17 +1287,9 @@
                                                 <label class="selectLabel" for="contentSourceMode">内容来源</label>
                                                 <select is="emby-select" id="contentSourceMode" class="emby-select-withcolor emby-select">
                                                     <option value="recent" selected>最近观看</option>
-                                                    <option value="library">从媒体库搜索</option>
+                                                    <option value="library">从媒体库统一搜索</option>
                                                 </select>
-                                                <div class="fieldDescription">默认显示你最近播放过的电影和电视剧；找不到时再切换到媒体库搜索。</div>
-                                            </div>
-
-                                            <div class="selectContainer watch-party-span-2" id="librarySourceContainer" style="display: none;">
-                                                <label class="selectLabel" for="selectedLibraryId">内容媒体库</label>
-                                                <select is="emby-select" id="selectedLibraryId" class="emby-select-withcolor emby-select">
-                                                    <option value="">正在加载媒体库……</option>
-                                                </select>
-                                                <div class="fieldDescription">媒体库模式下先选择插件页面中已添加内容所在的媒体库。</div>
+                                                <div class="fieldDescription">默认显示你最近播放过的电影和电视剧；切换后会在整个媒体库范围统一搜索，不需要逐层打开目录。</div>
                                             </div>
 
                                             <div class="selectContainer">
@@ -1307,7 +1299,17 @@
                                                     <div id="searchContentDropdown" class="autocomplete-dropdown" role="listbox" aria-label="电影和电视剧搜索结果"></div>
                                                     <input type="hidden" id="selectedItemId" />
                                                 </div>
-                                                <div class="fieldDescription">选择所有人将要播放的原媒体条目。</div>
+                                                <div class="fieldDescription">从统一搜索结果中选择逻辑影片；随后可指定具体媒体版本。</div>
+                                            </div>
+
+                                            <div class="selectContainer" id="mediaVersionContainer" style="display: none;">
+                                                <label class="selectLabel" for="mediaVersionId">具体媒体版本</label>
+                                                <select is="emby-select" id="mediaVersionId" class="emby-select-withcolor emby-select">
+                                                    <option value="">正在读取具体版本……</option>
+                                                </select>
+                                                <div class="fieldDescription">一键同步会使用这里选择的文件/版本，不要求其他人再从媒体库查找。</div>
+                                                <input type="hidden" id="selectedMediaSourceId" />
+                                                <input type="hidden" id="selectedMediaVersionItemId" />
                                             </div>
 
                                             <div class="checkboxContainer watch-party-span-2 watch-party-mode-card" id="seriesPartyContainer" style="display: none;">
@@ -1391,7 +1393,7 @@
                                                     <input is="emby-checkbox" type="checkbox" id="isPartyActive" />
                                                     <span>创建后立即启用</span>
                                                 </label>
-                                                <div class="fieldDescription">启用后自动识别并同步正在播放该内容的用户。</div>
+                                                <div class="fieldDescription">启用后，普通同步只跟随已进入房间并正在播放该内容的用户；需要把当前在线 iOS 客户端直接拉入房间时，请使用房间卡片中的“一键同步”。</div>
                                             </div>
 
                                             <div class="checkboxContainer">
@@ -1405,9 +1407,9 @@
                                             <div class="checkboxContainer" id="autoStartWhenReadyContainer">
                                                 <label>
                                                     <input is="emby-checkbox" type="checkbox" id="autoStartWhenReady" />
-                                                    <span>达到最低人数后自动开始</span>
+                                                    <span>达到最低人数后自动结束等候</span>
                                                 </label>
-                                                <div class="fieldDescription">只统计已进入房间并开始播放的用户。</div>
+                                                    <div class="fieldDescription">自动结束等候只统计已进入房间并开始播放的用户；“发现在线客户端并播放”会直接发现当前在线的官方 iOS 客户端并下发已选具体版本。</div>
                                             </div>
 
                                             <div class="inputContainer" id="minReadyCountContainer">
