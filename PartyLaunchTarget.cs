@@ -1,9 +1,9 @@
 namespace WatchPartyForEmby
 {
     /// <summary>
-    /// Describes one online official iOS session that can be shown as a manual
-    /// PlayNow target. Eligibility is advisory here and is always revalidated when
-    /// the command is submitted.
+    /// Describes one online Emby session that can be shown as a manual PlayNow
+    /// target. Eligibility is advisory here and is always revalidated when the
+    /// command is submitted.
     /// </summary>
     public sealed class PartyLaunchTarget
     {
@@ -12,6 +12,7 @@ namespace WatchPartyForEmby
         public string UserName { get; set; }
         public string DeviceName { get; set; }
         public string Client { get; set; }
+        public bool IsOnline { get; set; }
         public bool IsMaster { get; set; }
         public bool InRoom { get; set; }
         public bool SupportsRemoteControl { get; set; }
@@ -32,9 +33,9 @@ namespace WatchPartyForEmby
             {
                 throw new System.ArgumentNullException(nameof(facts));
             }
-            if (facts.IsMaster)
+            if (!facts.IsOnline)
             {
-                return Denied("当前 Master Session");
+                return Denied("客户端已离线");
             }
             if (!facts.CanJoin)
             {
@@ -44,15 +45,12 @@ namespace WatchPartyForEmby
             {
                 return Denied("客户端未声明远程播放能力");
             }
-            if (!facts.HasActiveWebSocket)
-            {
-                return Denied("在线，但控制连接未建立");
-            }
-
             return new PartyLaunchTargetEligibility
             {
                 CanLaunch = true,
-                Message = facts.InRoom ? "在线 · 已在房间" : "在线 · 可拉入房间"
+                Message = facts.InRoom
+                    ? "在线 · 已在房间"
+                    : facts.IsMaster ? "在线 · 可开播" : "在线 · 可拉入房间"
             };
         }
 
@@ -69,9 +67,9 @@ namespace WatchPartyForEmby
     public sealed class PartyLaunchTargetFacts
     {
         public bool IsMaster { get; set; }
+        public bool IsOnline { get; set; }
         public bool CanJoin { get; set; }
         public bool SupportsRemoteControl { get; set; }
-        public bool HasActiveWebSocket { get; set; }
         public bool InRoom { get; set; }
     }
 }

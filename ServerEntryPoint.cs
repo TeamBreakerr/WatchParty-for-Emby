@@ -152,15 +152,17 @@ namespace WatchPartyForEmby
                 return Array.Empty<PartyLaunchTarget>();
             }
 
-            var masterSessionId = _plugin.PartyParticipants.GetMasterSession(party.Id);
-            return OfficialIosPartyLaunchTargetProjector.Project(
+            var masterSessionId = GetActiveMasterSession(party)?.Id;
+            return PartyLaunchTargetProjector.Project(
                 _sessionManager.Sessions,
                 masterSessionId,
+                party.MasterUserId,
                 session => CanUserJoinParty(party, session.UserId, logDenied: false),
                 sessionId => _plugin.PartyParticipants.TryGetSession(
                     party.Id,
                     sessionId,
-                    out _));
+                    out _),
+                DateTime.UtcNow);
         }
 
         public async Task<PartyManualSynchronizationResult> SynchronizePartyNowAsync(
@@ -213,28 +215,32 @@ namespace WatchPartyForEmby
                 };
             }
 
-            var masterSession = GetMasterSessionForCommand(party);
-            var masterSessionId = _plugin.PartyParticipants.GetMasterSession(party.Id);
+            var masterSessionId = GetActiveMasterSession(party)?.Id;
             var activeSessions = SessionInfoIndex.Build(_sessionManager.Sessions);
+            var nowUtc = DateTime.UtcNow;
             var positionTicks = _playbackSyncCoordinator.GetEstimatedPartyPosition(
                 party.Id,
                 party.CurrentPositionTicks,
-                DateTime.UtcNow);
+                nowUtc);
             // A manual sync is also the explicit join action. Discover every current
-            // official iOS session instead of requiring a prior PlaybackStart/Progress
+            // online Emby session instead of requiring a prior PlaybackStart/Progress
             // report, then register eligible users before dispatching PlayNow.
-            var targetSessions = OfficialIosPartySessionDiscovery.SelectRequested(
+            var targetSessions = PartySessionDiscovery.SelectRequested(
                 activeSessions.Values,
+                nowUtc,
                 selectedSessionIds,
-                session => OfficialIosPartyLaunchTargetProjector.BuildEvaluatedTarget(
+                session => PartyLaunchTargetProjector.BuildEvaluatedTarget(
                     session,
                     masterSessionId,
+                    party.MasterUserId,
                     CanUserJoinParty(party, session.UserId),
                     _plugin.PartyParticipants.TryGetSession(
                         party.Id,
                         session.Id,
-                        out _)).CanLaunch);
+                        out _),
+                    nowUtc).CanLaunch);
             var targets = new List<PartyManualSynchronizationTarget>();
+            var selectedMasterSessionId = masterSessionId;
             foreach (var session in targetSessions)
             {
                 if (GetOrCreateParticipant(
@@ -243,6 +249,20 @@ namespace WatchPartyForEmby
                         maxParticipants: party.MaxParticipants) == null)
                 {
                     continue;
+                }
+
+                if (string.IsNullOrEmpty(selectedMasterSessionId)
+                    && string.Equals(
+                        session.UserId,
+                        party.MasterUserId,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    if (_plugin.PartyParticipants.SetMasterSession(
+                            party.Id,
+                            session.Id))
+                    {
+                        selectedMasterSessionId = session.Id;
+                    }
                 }
 
                 targets.Add(new PartyManualSynchronizationTarget
@@ -255,6 +275,7 @@ namespace WatchPartyForEmby
                     IsDormant = _participantDormancies.IsDormant(party.Id, session.Id)
                 });
             }
+            var masterSession = GetMasterSessionForCommand(party);
             var request = new PlayRequest
             {
                 ItemIds = new[] { targetItem.InternalId },
@@ -265,7 +286,6 @@ namespace WatchPartyForEmby
 
             var wasWaitingRoom = party.IsWaitingRoom;
             var wasPlaying = party.IsPlaying;
-            var nowUtc = DateTime.UtcNow;
             if (wasWaitingRoom || !wasPlaying)
             {
                 // The button is an explicit override of the waiting-room gate: its
@@ -331,9 +351,7 @@ namespace WatchPartyForEmby
                 candidate != null
                 && string.Equals(candidate.Id, sessionId, StringComparison.Ordinal));
             return session != null
-                && (!OfficialIosWebSocketTransport.IsOfficialIosClient(session.Client)
-                    || OfficialIosWebSocketTransport.HasActiveWebSocketController(
-                        session.SessionControllers));
+                && PartySessionLivenessPolicy.IsOnline(session, DateTime.UtcNow);
         }
 
         public ServerEntryPoint(
@@ -689,7 +707,7 @@ namespace WatchPartyForEmby
             return GetActiveMasterSession(party) != null;
         }
 
-    private SessionInfo GetActiveMasterSession(WatchPartyItem party)
+        private SessionInfo GetActiveMasterSession(WatchPartyItem party)
         {
             if (party == null)
             {
@@ -697,10 +715,12 @@ namespace WatchPartyForEmby
             }
 
             var masterSessionId = _plugin.PartyParticipants.GetMasterSession(party.Id);
+            var nowUtc = DateTime.UtcNow;
             return string.IsNullOrEmpty(masterSessionId)
                 ? null
                 : _sessionManager.Sessions.FirstOrDefault(s =>
                     string.Equals(s.Id, masterSessionId, StringComparison.Ordinal)
+                    && PartySessionLivenessPolicy.IsOnline(s, nowUtc)
                     && IsRegisteredPartyPlayback(party, s));
         }
 
@@ -1943,7 +1963,9 @@ namespace WatchPartyForEmby
             }
             if (!OfficialIosWebSocketTransport.IsOfficialIosClient(targetSession.Client))
             {
-                return true;
+                return PartySessionLivenessPolicy.IsOnline(
+                    targetSession,
+                    DateTime.UtcNow);
             }
 
             var available = await _officialIosWebSocketTransport
@@ -1995,8 +2017,11 @@ namespace WatchPartyForEmby
             string partyId,
             ParticipantRoomCommand command)
         {
+            var nowUtc = DateTime.UtcNow;
             var activeSessions = _sessionManager.Sessions
-                .Where(session => session != null && !string.IsNullOrEmpty(session.Id))
+                .Where(session => session != null
+                    && !string.IsNullOrEmpty(session.Id)
+                    && PartySessionLivenessPolicy.IsOnline(session, nowUtc))
                 .GroupBy(session => session.Id, StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
 
@@ -2026,7 +2051,8 @@ namespace WatchPartyForEmby
             return string.IsNullOrEmpty(masterSessionId)
                 ? null
                 : _sessionManager.Sessions.FirstOrDefault(session =>
-                    string.Equals(session.Id, masterSessionId, StringComparison.Ordinal));
+                    string.Equals(session.Id, masterSessionId, StringComparison.Ordinal)
+                    && PartySessionLivenessPolicy.IsOnline(session, DateTime.UtcNow));
         }
 
         private void ValidateAndCleanWatchParties(bool force = false)
@@ -4212,7 +4238,7 @@ namespace WatchPartyForEmby
         {
             return session != null
                 && PlaybackControlCapabilities.CanReceivePlaybackCommand(
-                    session.SupportsRemoteControl,
+                    PlaybackControlCapabilities.SessionSupportsRemoteControl(session),
                     session.PlayableMediaTypes);
         }
 

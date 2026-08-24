@@ -855,6 +855,22 @@
             line-height: 1.48;
         }
 
+        .watch-party-media-version-path {
+            max-width: 100%;
+            margin-top: 0.55rem;
+            padding: 0.55rem 0.7rem;
+            overflow: hidden;
+            border: 1px solid #d7e1d2;
+            border-radius: 8px;
+            background: #f5f9f3;
+            color: var(--wp-text-muted);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.72rem;
+            line-height: 1.45;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         .watch-party-mode-card {
             padding: 0.9rem 1rem;
             border: 1px solid #c7ddbc;
@@ -1373,7 +1389,7 @@
                                 <div>
                                     <p class="watch-party-section-kicker">Overview</p>
                                     <h2>房间概览</h2>
-                <p class="watch-party-section-description">在这里分别查看房间内客户端与在线官方 iOS Session；勾选目标后，“一键开播”只会让所选设备播放房间绑定的具体版本。</p>
+                                <p class="watch-party-section-description">在这里分别查看房间内客户端与当前在线 Session；勾选目标后，“一键开播”只会让所选设备播放房间绑定的具体版本。</p>
                                 </div>
                                 <span class="watch-party-badge">实时配置</span>
                             </div>
@@ -1427,6 +1443,7 @@
                                                 <select is="emby-select" id="mediaVersionId" class="emby-select-withcolor emby-select">
                                                     <option value="">正在读取具体版本……</option>
                                                 </select>
+                                                <div id="mediaVersionPath" class="watch-party-media-version-path" role="status" aria-live="polite" style="display: none;"></div>
                                                 <div class="fieldDescription">一键开播会使用这里选择的文件/版本，不要求其他人再从媒体库查找。</div>
                                                 <input type="hidden" id="selectedMediaSourceId" />
                                                 <input type="hidden" id="selectedMediaVersionItemId" />
@@ -1513,7 +1530,7 @@
                                                     <input is="emby-checkbox" type="checkbox" id="isPartyActive" />
                                                     <span>创建后立即启用</span>
                                                 </label>
-                                                <div class="fieldDescription">启用后，普通同步只跟随已进入房间并正在播放该内容的用户；需要把在线 iOS Session 直接拉入房间时，请勾选设备并使用“一键开播”。</div>
+                                                <div class="fieldDescription">启用后，普通同步只跟随已进入房间并正在播放该内容的用户；需要把在线 Session 直接拉入房间时，请勾选设备并使用“一键开播”。</div>
                                             </div>
 
                                             <div class="checkboxContainer">
@@ -1529,7 +1546,7 @@
                                                     <input is="emby-checkbox" type="checkbox" id="autoStartWhenReady" />
                                                     <span>达到最低人数后自动结束等候</span>
                                                 </label>
-                                                    <div class="fieldDescription">自动结束等候只统计已进入房间并开始播放的用户；“一键开播”会向勾选的在线官方 iOS Session 下发已选具体版本。</div>
+                                                    <div class="fieldDescription">自动结束等候只统计已进入房间并开始播放的用户；“一键开播”会向勾选的在线 Session 下发已选具体版本。</div>
                                             </div>
 
                                             <div class="inputContainer" id="minReadyCountContainer">

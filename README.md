@@ -9,6 +9,9 @@ A synchronized watch party plugin for Emby Media Server. Create watch parties th
 - **Auto-Start** — Automatically begin playback when enough participants have joined
 - **Master-Authoritative Controls** — Only the master changes room playback; participant pause/resume cannot control other sessions
 - **Capability-Aware Control** — Unsupported clients can act as a reporting master without being treated as remotely controllable followers
+- **Explicit One-Click Launch** — Select any live, remotely controllable Emby Session (including an idle Web master) and start the room's exact media version
+- **Concrete Version Visibility** — Media-source choices show the exact server path before a room is created
+- **Homepage Dashboard Shortcut** — A self-hosted Homepage card can link directly to the configuration page
 - **Web Dashboard** — Optional authenticated web UI for creating and managing watch parties
 - **SSO Support** — Authentik forward-auth integration when the reverse proxy connects over loopback
 - **Original Item Binding** — Controls the existing Emby item directly, preserving its subtitles, media streams, artwork, and metadata
@@ -39,6 +42,17 @@ Client support depends on the Emby remote-control commands that the client imple
 2. Place the DLL in your Emby plugins directory (e.g., `/var/lib/emby/plugins/`)
 3. Restart Emby Server
 4. Go to Emby Dashboard > Plugins > Watch Party to configure
+
+For a self-hosted [Homepage](https://gethomepage.dev/) dashboard, add a normal
+service card whose `href` points to the plugin route:
+
+```yaml
+- 影音媒体 (Media):
+    - 一起看:
+        icon: mdi-account-multiple
+        href: https://emby.example.com/web/index.html#!/configurationpage?name=watchpartyconfig
+        description: 同步观影配置与控制
+```
 
 ## Configuration
 

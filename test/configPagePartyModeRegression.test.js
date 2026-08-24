@@ -124,6 +124,7 @@ function createView() {
 
     add('#contentSourceMode', { value: 'recent' });
     add('#mediaVersionContainer');
+    add('#mediaVersionPath');
     add('#mediaVersionId');
     add('#selectedMediaSourceId');
     add('#selectedMediaVersionItemId');
@@ -259,6 +260,22 @@ test('single-episode Party still requires an episode', async () => {
     assert.equal(result.updatedConfigurations.length, 0);
 });
 
+test('single-episode Party keeps the logical episode identity with a concrete media source', async () => {
+    const view = createView();
+    view.querySelector('#isSeriesParty').checked = false;
+    view.querySelector('#selectedEpisodeId').value = 's1e2';
+    view.querySelector('#searchEpisode').value = 'S1E2 - Second';
+    view.querySelector('#selectedMediaSourceId').value = 'source-s1e2';
+    view.querySelector('#selectedMediaVersionItemId').value = 's1e2-version';
+
+    const result = await submit(view);
+
+    assert.equal(result.updatedConfigurations.length, 1, result.toasts.join('\n'));
+    const party = result.updatedConfigurations[0].WatchParties[0];
+    assert.equal(party.ItemId, 's1e2');
+    assert.equal(party.MediaSourceId, 'source-s1e2');
+});
+
 test('switching to unified library search removes stale selection state without requiring a library id', async () => {
     const view = createView();
     view.querySelector('#contentSourceMode').value = 'library';
@@ -303,7 +320,7 @@ test('Movie Party remains a single-item Party', async () => {
     assert.equal('TargetLibraryId' in party, false);
 });
 
-test('Movie Party persists the selected concrete media version', async () => {
+test('Movie Party keeps its logical item identity while persisting the selected media source', async () => {
     const view = createView();
     view.querySelector('#selectedItemId').value = 'movie-parent';
     view.querySelector('#selectedItemId').dataset = {
@@ -319,7 +336,7 @@ test('Movie Party persists the selected concrete media version', async () => {
 
     assert.equal(result.updatedConfigurations.length, 1, result.toasts.join('\n'));
     const party = result.updatedConfigurations[0].WatchParties[0];
-    assert.equal(party.ItemId, 'movie-1080p');
+    assert.equal(party.ItemId, 'movie-parent');
     assert.equal(party.MediaSourceId, 'source-1080p');
 });
 
@@ -650,7 +667,7 @@ test('room overview count stays in sync with the rendered room list', () => {
     assert.match(view.querySelector('#activePartiesList').innerHTML, /1 个启用/);
 });
 
-test('room overview separates room clients from selectable online iOS sessions', () => {
+test('room overview separates room clients from selectable online sessions on every client type', () => {
     const view = createView();
     const controller = loadController([], []);
     controller.escapeHtml = value => String(value ?? '');
@@ -674,6 +691,16 @@ test('room overview separates room clients from selectable online iOS sessions',
     controller.launchTargetsByParty = new Map([
         ['active', [
             {
+                SessionId: 'master-web-session-11223344',
+                UserName: 'team breaker',
+                DeviceName: 'Safari on Mac',
+                Client: 'Emby Web',
+                IsMaster: true,
+                InRoom: false,
+                CanLaunch: true,
+                Message: '在线 · 可开播'
+            },
+            {
                 SessionId: 'online-session-12345678',
                 UserName: 'friend',
                 DeviceName: 'iPhone 16',
@@ -689,7 +716,8 @@ test('room overview separates room clients from selectable online iOS sessions',
                 Client: 'Emby for iOS',
                 InRoom: true,
                 CanLaunch: false,
-                Message: '在线，但控制连接未建立'
+                IsOnline: false,
+                Message: '客户端已离线'
             }
         ]]
     ]);
@@ -705,13 +733,30 @@ test('room overview separates room clients from selectable online iOS sessions',
     assert.match(html, /xsq/);
     assert.match(html, /Emby for iOS/);
     assert.match(html, /可控制/);
-    assert.match(html, /在线官方 iOS Session/);
+    assert.match(html, /在线 Session/);
+    assert.match(html, /Emby Web/);
+    assert.match(html, /Safari on Mac/);
+    assert.match(html, /Master/);
     assert.match(html, /iPhone 16/);
     assert.match(html, /online-session-12345678[^>]* checked/);
     assert.match(html, /stale-session-87654321[^>]* disabled/);
     assert.match(html, /btnSyncParty/);
     assert.match(html, /一键开播/);
     assert.doesNotMatch(html, /一键同步/);
+});
+
+test('an offline dormant participant is displayed as offline, never as a missing control connection', () => {
+    const controller = loadController([], []);
+
+    const state = controller.participantControlState({
+        Client: 'Emby for iOS',
+        IsOnline: false,
+        IsDormant: true,
+        HasActiveWebSocket: false,
+        CanReceiveCommands: false
+    });
+
+    assert.deepEqual(state, { text: '离线', className: 'is-warning' });
 });
 
 test('one-click launch posts only explicitly selected session ids', async () => {
@@ -746,7 +791,7 @@ test('one-click launch refuses an empty selection without sending a request', as
 
     assert.equal(requestCount, 0);
     assert.equal(result.Accepted, false);
-    assert.match(toasts.join('\n'), /请先勾选至少一个在线 iOS Session/);
+    assert.match(toasts.join('\n'), /请先勾选至少一个在线 Session/);
 });
 
 test('room count and default-disabled console status settle before ancillary data finishes loading', async () => {
@@ -979,12 +1024,12 @@ test('embedded page presents a task-oriented configuration workspace', () => {
     assert.match(html, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
-test('plugin page is registered in both the admin navigation and homepage user menu', () => {
+test('plugin keeps the existing admin menu item without adding a duplicate user-menu entry', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../Plugin.cs'), 'utf8');
 
     assert.match(source, /EnableInMainMenu\s*=\s*true/);
-    assert.match(source, /EnableInUserMenu\s*=\s*true/);
-    assert.match(source, /DisplayName\s*=\s*"一起看控制台"/);
+    assert.doesNotMatch(source, /EnableInUserMenu\s*=\s*true/);
+    assert.match(source, /DisplayName\s*=\s*"一起看"/);
 });
 
 test('embedded page stays legible and uses the full Emby settings width in a light theme', () => {
@@ -1081,4 +1126,29 @@ test('embedded page exposes one ready-count input, accessible comboboxes, and mo
     assert.match(script, /class="button-flat btnStartParty"/);
     assert.match(script, /WatchParty\/\$\{encodeURIComponent\(partyId\)\}\/Start/);
     assert.doesNotMatch(script, /data-partyid="\$\{party\.Id\}"/);
+});
+
+test('media version selection exposes the concrete file path returned by Emby', async () => {
+    const controller = loadController([], []);
+    const view = createView();
+    global.ApiClient.getJSON = async () => {
+        return {
+            Id: 'item-1',
+            MediaSources: [
+                {
+                    Id: 'source-1',
+                    ItemId: 'item-1',
+                    Path: '/media/movies/example.mkv',
+                    Name: 'Example 4K'
+                }
+            ]
+        };
+    };
+
+    const versions = await controller.loadMediaVersions(view, 'item-1');
+
+    assert.equal(versions.length, 1);
+    assert.equal(view.querySelector('#mediaVersionId').options[0].dataset.path, '/media/movies/example.mkv');
+    assert.equal(view.querySelector('#mediaVersionPath').textContent, '/media/movies/example.mkv');
+    assert.equal(view.querySelector('#mediaVersionPath').style.display, 'block');
 });

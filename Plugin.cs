@@ -90,10 +90,9 @@ namespace WatchPartyForEmby
                     Name = "watchpartyconfig",
                     EmbeddedResourcePath = GetType().Namespace + ".Configuration.configPage.html",
                     EnableInMainMenu = true,
-                    EnableInUserMenu = true,
                     MenuSection = "server",
                     MenuIcon = "live_tv",
-                    DisplayName = "一起看控制台"
+                    DisplayName = "一起看"
                 },
                 new PluginPageInfo
                 {

@@ -100,7 +100,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         const userId = ApiClient.getCurrentUserId();
         const url = ApiClient.getUrl(
             `Users/${encodeURIComponent(userId)}/Items/${encodeURIComponent(itemId)}`,
-            { Fields: 'Id,Name,Type,MediaSources,ParentId,SeriesId,SeriesName' });
+            { Fields: 'Id,Name,Type,Path,MediaSources,ParentId,SeriesId,SeriesName' });
         return ApiClient.getJSON(url);
     }
 
@@ -115,14 +115,15 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
     function toMediaVersionOption(source, item) {
         const sourceId = source?.Id || source?.id || '';
         const playbackItemId = playbackItemIdFromSource(source, item.Id);
-        const path = source?.Path || source?.Name || '';
+        const path = source?.Path || item?.Path || '';
         const label = source?.Name || (path ? path.split(/[\\/]/).pop() : '') || '默认版本';
         return {
             optionValue: sourceId || playbackItemId,
             playbackItemId,
             mediaSourceId: sourceId || '',
             text: label,
-            name: label
+            name: label,
+            path
         };
     }
 
@@ -278,9 +279,11 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             });
 
             view.querySelector('#mediaVersionId').addEventListener('change', (e) => {
-                const option = e.target.selectedOptions?.[0];
+                const option = e.target.selectedOptions?.[0]
+                    || e.target.options?.[e.target.selectedIndex];
                 view.querySelector('#selectedMediaSourceId').value = option?.dataset?.sourceId || '';
                 view.querySelector('#selectedMediaVersionItemId').value = option?.dataset?.itemId || '';
+                this.updateMediaVersionPath(view, option?.dataset?.path || '');
                 this.updateRoomDraftSummary(view);
             });
 
@@ -713,6 +716,19 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 versionSelect.value = '';
             }
             if (versionContainer) versionContainer.style.display = 'none';
+            this.updateMediaVersionPath(view, '');
+        }
+
+        updateMediaVersionPath(view, path = '') {
+            const versionPath = view.querySelector('#mediaVersionPath');
+            if (!versionPath) {
+                return;
+            }
+
+            const normalizedPath = String(path || '').trim();
+            versionPath.textContent = normalizedPath;
+            versionPath.style.display = normalizedPath ? 'block' : 'none';
+            versionPath.title = normalizedPath;
         }
 
         loadMediaVersions(view, itemId) {
@@ -744,7 +760,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
                 if (uniqueSources.length === 0) {
                     if (versionItemInput) versionItemInput.value = itemId;
-                    if (versionContainer) versionContainer.style.display = 'none';
+                    if (versionContainer) {
+                        versionContainer.style.display = details?.Path ? 'block' : 'none';
+                    }
+                    this.updateMediaVersionPath(view, details?.Path || '');
                     loading.hide();
                     return [];
                 }
@@ -755,13 +774,16 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     element.value = option.optionValue || option.playbackItemId;
                     element.dataset.sourceId = option.mediaSourceId;
                     element.dataset.itemId = option.playbackItemId;
+                    element.dataset.path = option.path || '';
                     element.textContent = option.text || `版本 ${index + 1}`;
                     versionSelect.appendChild(element);
                 });
                 versionSelect.selectedIndex = 0;
-                const selected = versionSelect.selectedOptions?.[0];
+                const selected = versionSelect.selectedOptions?.[0]
+                    || versionSelect.options?.[versionSelect.selectedIndex];
                 if (sourceInput) sourceInput.value = selected?.dataset?.sourceId || '';
                 if (versionItemInput) versionItemInput.value = selected?.dataset?.itemId || itemId;
+                this.updateMediaVersionPath(view, selected?.dataset?.path || '');
                 if (versionContainer) versionContainer.style.display = 'block';
                 loading.hide();
                 return uniqueSources;
@@ -1282,17 +1304,14 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
         }
 
         participantControlState(participant) {
-            if (participant.IsDormant) {
-                return { text: '已休眠', className: 'is-warning' };
-            }
             if (!participant.IsOnline) {
                 return { text: '离线', className: 'is-warning' };
             }
+            if (participant.IsDormant) {
+                return { text: '已休眠', className: 'is-warning' };
+            }
             if (participant.CanReceiveCommands) {
                 return { text: '可控制', className: 'is-ready' };
-            }
-            if (participant.Client === 'Emby for iOS' && !participant.HasActiveWebSocket) {
-                return { text: '控制连接未建立', className: 'is-warning' };
             }
             return { text: '仅在线上报', className: 'is-warning' };
         }
@@ -1397,14 +1416,14 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     const encodedSessionId = encodeURIComponent(sessionId);
                     const selected = target.CanLaunch && selectedLaunchTargetIds.has(sessionId);
                     const sessionSuffix = sessionId ? sessionId.slice(-8) : '未知';
-                    const device = target.DeviceName || target.Client || 'iOS 设备';
+                    const device = target.DeviceName || target.Client || '未知设备';
                     const statusClass = target.CanLaunch ? 'is-ready' : 'is-warning';
                     return `
                         <label class="watch-party-launch-target${target.CanLaunch ? '' : ' is-disabled'}">
                             <input type="checkbox" class="launchTargetCheckbox" data-partyid="${encodeURIComponent(partyId)}" data-sessionid="${encodedSessionId}"${selected ? ' checked' : ''}${target.CanLaunch ? '' : ' disabled'}>
                             <span class="watch-party-launch-target-main">
                                 <span class="watch-party-launch-target-name">${this.escapeHtml(target.UserName || '未知用户')} · ${this.escapeHtml(device)}</span>
-                                <span class="watch-party-launch-target-meta">${this.escapeHtml(target.Client || 'Emby for iOS')} · Session …${this.escapeHtml(sessionSuffix)}${target.InRoom ? ' · 已在房间' : ''}</span>
+                            <span class="watch-party-launch-target-meta">${this.escapeHtml(target.Client || '未知客户端')} · Session …${this.escapeHtml(sessionSuffix)}${target.IsMaster ? ' · Master' : ''}${target.InRoom ? ' · 已在房间' : ''}</span>
                             </span>
                             <span class="watch-party-client-state ${statusClass}">${this.escapeHtml(target.Message || (target.CanLaunch ? '可开播' : '不可开播'))}</span>
                         </label>`;
@@ -1413,14 +1432,14 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     <div class="watch-party-launch-panel">
                         <div class="watch-party-launch-heading">
                             <div>
-                                <strong>在线官方 iOS Session</strong>
+                                <strong>在线 Session</strong>
                                 <span>选择本次需要拉起的设备；未勾选的 Session 不会收到命令。</span>
                             </div>
                             <span class="watch-party-launch-count">${launchTargets.length}</span>
                         </div>
                         <div class="watch-party-launch-list">
                             ${launchTargetRows || `<div class="watch-party-runtime-empty">${launchTargetsLoaded
-                                ? '当前没有在线的官方 iOS Session。'
+                                ? '当前没有符合条件的在线 Session。'
                                 : '正在读取在线 Session……'}</div>`}
                         </div>
                     </div>`;
@@ -1483,7 +1502,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         </div>
                         <div class="watch-party-list-actions">
                             ${party.IsActive ? `
-                            <button is="emby-button" type="button" class="button-flat btnSyncParty" data-partyid="${encodedPartyId}" title="向勾选的在线官方 iOS Session 播放房间选定的具体版本"${selectedLaunchTargetIds.size > 0 ? '' : ' disabled'}>
+                            <button is="emby-button" type="button" class="button-flat btnSyncParty" data-partyid="${encodedPartyId}" title="向勾选的在线 Session 播放房间选定的具体版本"${selectedLaunchTargetIds.size > 0 ? '' : ' disabled'}>
                                 <span>一键开播</span>
                             </button>` : ''}
                             ${party.IsActive && party.IsWaitingRoom ? `
@@ -1635,10 +1654,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             const sessionIds = requestedSessionIds
                 || Array.from(this.selectedLaunchTargets(partyId));
             if (sessionIds.length === 0) {
-                toast({ type: 'error', text: '请先勾选至少一个在线 iOS Session。' });
+                toast({ type: 'error', text: '请先勾选至少一个在线 Session。' });
                 return Promise.resolve({
                     Accepted: false,
-                    Message: '请先勾选至少一个在线 iOS Session。'
+                    Message: '请先勾选至少一个在线 Session。'
                 });
             }
 
@@ -1843,7 +1862,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             const contentSourceMode = view.querySelector('#contentSourceMode').value;
             const itemInput = view.querySelector('#selectedItemId');
             const itemId = itemInput.value;
-            const selectedVersionItemId = view.querySelector('#selectedMediaVersionItemId')?.value || itemId;
             const mediaSourceId = view.querySelector('#selectedMediaSourceId')?.value || '';
 
             if (!itemId) {
@@ -1880,11 +1898,13 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 }
 
                 if (selectedEpisodeId) {
-                    finalItemId = selectedVersionItemId || selectedEpisodeId;
+                    // Keep the logical episode as the room identity. The concrete
+                    // file/version belongs in MediaSourceId; replacing ItemId with a
+                    // media-version item makes Web (logical item) and native clients
+                    // (concrete version) appear to be watching different content.
+                    finalItemId = selectedEpisodeId;
                     finalItemName = view.querySelector('#searchEpisode').value;
                 }
-            } else {
-                finalItemId = selectedVersionItemId || itemId;
             }
 
             const maxParticipants = finiteInteger(view.querySelector('#maxParticipants').value, NaN);

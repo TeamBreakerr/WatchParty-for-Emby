@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using MediaBrowser.Controller.Session;
 
 namespace WatchPartyForEmby
 {
@@ -11,6 +12,26 @@ namespace WatchPartyForEmby
     /// </summary>
     public static class PlaybackControlCapabilities
     {
+        public static bool SessionSupportsRemoteControl(SessionInfo session)
+        {
+            if (session == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                return session.SupportsRemoteControl;
+            }
+            catch (NullReferenceException)
+            {
+                // Some retained Emby sessions have no ClientCapabilities object.
+                // Treat the explicit capability flag as the safe fallback instead
+                // of allowing a status/launch request to fail with NullReference.
+                return session.Capabilities?.SupportsMediaControl == true;
+            }
+        }
+
         public static bool CanReceivePlaybackCommand(
             bool supportsRemoteControl,
             IEnumerable<string> playableMediaTypes)

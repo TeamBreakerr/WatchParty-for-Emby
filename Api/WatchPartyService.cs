@@ -64,7 +64,7 @@ namespace WatchPartyForEmby.Api
         public List<ParticipantInfo> Participants { get; set; }
     }
 
-    [Route("/WatchParty/{Id}/LaunchTargets", "GET", Summary = "List online iOS launch targets")]
+    [Route("/WatchParty/{Id}/LaunchTargets", "GET", Summary = "List online Emby launch targets")]
     [Authenticated]
     public class PartyLaunchTargetsRequest : IReturn<PartyLaunchTargetsResponse>
     {
@@ -534,6 +534,7 @@ namespace WatchPartyForEmby.Api
                 .ToList();
             var activeSessions = SessionInfoIndex.Build(_sessionManager.Sessions);
             var entryPoint = ServerEntryPoint.Current;
+            var nowUtc = DateTime.UtcNow;
             var descriptors = participants.Select(participant =>
             {
                 activeSessions.TryGetValue(participant.SessionId ?? string.Empty, out var session);
@@ -543,25 +544,25 @@ namespace WatchPartyForEmby.Api
                 var hasActiveWebSocket = session != null
                     && OfficialIosWebSocketTransport.HasActiveWebSocketController(
                         session.SessionControllers);
+                var supportsRemoteControl =
+                    PlaybackControlCapabilities.SessionSupportsRemoteControl(session);
                 var supportsPlayback = session != null
                     && PlaybackControlCapabilities.CanReceivePlaybackCommand(
-                        session.SupportsRemoteControl,
+                        supportsRemoteControl,
                         session.PlayableMediaTypes);
-                var needsIosWebSocket =
-                    OfficialIosWebSocketTransport.IsOfficialIosClient(
-                        session?.Client);
+                var isOnline = PartySessionLivenessPolicy.IsOnline(session, nowUtc);
 
                 return new ParticipantSessionDescriptor
                 {
                     SessionId = participant.SessionId,
                     Client = session?.Client ?? string.Empty,
-                    SupportsRemoteControl = session?.SupportsRemoteControl == true,
-                    IsOnline = session != null,
+                    SupportsRemoteControl = supportsRemoteControl,
+                    IsOnline = isOnline,
                     HasActiveWebSocket = hasActiveWebSocket,
                     IsDormant = dormant,
-                    CanReceiveCommands = supportsPlayback
+                    CanReceiveCommands = isOnline
+                        && supportsPlayback
                         && !dormant
-                        && (!needsIosWebSocket || hasActiveWebSocket)
                 };
             });
 

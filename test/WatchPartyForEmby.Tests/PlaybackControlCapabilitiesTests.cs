@@ -1,4 +1,5 @@
 using Xunit;
+using MediaBrowser.Controller.Session;
 
 namespace WatchPartyForEmby.Tests
 {
@@ -26,6 +27,13 @@ namespace WatchPartyForEmby.Tests
             Assert.True(PlaybackControlCapabilities.CanReceivePlaybackCommand(
                 supportsRemoteControl: true,
                 playableMediaTypes: new[] { "Audio", "video" }));
+        }
+
+        [Fact]
+        public void RetainedSessionWithoutCapabilitiesIsSafelyNotControllable()
+        {
+            Assert.False(PlaybackControlCapabilities.SessionSupportsRemoteControl(
+                new SessionInfo()));
         }
     }
 }

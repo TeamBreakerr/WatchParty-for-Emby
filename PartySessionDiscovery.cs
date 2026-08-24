@@ -6,45 +6,25 @@ using MediaBrowser.Controller.Session;
 namespace WatchPartyForEmby
 {
     /// <summary>
-    /// Selects online official-iOS sessions for an explicit room PlayNow command.
-    /// Session identity, rather than user identity, defines the playback role.
+    /// Discovers currently online Emby sessions for explicit PlayNow commands.
+    /// Session identity, rather than user or client name, defines the target.
     /// </summary>
-    public static class OfficialIosPartySessionDiscovery
+    public static class PartySessionDiscovery
     {
-        public static IReadOnlyList<SessionInfo> Discover(IEnumerable<SessionInfo> sessions)
+        public static IReadOnlyList<SessionInfo> Discover(
+            IEnumerable<SessionInfo> sessions,
+            DateTime nowUtc)
         {
             return (sessions ?? Array.Empty<SessionInfo>())
-                .Where(session => session != null
-                    && !string.IsNullOrWhiteSpace(session.Id)
-                    && !string.IsNullOrWhiteSpace(session.UserId)
-                    && OfficialIosWebSocketTransport.IsOfficialIosClient(
-                        session.Client))
+                .Where(session => PartySessionLivenessPolicy.IsOnline(session, nowUtc))
                 .GroupBy(session => session.Id, StringComparer.Ordinal)
                 .Select(group => group.First())
                 .ToList();
         }
 
-        public static IReadOnlyList<SessionInfo> Select(
-            IEnumerable<SessionInfo> sessions,
-            string masterSessionId,
-            Func<SessionInfo, bool> canJoin)
-        {
-            if (canJoin == null)
-            {
-                throw new ArgumentNullException(nameof(canJoin));
-            }
-
-            return Discover(sessions)
-                .Where(session => !string.Equals(
-                        session.Id,
-                        masterSessionId,
-                        StringComparison.Ordinal)
-                    && canJoin(session))
-                .ToList();
-        }
-
         public static IReadOnlyList<SessionInfo> SelectRequested(
             IEnumerable<SessionInfo> sessions,
+            DateTime nowUtc,
             IEnumerable<string> requestedSessionIds,
             Func<SessionInfo, bool> canReceiveLaunchCommand)
         {
@@ -62,7 +42,7 @@ namespace WatchPartyForEmby
                 return Array.Empty<SessionInfo>();
             }
 
-            return Discover(sessions)
+            return Discover(sessions, nowUtc)
                 .Where(session => requested.Contains(session.Id)
                     && canReceiveLaunchCommand(session))
                 .ToList();

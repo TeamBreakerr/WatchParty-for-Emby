@@ -97,7 +97,12 @@ namespace WatchPartyForEmby
                     .ConfigureAwait(false);
                 if (!outcome.HasControlConnection)
                 {
-                    outcome.Message = "客户端在线，但控制连接未建立";
+                    // Eligibility is checked against a live Session immediately
+                    // before this workflow. If its transport is gone now, the
+                    // Session disappeared during the launch race and must be
+                    // reported offline rather than as a misleading online client.
+                    outcome.Online = false;
+                    outcome.Message = "客户端已离线";
                     return outcome;
                 }
 
@@ -109,7 +114,11 @@ namespace WatchPartyForEmby
                     ? "已发送当前内容和进度"
                     : outcome.HasControlConnection
                         ? "命令未被发送"
-                        : "客户端在线，但控制连接未建立";
+                        : "客户端已离线";
+                if (!outcome.HasControlConnection)
+                {
+                    outcome.Online = false;
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

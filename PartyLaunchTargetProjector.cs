@@ -6,16 +6,33 @@ using MediaBrowser.Controller.Session;
 namespace WatchPartyForEmby
 {
     /// <summary>
-    /// Projects Emby's online official-iOS sessions into the single launch-target
-    /// model consumed by both the API and the embedded control page.
+    /// Projects every live, remotely controllable Emby session into the launch-target
+    /// model consumed by the API and the embedded configuration page.
     /// </summary>
-    public static class OfficialIosPartyLaunchTargetProjector
+    public static class PartyLaunchTargetProjector
     {
         public static IReadOnlyList<PartyLaunchTarget> Project(
             IEnumerable<SessionInfo> sessions,
             string masterSessionId,
             Func<SessionInfo, bool> canJoin,
             Func<string, bool> isInRoom)
+        {
+            return Project(
+                sessions,
+                masterSessionId,
+                masterUserId: null,
+                canJoin,
+                isInRoom,
+                DateTime.UtcNow);
+        }
+
+        public static IReadOnlyList<PartyLaunchTarget> Project(
+            IEnumerable<SessionInfo> sessions,
+            string masterSessionId,
+            string masterUserId,
+            Func<SessionInfo, bool> canJoin,
+            Func<string, bool> isInRoom,
+            DateTime nowUtc)
         {
             if (canJoin == null)
             {
@@ -26,13 +43,16 @@ namespace WatchPartyForEmby
                 throw new ArgumentNullException(nameof(isInRoom));
             }
 
-            return OfficialIosPartySessionDiscovery.Discover(sessions)
+            return PartySessionDiscovery.Discover(sessions, nowUtc)
                 .Select(session => BuildEvaluatedTarget(
                     session,
                     masterSessionId,
+                    masterUserId,
                     canJoin(session),
-                    isInRoom(session.Id)))
-                .OrderByDescending(target => target.CanLaunch)
+                    isInRoom(session.Id),
+                    nowUtc))
+                .OrderByDescending(target => target.IsMaster)
+                .ThenByDescending(target => target.CanLaunch)
                 .ThenBy(target => target.UserName, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(target => target.DeviceName, StringComparer.OrdinalIgnoreCase)
                 .ToList();
@@ -44,6 +64,23 @@ namespace WatchPartyForEmby
             bool canJoin,
             bool inRoom)
         {
+            return BuildEvaluatedTarget(
+                session,
+                masterSessionId,
+                masterUserId: null,
+                canJoin,
+                inRoom,
+                DateTime.UtcNow);
+        }
+
+        public static PartyLaunchTarget BuildEvaluatedTarget(
+            SessionInfo session,
+            string masterSessionId,
+            string masterUserId,
+            bool canJoin,
+            bool inRoom,
+            DateTime nowUtc)
+        {
             if (session == null)
             {
                 throw new ArgumentNullException(nameof(session));
@@ -52,20 +89,34 @@ namespace WatchPartyForEmby
             var isMaster = string.Equals(
                 session.Id,
                 masterSessionId,
-                StringComparison.Ordinal);
-            var supportsRemoteControl =
-                PlaybackControlCapabilities.CanReceivePlaybackCommand(
-                    session.SupportsRemoteControl,
-                    session.PlayableMediaTypes);
+                StringComparison.Ordinal)
+                || (string.IsNullOrEmpty(masterSessionId)
+                    && string.Equals(
+                        session.UserId,
+                        masterUserId,
+                        StringComparison.OrdinalIgnoreCase));
             var hasActiveWebSocket =
                 OfficialIosWebSocketTransport.HasActiveWebSocketController(
                     session.SessionControllers);
+            var isOfficialIos =
+                OfficialIosWebSocketTransport.IsOfficialIosClient(session.Client);
+            var isOnline = PartySessionLivenessPolicy.IsOnline(session, nowUtc);
+            // Keep the projected facts internally consistent if the controller closes
+            // between discovery and projection. The next poll will remove the target.
+            if (isOfficialIos && !hasActiveWebSocket)
+            {
+                isOnline = false;
+            }
+            var supportsRemoteControl =
+                PlaybackControlCapabilities.CanReceivePlaybackCommand(
+                    PlaybackControlCapabilities.SessionSupportsRemoteControl(session),
+                    session.PlayableMediaTypes);
             var facts = new PartyLaunchTargetFacts
             {
                 IsMaster = isMaster,
+                IsOnline = isOnline,
                 CanJoin = canJoin,
                 SupportsRemoteControl = supportsRemoteControl,
-                HasActiveWebSocket = hasActiveWebSocket,
                 InRoom = inRoom
             };
             var eligibility = PartyLaunchTargetEligibility.Decide(facts);
@@ -77,6 +128,7 @@ namespace WatchPartyForEmby
                 UserName = session.UserName ?? session.UserId,
                 DeviceName = session.DeviceName ?? string.Empty,
                 Client = session.Client ?? string.Empty,
+                IsOnline = isOnline,
                 IsMaster = isMaster,
                 InRoom = inRoom,
                 SupportsRemoteControl = supportsRemoteControl,
