@@ -2,11 +2,13 @@
 set -eu
 
 default_config=/etc/nginx/http.d/default.conf
+emby_config=/etc/nginx/http.d/emby.conf
 runtime_config=/etc/nginx/http.d/emby-115-throttle.conf
 server_include='        include /data/emby-115-locations.conf;'
 access_include='            include /data/emby-115-access.conf;'
 wrapper_marker='codex-dynamic-emby-115-updateall-wrapper'
 default_backup=
+emby_config_backup=
 runtime_backup=
 runtime_existed=0
 updateall_backup=
@@ -14,6 +16,7 @@ cron_file=/etc/crontabs/root
 cron_backup=
 cron_existed=0
 guard_cron='* * * * * /data/ensure-emby-115-guard.sh'
+websocket_timeout_cron='* * * * * /data/ensure-emby-websocket-timeout.sh --reload'
 
 cleanup() {
     status=$?
@@ -22,6 +25,9 @@ cleanup() {
     if [ "$status" -ne 0 ]; then
         if [ -n "$default_backup" ]; then
             cp -p "$default_backup" "$default_config"
+        fi
+        if [ -n "$emby_config_backup" ]; then
+            cp -p "$emby_config_backup" "$emby_config"
         fi
         if [ "$runtime_existed" -eq 1 ] && [ -n "$runtime_backup" ]; then
             cp -p "$runtime_backup" "$runtime_config"
@@ -39,6 +45,7 @@ cleanup() {
         echo "restored Nginx configuration after failed 115 proxy installation" >&2
     fi
     [ -z "$default_backup" ] || rm -f "$default_backup"
+    [ -z "$emby_config_backup" ] || rm -f "$emby_config_backup"
     [ -z "$runtime_backup" ] || rm -f "$runtime_backup"
     [ -z "$updateall_backup" ] || rm -f "$updateall_backup"
     [ -z "$cron_backup" ] || rm -f "$cron_backup"
@@ -55,6 +62,8 @@ emby-115-throttle.conf
 emby-115-guard
 emby_115_policy.lua
 ensure-emby-115-guard.sh
+emby-websocket-timeout.conf
+ensure-emby-websocket-timeout.sh
 updateall-emby-115-wrapper.sh'
 for required_file in $required_files; do
     if [ ! -s "/data/$required_file" ]; then
@@ -63,7 +72,9 @@ for required_file in $required_files; do
     fi
 done
 
-if [ ! -x /data/emby-115-guard ] || [ ! -x /data/ensure-emby-115-guard.sh ]; then
+if [ ! -x /data/emby-115-guard ] \
+    || [ ! -x /data/ensure-emby-115-guard.sh ] \
+    || [ ! -x /data/ensure-emby-websocket-timeout.sh ]; then
     echo "115 guard executables are not executable" >&2
     exit 1
 fi
@@ -75,6 +86,8 @@ fi
 
 default_backup=$(mktemp)
 cp -p "$default_config" "$default_backup"
+emby_config_backup=$(mktemp)
+cp -p "$emby_config" "$emby_config_backup"
 if [ -e "$runtime_config" ]; then
     runtime_existed=1
     runtime_backup=$(mktemp)
@@ -102,8 +115,12 @@ fi
 if ! grep -Fq '/data/ensure-emby-115-guard.sh' "$cron_file"; then
     printf '%s\n' "$guard_cron" >>"$cron_file"
 fi
+if ! grep -Fq '/data/ensure-emby-websocket-timeout.sh' "$cron_file"; then
+    printf '%s\n' "$websocket_timeout_cron" >>"$cron_file"
+fi
 
 /data/ensure-emby-115-guard.sh
+/data/ensure-emby-websocket-timeout.sh
 
 nginx -t
 

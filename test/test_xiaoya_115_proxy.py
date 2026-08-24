@@ -82,12 +82,25 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         installer = (DEPLOY_ROOT / "install-emby-115-proxy.sh").read_text()
         wrapper = (DEPLOY_ROOT / "updateall-emby-115-wrapper.sh").read_text()
         keeper = (DEPLOY_ROOT / "install-xiaoyakeeper-hook.sh").read_text()
+        websocket_timeout = (
+            DEPLOY_ROOT / "ensure-emby-websocket-timeout.sh"
+        ).read_text()
+        websocket_include = (
+            DEPLOY_ROOT / "emby-websocket-timeout.conf"
+        ).read_text()
 
         self.assertIn("include /data/emby-115-locations.conf;", installer)
         self.assertIn("include /data/emby-115-access.conf;", installer)
         self.assertIn("nginx -t", installer)
         self.assertIn("ensure-emby-115-guard.sh", installer)
         self.assertIn("/etc/crontabs/root", installer)
+        self.assertIn("emby-websocket-timeout.conf", installer)
+        self.assertIn("ensure-emby-websocket-timeout.sh", installer)
+        self.assertIn("/data/ensure-emby-websocket-timeout.sh --reload", installer)
+        self.assertIn("validate_config", websocket_timeout)
+        self.assertIn("Nginx rejected the WebSocket patch", websocket_timeout)
+        self.assertIn("proxy_read_timeout 3600s;", websocket_include)
+        self.assertIn("proxy_socket_keepalive on;", websocket_include)
         self.assertIn("/updateall.xiaoya-original", wrapper)
         self.assertIn("install-emby-115-proxy.sh --reload", keeper)
         self.assertIn("xiaoyakeeper-xiaoya-begin", keeper)

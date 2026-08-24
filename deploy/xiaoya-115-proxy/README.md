@@ -28,6 +28,17 @@ command to `mycmd.txt`, so both data refreshes and container recreation restore
 the includes. A root cron health check restarts the loopback guard after an
 ordinary restart of the existing container.
 
+The same installer also repairs Xiaoya's inner `/etc/nginx/http.d/emby.conf`.
+Its stock `listen 2345` server sets `proxy_read_timeout 20s`, and the stock
+`/socket`/`/embywebsocket` locations inherit that value. The persistent
+`emby-websocket-timeout.conf` include raises the WebSocket read/send timeout,
+disables proxy buffering, and enables TCP keepalive in both locations. The
+idempotent `ensure-emby-websocket-timeout.sh` script validates the locations,
+backs up the file, runs `nginx -t`, and restores the backup if validation fails.
+The installer calls it after updates and adds a once-per-minute self-healing
+cron entry, so a regenerated inner config is repaired without changing Emby's
+client protocol or injecting an application-level KeepAlive message.
+
 Build the guard for this ARM64 Xiaoya host before installation:
 
 ```sh
