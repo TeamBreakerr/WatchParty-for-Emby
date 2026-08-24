@@ -27,7 +27,7 @@ namespace WatchPartyForEmby.Tests
                     iosWebSocket.Controller),
                 Session("tv", "viewer", "Emby Theater", NowUtc.AddSeconds(-25)),
                 Session("stale-web", "old", "Emby Web", NowUtc.AddMinutes(-4)),
-                Session("killed-ios", "old", "Emby for iOS", NowUtc.AddSeconds(-10))
+                Session("killed-ios", "old", "Emby for iOS", NowUtc.AddMinutes(-4))
             };
 
             var discovered = PartySessionDiscovery.Discover(sessions, NowUtc);

@@ -6,7 +6,10 @@ using MediaBrowser.Controller.Session;
 namespace WatchPartyForEmby
 {
     /// <summary>
-    /// Discovers currently online Emby sessions for explicit PlayNow commands.
+    /// Discovers currently present Emby sessions for the launch-target panel.
+    /// Presence and command transport are evaluated separately: a recently active
+    /// iOS session may be listed while its WebSocket is being rebuilt, but the
+    /// launch eligibility check will keep it unselectable until control returns.
     /// Session identity, rather than user or client name, defines the target.
     /// </summary>
     public static class PartySessionDiscovery

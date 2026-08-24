@@ -65,9 +65,20 @@ namespace WatchPartyForEmby.Tests
             var session = Session(
                 "ios-session",
                 "Emby for iOS",
-                NowUtc.AddSeconds(-30));
+                NowUtc.AddMinutes(-4));
 
             Assert.False(PartySessionLivenessPolicy.IsOnline(session, NowUtc));
+        }
+
+        [Fact]
+        public void RecentlyActiveIosSessionRemainsVisibleWhenItsWebSocketIsTemporarilyGone()
+        {
+            var session = Session(
+                "ios-session",
+                "Emby for iOS",
+                NowUtc.AddSeconds(-20));
+
+            Assert.True(PartySessionLivenessPolicy.IsOnline(session, NowUtc));
         }
 
         [Fact]
@@ -76,7 +87,7 @@ namespace WatchPartyForEmby.Tests
             var session = Session(
                 "participant-ios-session",
                 "Emby for iOS",
-                NowUtc.AddMinutes(-2));
+                NowUtc.AddMinutes(-4));
 
             Assert.True(PartySessionLivenessPolicy.IsParticipantOnline(
                 session,
@@ -89,7 +100,7 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
-        public void RecentlyActiveIosSessionNeedsItsLiveWebSocket()
+        public void RecentlyActiveIosSessionWithALiveWebSocketIsOnline()
         {
             var controller = SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
                 isSessionActive: true);

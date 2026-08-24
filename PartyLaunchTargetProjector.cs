@@ -105,12 +105,10 @@ namespace WatchPartyForEmby
                 PartySessionLivenessPolicy.IsWebClient(session.Client)
                 && activeWebSocketControllerCount > 1;
             var isOnline = PartySessionLivenessPolicy.IsOnline(session, nowUtc);
-            // Keep the projected facts internally consistent if the controller closes
-            // between discovery and projection. The next poll will remove the target.
-            if (isOfficialIos && !hasActiveWebSocket)
-            {
-                isOnline = false;
-            }
+            // iOS presence and iOS command transport are intentionally separate. A
+            // recently active app can remain visible while Emby replaces its socket;
+            // it must not become launchable until the new WebSocket is active.
+            var hasControlConnection = !isOfficialIos || hasActiveWebSocket;
             var supportsRemoteControl =
                 PlaybackControlCapabilities.CanReceivePlaybackCommand(
                     PlaybackControlCapabilities.SessionSupportsRemoteControl(session),
@@ -121,6 +119,7 @@ namespace WatchPartyForEmby
                 IsOnline = isOnline,
                 CanJoin = canJoin,
                 SupportsRemoteControl = supportsRemoteControl,
+                HasControlConnection = hasControlConnection,
                 InRoom = inRoom,
                 ActiveControllerCount = activeWebSocketControllerCount,
                 HasAmbiguousWebControllers = hasAmbiguousWebControllers
@@ -139,6 +138,7 @@ namespace WatchPartyForEmby
                 InRoom = inRoom,
                 SupportsRemoteControl = supportsRemoteControl,
                 HasActiveWebSocket = hasActiveWebSocket,
+                HasControlConnection = hasControlConnection,
                 ActiveControllerCount = activeWebSocketControllerCount,
                 HasAmbiguousWebControllers = hasAmbiguousWebControllers,
                 CanLaunch = eligibility.CanLaunch,

@@ -11,109 +11,6 @@ namespace WatchPartyForEmby.Tests
     public sealed class OfficialIosWebSocketTransportTests
     {
         [Fact]
-        public async Task KeepAliveOnlyUsesTheActiveWebSocketController()
-        {
-            var webSocket = SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
-                isSessionActive: true);
-            var firebase = SessionControllerProxy.Create<FirebaseSessionControllerProxy>(
-                isSessionActive: true);
-            var transport = new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
-
-            var sent = await transport.TrySendKeepAliveAsync(
-                "ios-session",
-                "Emby for iOS",
-                new[] { firebase.Controller, webSocket.Controller },
-                new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc),
-                CancellationToken.None);
-
-            Assert.True(sent);
-            Assert.Equal(new[] { "KeepAlive" }, webSocket.Messages);
-            Assert.Empty(firebase.Messages);
-        }
-
-        [Fact]
-        public async Task KeepAliveSkipsInactiveWebSocketAndFirebaseControllers()
-        {
-            var inactiveWebSocket =
-                SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
-                    isSessionActive: false);
-            var firebase = SessionControllerProxy.Create<FirebaseSessionControllerProxy>(
-                isSessionActive: true);
-            var transport = new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
-
-            var sent = await transport.TrySendKeepAliveAsync(
-                "ios-session",
-                "Emby for iOS",
-                new[] { inactiveWebSocket.Controller, firebase.Controller },
-                new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc),
-                CancellationToken.None);
-
-            Assert.False(sent);
-            Assert.Empty(inactiveWebSocket.Messages);
-            Assert.Empty(firebase.Messages);
-        }
-
-        [Fact]
-        public async Task KeepAliveIsLimitedToOnceEveryTenSecondsPerSession()
-        {
-            var webSocket = SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
-                isSessionActive: true);
-            var transport = new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
-            var firstAttemptUtc = new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
-
-            var firstSent = await transport.TrySendKeepAliveAsync(
-                "ios-session",
-                "Emby for iOS",
-                new[] { webSocket.Controller },
-                firstAttemptUtc,
-                CancellationToken.None);
-            var earlyRetrySent = await transport.TrySendKeepAliveAsync(
-                "ios-session",
-                "Emby for iOS",
-                new[] { webSocket.Controller },
-                firstAttemptUtc.AddSeconds(9),
-                CancellationToken.None);
-            var dueRetrySent = await transport.TrySendKeepAliveAsync(
-                "ios-session",
-                "Emby for iOS",
-                new[] { webSocket.Controller },
-                firstAttemptUtc.AddSeconds(10),
-                CancellationToken.None);
-
-            Assert.True(firstSent);
-            Assert.False(earlyRetrySent);
-            Assert.True(dueRetrySent);
-            Assert.Equal(new[] { "KeepAlive", "KeepAlive" }, webSocket.Messages);
-        }
-
-        [Fact]
-        public async Task FailedKeepAliveCanBeRetriedBeforeTheNextInterval()
-        {
-            var webSocket = SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
-                isSessionActive: true);
-            webSocket.FailuresRemaining = 1;
-            var transport = new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
-            var firstAttemptUtc = new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
-
-            await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                transport.TrySendKeepAliveAsync(
-                    "ios-session",
-                    "Emby for iOS",
-                    new[] { webSocket.Controller },
-                    firstAttemptUtc,
-                    CancellationToken.None));
-            var retrySent = await transport.TrySendKeepAliveAsync(
-                "ios-session",
-                "Emby for iOS",
-                new[] { webSocket.Controller },
-                firstAttemptUtc.AddSeconds(1),
-                CancellationToken.None);
-
-            Assert.True(retrySent);
-            Assert.Equal(new[] { "KeepAlive" }, webSocket.Messages);
-        }
-
-        [Fact]
         public void OfficialIosWithoutAnActiveWebSocketCannotReceivePlaybackCommands()
         {
             var inactiveWebSocket =
@@ -121,7 +18,7 @@ namespace WatchPartyForEmby.Tests
                     isSessionActive: false);
             var firebase = SessionControllerProxy.Create<FirebaseSessionControllerProxy>(
                 isSessionActive: true);
-            var transport = new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
+            var transport = new OfficialIosWebSocketTransport();
 
             var canDispatch = transport.CanDispatchPlaybackCommand(
                 "Emby for iOS",
@@ -135,7 +32,7 @@ namespace WatchPartyForEmby.Tests
         {
             var firebase = SessionControllerProxy.Create<FirebaseSessionControllerProxy>(
                 isSessionActive: true);
-            var transport = new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
+            var transport = new OfficialIosWebSocketTransport();
 
             Assert.True(OfficialIosWebSocketTransport.IsOfficialIosClient(
                 "emby for ios"));
@@ -154,7 +51,6 @@ namespace WatchPartyForEmby.Tests
             IEnumerable<ISessionController> controllers = new[] { firebase.Controller };
             var waits = 0;
             var transport = new OfficialIosWebSocketTransport(
-                TimeSpan.FromSeconds(10),
                 (_, __) =>
                 {
                     waits++;
@@ -181,7 +77,6 @@ namespace WatchPartyForEmby.Tests
                 isSessionActive: true);
             var waits = 0;
             var transport = new OfficialIosWebSocketTransport(
-                TimeSpan.FromSeconds(10),
                 (_, __) =>
                 {
                     waits++;
@@ -203,7 +98,7 @@ namespace WatchPartyForEmby.Tests
         [Fact]
         public void NonIosPlaybackCommandsKeepTheirExistingTransportBehavior()
         {
-            var transport = new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
+            var transport = new OfficialIosWebSocketTransport();
 
             var canDispatch = transport.CanDispatchPlaybackCommand(
                 "Emby Web",
@@ -212,74 +107,11 @@ namespace WatchPartyForEmby.Tests
             Assert.True(canDispatch);
         }
 
-        [Fact]
-        public async Task ClearingASessionRemovesItsKeepAliveLimit()
-        {
-            var webSocket = SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
-                isSessionActive: true);
-            var transport = new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
-            var nowUtc = new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
-            await transport.TrySendKeepAliveAsync(
-                "ios-session",
-                "Emby for iOS",
-                new[] { webSocket.Controller },
-                nowUtc,
-                CancellationToken.None);
-
-            transport.ClearSession("ios-session");
-            var sentAfterClear = await transport.TrySendKeepAliveAsync(
-                "ios-session",
-                "Emby for iOS",
-                new[] { webSocket.Controller },
-                nowUtc.AddSeconds(1),
-                CancellationToken.None);
-
-            Assert.True(sentAfterClear);
-            Assert.Equal(2, webSocket.Messages.Count);
-        }
-
-        [Fact]
-        public async Task ClearingTheTransportRemovesEveryKeepAliveLimit()
-        {
-            var webSocket = SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
-                isSessionActive: true);
-            var transport = new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
-            var nowUtc = new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
-            await transport.TrySendKeepAliveAsync(
-                "ios-session-a",
-                "Emby for iOS",
-                new[] { webSocket.Controller },
-                nowUtc,
-                CancellationToken.None);
-            await transport.TrySendKeepAliveAsync(
-                "ios-session-b",
-                "Emby for iOS",
-                new[] { webSocket.Controller },
-                nowUtc,
-                CancellationToken.None);
-
-            transport.Clear();
-
-            Assert.True(await transport.TrySendKeepAliveAsync(
-                "ios-session-a",
-                "Emby for iOS",
-                new[] { webSocket.Controller },
-                nowUtc.AddSeconds(1),
-                CancellationToken.None));
-            Assert.True(await transport.TrySendKeepAliveAsync(
-                "ios-session-b",
-                "Emby for iOS",
-                new[] { webSocket.Controller },
-                nowUtc.AddSeconds(1),
-                CancellationToken.None));
-        }
     }
 
     public abstract class SessionControllerProxy : DispatchProxy
     {
         public bool IsSessionActive { get; set; }
-
-        public int FailuresRemaining { get; set; }
 
         public List<string> Messages { get; } = new List<string>();
 
@@ -308,12 +140,6 @@ namespace WatchPartyForEmby.Tests
                 case "SupportsMessage":
                     return true;
                 case "SendMessage":
-                    if (FailuresRemaining > 0)
-                    {
-                        FailuresRemaining--;
-                        return Task.FromException(
-                            new InvalidOperationException("simulated WebSocket failure"));
-                    }
                     Messages.Add(args[0].ToString());
                     return Task.CompletedTask;
                 default:

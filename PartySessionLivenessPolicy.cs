@@ -31,14 +31,18 @@ namespace WatchPartyForEmby
                 return false;
             }
 
-            // Official iOS is online only while its WebSocket control channel is
-            // alive. Firebase controllers and a retained SessionInfo must never make
-            // a force-quit app appear online.
+            // The control WebSocket is a capability, not the only presence signal.
+            // Emby keeps SessionInfo and its HTTP playback activity alive while an
+            // iOS client briefly rebuilds its socket (for example after returning
+            // from background). Keep that session visible during the normal activity
+            // window, but let launch/command eligibility separately require the live
+            // WebSocket. A force-quit session has no new activity and expires here.
             var isIos = OfficialIosWebSocketTransport.IsOfficialIosClient(session.Client);
             if (isIos)
             {
                 return OfficialIosWebSocketTransport.HasActiveWebSocketController(
-                    session.SessionControllers);
+                        session.SessionControllers)
+                    || HasRecentActivity(session, nowUtc, onlineWindow);
             }
 
             // An active controller is stronger than LastActivityDate. In particular,

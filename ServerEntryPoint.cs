@@ -63,7 +63,7 @@ namespace WatchPartyForEmby
                 ResumeSeekMaxAttempts,
                 ResumeSeekConfirmationTimeout);
         private readonly OfficialIosWebSocketTransport _officialIosWebSocketTransport =
-            new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
+            new OfficialIosWebSocketTransport();
         private readonly PartyManualSynchronizationCoordinator _manualSynchronizationCoordinator =
             new PartyManualSynchronizationCoordinator();
         private readonly PartyPlaybackTransitionCoordinator _partyPlaybackTransitions;
@@ -612,7 +612,6 @@ namespace WatchPartyForEmby
             _participantResumeCoordinator.CancelSession(sessionId);
             _playbackSyncCoordinator.ClearSession(sessionId);
             _participantResumeLatencies.ClearSession(sessionId);
-            _officialIosWebSocketTransport.ClearSession(sessionId);
             _seriesEpisodeTransitions.ClearSession(sessionId);
             ClearSessionEpisodeMarkers(partyId, sessionId);
             _masterPlaybackStateDebouncer.Cancel(sessionId);
@@ -2182,7 +2181,6 @@ namespace WatchPartyForEmby
                 _participantResumeCoordinator.CancelSession(participant.SessionId);
                 _playbackSyncCoordinator.ClearSession(participant.SessionId);
                 _participantResumeLatencies.ClearSession(participant.SessionId);
-                _officialIosWebSocketTransport.ClearSession(participant.SessionId);
                 _seriesEpisodeTransitions.ClearSession(participant.SessionId);
             }
 
@@ -2953,13 +2951,6 @@ namespace WatchPartyForEmby
                 {
                     CheckAndRemoveInactiveParticipants(party);
 
-                    // Playback progress and remote control use separate connections.
-                    // During a master Stop/Start transition (including episode changes),
-                    // participants can keep reporting HTTP progress while their iOS
-                    // control WebSocket goes idle. Keep that control channel alive for
-                    // every active room even when no master clock is temporarily present.
-                    await KeepOfficialIosParticipantConnectionsAlive(party);
-
                     // A paused master still owns an authoritative frozen clock. Keep
                     // running the pass so a participant whose native player rounded or
                     // ignored the first pause+seek can be corrected without requiring
@@ -3143,48 +3134,6 @@ namespace WatchPartyForEmby
             finally
             {
                 Volatile.Write(ref _syncPassRunning, 0);
-            }
-        }
-
-        private async Task KeepOfficialIosParticipantConnectionsAlive(
-            WatchPartyItem party)
-        {
-            var nowUtc = DateTime.UtcNow;
-            var sessions = GetRegisteredPartySessions(
-                party.Id,
-                ParticipantRoomCommand.Seek);
-            foreach (var session in sessions)
-            {
-                if (IsMasterSession(party, session))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    var sent = await _officialIosWebSocketTransport.TrySendKeepAliveAsync(
-                        session.Id,
-                        session.Client,
-                        session.SessionControllers,
-                        nowUtc,
-                        _lifetimeCts.Token);
-                    if (sent)
-                    {
-                        _logger.Debug(
-                            $"[Party {party.Id}] Sent WebSocket KeepAlive to " +
-                            $"Emby for iOS session {session.Id}");
-                    }
-                }
-                catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    _logger.Warn(
-                        $"[Party {party.Id}] WebSocket KeepAlive failed for Emby for iOS " +
-                        $"session {session.Id}: {ex.Message}");
-                }
             }
         }
 
@@ -4743,7 +4692,6 @@ namespace WatchPartyForEmby
             _masterPlaybackStateDebouncer.Clear();
             _participantResumeCoordinator.Clear();
             _participantResumeLatencies.Clear();
-            _officialIosWebSocketTransport.Clear();
             _partyPlaybackTransitions.Dispose();
 
             try

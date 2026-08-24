@@ -88,9 +88,13 @@ namespace WatchPartyForEmby.Tests
                 canJoin: _ => true,
                 isInRoom: sessionId => sessionId == "ready");
 
-            Assert.Equal(new[] { "ready" }, targets.Select(target => target.SessionId));
+            Assert.Equal(
+                new[] { "ready", "stale" },
+                targets.Select(target => target.SessionId));
             Assert.True(targets[0].CanLaunch);
             Assert.True(targets[0].InRoom);
+            Assert.False(targets[1].CanLaunch);
+            Assert.Equal("在线，但控制连接未建立", targets[1].Message);
         }
 
         [Fact]
@@ -215,7 +219,7 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
-        public void LowercaseIosWithoutWebSocketIsOfflineAndCannotBeSelected()
+        public void RecentlyActiveIosWithoutWebSocketRemainsVisibleButCannotBeSelected()
         {
             var firebase = SessionControllerProxy.Create<FirebaseSessionControllerProxy>(
                 isSessionActive: true);
@@ -226,11 +230,11 @@ namespace WatchPartyForEmby.Tests
                 canJoin: true,
                 inRoom: false);
 
-            Assert.Empty(PartySessionDiscovery.Discover(
+            Assert.Single(PartySessionDiscovery.Discover(
                 new[] { session },
                 DateTime.UtcNow));
             Assert.False(evaluation.CanLaunch);
-            Assert.Equal("客户端已离线", evaluation.Message);
+            Assert.Equal("在线，但控制连接未建立", evaluation.Message);
             Assert.Empty(PartySessionDiscovery.SelectRequested(
                 new[] { session },
                 DateTime.UtcNow,

@@ -17,6 +17,7 @@ namespace WatchPartyForEmby
         public bool InRoom { get; set; }
         public bool SupportsRemoteControl { get; set; }
         public bool HasActiveWebSocket { get; set; }
+        public bool HasControlConnection { get; set; }
         public int ActiveControllerCount { get; set; }
         public bool HasAmbiguousWebControllers { get; set; }
         public bool CanLaunch { get; set; }
@@ -38,6 +39,10 @@ namespace WatchPartyForEmby
             if (!facts.IsOnline)
             {
                 return Denied("客户端已离线");
+            }
+            if (!facts.HasControlConnection)
+            {
+                return Denied("在线，但控制连接未建立");
             }
             if (facts.HasAmbiguousWebControllers)
             {
@@ -79,6 +84,7 @@ namespace WatchPartyForEmby
         public bool CanJoin { get; set; }
         public bool SupportsRemoteControl { get; set; }
         public bool InRoom { get; set; }
+        public bool HasControlConnection { get; set; } = true;
         public int ActiveControllerCount { get; set; }
         public bool HasAmbiguousWebControllers { get; set; }
     }
