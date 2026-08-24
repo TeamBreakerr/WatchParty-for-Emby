@@ -538,7 +538,13 @@ namespace WatchPartyForEmby.Api
                     && PlaybackControlCapabilities.CanReceivePlaybackCommand(
                         supportsRemoteControl,
                         session.PlayableMediaTypes);
-                var isOnline = PartySessionLivenessPolicy.IsOnline(session, nowUtc);
+                var isOnline = PartySessionLivenessPolicy.IsParticipantOnline(
+                    session,
+                    participant.LastActivityAt,
+                    nowUtc);
+                var hasPlaybackControlConnection = session != null
+                    && (!OfficialIosWebSocketTransport.IsOfficialIosClient(session.Client)
+                        || hasActiveWebSocket);
 
                 return new ParticipantSessionDescriptor
                 {
@@ -550,6 +556,7 @@ namespace WatchPartyForEmby.Api
                     IsDormant = dormant,
                     CanReceiveCommands = isOnline
                         && supportsPlayback
+                        && hasPlaybackControlConnection
                         && !dormant
                 };
             });

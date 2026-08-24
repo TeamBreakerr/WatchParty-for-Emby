@@ -56,8 +56,8 @@ namespace WatchPartyForEmby.Tests
 
             Assert.False(result.Accepted);
             Assert.False(dispatched);
-            Assert.False(result.Participants[0].Online);
-            Assert.Equal("客户端已离线", result.Participants[0].Message);
+            Assert.True(result.Participants[0].Online);
+            Assert.Equal("在线，但控制连接未建立", result.Participants[0].Message);
         }
 
         [Fact]
@@ -107,8 +107,8 @@ namespace WatchPartyForEmby.Tests
             Assert.Equal("已向 1 台客户端发送开播命令", result.Message);
             Assert.True(result.Participants[0].CommandSent);
             Assert.False(result.Participants[1].CommandSent);
-            Assert.False(result.Participants[1].Online);
-            Assert.Equal("客户端已离线", result.Participants[1].Message);
+            Assert.True(result.Participants[1].Online);
+            Assert.Equal("在线，但控制连接未建立", result.Participants[1].Message);
         }
 
         [Fact]

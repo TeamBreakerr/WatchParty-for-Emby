@@ -351,7 +351,10 @@ namespace WatchPartyForEmby
                 candidate != null
                 && string.Equals(candidate.Id, sessionId, StringComparison.Ordinal));
             return session != null
-                && PartySessionLivenessPolicy.IsOnline(session, DateTime.UtcNow);
+                && PartySessionLivenessPolicy.IsOnline(session, DateTime.UtcNow)
+                && _officialIosWebSocketTransport.CanDispatchPlaybackCommand(
+                    session.Client,
+                    session.SessionControllers);
         }
 
         public ServerEntryPoint(

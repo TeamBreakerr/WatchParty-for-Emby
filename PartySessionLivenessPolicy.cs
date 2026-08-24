@@ -13,6 +13,8 @@ namespace WatchPartyForEmby
     {
         public static readonly TimeSpan DefaultOnlineWindow =
             TimeSpan.FromMinutes(3);
+        public static readonly TimeSpan DefaultParticipantReportWindow =
+            TimeSpan.FromSeconds(30);
 
         public static bool IsWebClient(string client)
         {
@@ -88,6 +90,43 @@ namespace WatchPartyForEmby
 
             return nowUtc >= lastActivityUtc.AddMinutes(-1)
                 && nowUtc - lastActivityUtc <= window;
+        }
+
+        /// <summary>
+        /// A room participant can still be demonstrably online while its remote-control
+        /// WebSocket is unavailable. PlaybackStart/Progress reaches the plugin through a
+        /// separate HTTP path and updates the participant registry only after playback-
+        /// generation validation. Keep that trusted reporter online for one short report
+        /// window without pretending that it can receive commands.
+        /// </summary>
+        public static bool IsParticipantOnline(
+            SessionInfo session,
+            DateTime lastAcceptedPlaybackActivityUtc,
+            DateTime nowUtc,
+            TimeSpan? reportWindow = null)
+        {
+            if (!HasSessionIdentity(session))
+            {
+                return false;
+            }
+
+            if (IsOnline(session, nowUtc))
+            {
+                return true;
+            }
+
+            var window = reportWindow ?? DefaultParticipantReportWindow;
+            if (window <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(reportWindow));
+            }
+            if (lastAcceptedPlaybackActivityUtc == DateTime.MinValue)
+            {
+                return false;
+            }
+
+            return nowUtc >= lastAcceptedPlaybackActivityUtc.AddMinutes(-1)
+                && nowUtc - lastAcceptedPlaybackActivityUtc <= window;
         }
 
         private static bool HasActiveController(SessionInfo session)

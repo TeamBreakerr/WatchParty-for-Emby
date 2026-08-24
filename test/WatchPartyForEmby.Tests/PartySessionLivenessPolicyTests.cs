@@ -71,6 +71,24 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void AcceptedPartyProgressKeepsIosParticipantOnlineWithoutControl()
+        {
+            var session = Session(
+                "participant-ios-session",
+                "Emby for iOS",
+                NowUtc.AddMinutes(-2));
+
+            Assert.True(PartySessionLivenessPolicy.IsParticipantOnline(
+                session,
+                NowUtc.AddSeconds(-10),
+                NowUtc));
+            Assert.False(PartySessionLivenessPolicy.IsParticipantOnline(
+                session,
+                NowUtc.AddSeconds(-31),
+                NowUtc));
+        }
+
+        [Fact]
         public void RecentlyActiveIosSessionNeedsItsLiveWebSocket()
         {
             var controller = SessionControllerProxy.Create<WebSocketSessionControllerProxy>(

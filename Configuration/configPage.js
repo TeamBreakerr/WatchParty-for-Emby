@@ -1241,7 +1241,39 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             if (participant.CanReceiveCommands) {
                 return { text: '可控制', className: 'is-ready' };
             }
+            if (String(participant.Client || '').toLowerCase() === 'emby for ios'
+                && !participant.HasActiveWebSocket) {
+                return {
+                    text: '在线上报 · 控制连接已断开',
+                    className: 'is-warning'
+                };
+            }
             return { text: '仅在线上报', className: 'is-warning' };
+        }
+
+        setLaunchButtonBusy(button, busy) {
+            if (!button) {
+                return;
+            }
+
+            const label = button.querySelector?.('span');
+            if (busy) {
+                button.dataset.idleLabel = label?.textContent || '一键开播';
+                button.disabled = true;
+                button.setAttribute?.('aria-busy', 'true');
+                if (label) {
+                    label.textContent = '正在开播…';
+                }
+                return;
+            }
+
+            if (label) {
+                label.textContent = button.dataset.idleLabel || '一键开播';
+            }
+            delete button.dataset.idleLabel;
+            button.removeAttribute?.('aria-busy');
+            const partyId = decodeURIComponent(button.dataset.partyid || '');
+            button.disabled = this.selectedLaunchTargets(partyId).size === 0;
         }
 
         selectedLaunchTargets(partyId) {
@@ -1477,9 +1509,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
             container.querySelectorAll('.btnSyncParty').forEach(btn => {
                 btn.addEventListener('click', (e) => {
-                    const partyId = decodeURIComponent(e.target.closest('button').dataset.partyid);
+                    const button = e.currentTarget || e.target.closest('button');
+                    const partyId = decodeURIComponent(button.dataset.partyid);
                     const sessionIds = Array.from(this.selectedLaunchTargets(partyId));
-                    this.syncParty(view, partyId, sessionIds);
+                    this.syncParty(view, partyId, sessionIds, button);
                 });
             });
 
@@ -1581,7 +1614,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             });
         }
 
-        syncParty(view, partyId, requestedSessionIds = null) {
+        syncParty(view, partyId, requestedSessionIds = null, button = null) {
             const sessionIds = requestedSessionIds
                 || Array.from(this.selectedLaunchTargets(partyId));
             if (sessionIds.length === 0) {
@@ -1592,7 +1625,10 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 });
             }
 
-            loading.show();
+            // PlayNow can navigate this same Web Session away from the configuration
+            // view before the POST promise settles. A global Emby loading mask would
+            // then survive above the player, so keep pending state local to the button.
+            this.setLaunchButtonBusy(button, true);
             return ApiClient.ajax({
                 type: 'POST',
                 url: ApiClient.getUrl(`WatchParty/${encodeURIComponent(partyId)}/Sync`),
@@ -1600,7 +1636,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 contentType: 'application/json',
                 data: JSON.stringify({ SessionIds: sessionIds })
             }).then(result => {
-                loading.hide();
+                this.setLaunchButtonBusy(button, false);
                 const message = result?.Message || (result?.Accepted
                     ? '已向勾选的客户端发送具体版本播放命令。'
                     : '勾选的客户端当前没有可用的播放控制连接。');
@@ -1611,7 +1647,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 this.refreshPartyRuntimeStatus(view);
                 return result;
             }).catch(error => {
-                loading.hide();
+                this.setLaunchButtonBusy(button, false);
                 toast({ type: 'error', text: `一键开播失败：${error.message || error}` });
                 throw error;
             });
@@ -2014,6 +2050,9 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
         onPause(options) {
             this.isViewPaused = true;
+            // Defensive cleanup for any other configuration task that was showing
+            // Emby's global loading mask when PlayNow navigated this view away.
+            loading.hide();
             this.dataLoadRequestId = (this.dataLoadRequestId || 0) + 1;
             this.recentContentRequestVersion = (this.recentContentRequestVersion || 0) + 1;
             this.partyRuntimeRequestVersion = (this.partyRuntimeRequestVersion || 0) + 1;

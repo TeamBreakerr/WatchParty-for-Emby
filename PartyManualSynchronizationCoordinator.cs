@@ -97,12 +97,10 @@ namespace WatchPartyForEmby
                     .ConfigureAwait(false);
                 if (!outcome.HasControlConnection)
                 {
-                    // Eligibility is checked against a live Session immediately
-                    // before this workflow. If its transport is gone now, the
-                    // Session disappeared during the launch race and must be
-                    // reported offline rather than as a misleading online client.
-                    outcome.Online = false;
-                    outcome.Message = "客户端已离线";
+                    // Online presence and remote-control transport are separate.
+                    // In particular, official iOS can keep reporting playback over
+                    // HTTP after its control WebSocket closes.
+                    outcome.Message = "在线，但控制连接未建立";
                     return outcome;
                 }
 
@@ -114,11 +112,7 @@ namespace WatchPartyForEmby
                     ? "已发送当前内容和进度"
                     : outcome.HasControlConnection
                         ? "命令未被发送"
-                        : "客户端已离线";
-                if (!outcome.HasControlConnection)
-                {
-                    outcome.Online = false;
-                }
+                        : "在线，但控制连接未建立";
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

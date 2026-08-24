@@ -77,7 +77,11 @@ function element(overrides = {}) {
     return result;
 }
 
-function loadController(toasts, updatedConfigurations, configuration = { WatchParties: [] }) {
+function loadController(
+    toasts,
+    updatedConfigurations,
+    configuration = { WatchParties: [] },
+    dependencies = {}) {
     global.ApiClient = {
         getPluginConfiguration: async () => configuration,
         updatePluginConfiguration: async (_pluginId, configuration) => {
@@ -103,7 +107,7 @@ function loadController(toasts, updatedConfigurations, configuration = { WatchPa
         class BaseView {}
         Controller = factory(
             BaseView,
-            { show() {}, hide() {} },
+            dependencies.loading || { show() {}, hide() {} },
             payload => toasts.push(typeof payload === 'string' ? payload : payload.text),
             {},
             {},
@@ -688,6 +692,24 @@ test('an offline dormant participant is displayed as offline, never as a missing
     assert.deepEqual(state, { text: '离线', className: 'is-warning' });
 });
 
+test('a reporting iOS participant without WebSocket is online but not controllable', () => {
+    const controller = loadController([], []);
+
+    const state = controller.participantControlState({
+        Client: 'Emby for iOS',
+        IsOnline: true,
+        IsPaused: false,
+        IsDormant: false,
+        HasActiveWebSocket: false,
+        CanReceiveCommands: false
+    });
+
+    assert.deepEqual(state, {
+        text: '在线上报 · 控制连接已断开',
+        className: 'is-warning'
+    });
+});
+
 test('one-click launch posts only explicitly selected session ids', async () => {
     const view = createView();
     const toasts = [];
@@ -721,6 +743,67 @@ test('one-click launch refuses an empty selection without sending a request', as
     assert.equal(requestCount, 0);
     assert.equal(result.Accepted, false);
     assert.match(toasts.join('\n'), /请先勾选至少一个在线 Session/);
+});
+
+test('one-click launch never leaves a navigation-blocking global loading mask', () => {
+    const loadingEvents = [];
+    const controller = loadController([], [], { WatchParties: [] }, {
+        loading: {
+            show() { loadingEvents.push('show'); },
+            hide() { loadingEvents.push('hide'); }
+        }
+    });
+    global.ApiClient.ajax = () => new Promise(() => {});
+
+    controller.syncParty(createView(), 'room-1', ['current-web-session']);
+
+    assert.doesNotMatch(loadingEvents.join(','), /show/);
+});
+
+test('one-click launch uses button-local pending state until the request settles', async () => {
+    const controller = loadController([], []);
+    const label = element({ textContent: '一键开播' });
+    const button = element({
+        dataset: { partyid: 'room-1' },
+        querySelector: selector => selector === 'span' ? label : null
+    });
+    let resolveRequest;
+    global.ApiClient.ajax = () => new Promise(resolve => {
+        resolveRequest = resolve;
+    });
+    controller.refreshPartyRuntimeStatus = async () => [];
+    controller.updateLaunchTargetSelection('room-1', 'current-web-session', true);
+
+    const pending = controller.syncParty(
+        createView(),
+        'room-1',
+        ['current-web-session'],
+        button);
+
+    assert.equal(button.disabled, true);
+    assert.equal(button.getAttribute('aria-busy'), 'true');
+    assert.equal(label.textContent, '正在开播…');
+
+    resolveRequest({ Accepted: true, Message: '已发送' });
+    await pending;
+
+    assert.equal(button.disabled, false);
+    assert.equal(button.getAttribute('aria-busy'), null);
+    assert.equal(label.textContent, '一键开播');
+});
+
+test('leaving the configuration view clears any outstanding global loading mask', () => {
+    const loadingEvents = [];
+    const controller = loadController([], [], { WatchParties: [] }, {
+        loading: {
+            show() { loadingEvents.push('show'); },
+            hide() { loadingEvents.push('hide'); }
+        }
+    });
+
+    controller.onPause();
+
+    assert.deepEqual(loadingEvents, ['hide']);
 });
 
 test('room count settles before ancillary data finishes loading', async () => {
