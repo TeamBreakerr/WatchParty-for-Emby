@@ -64,6 +64,19 @@ namespace WatchPartyForEmby.Api
         public List<ParticipantInfo> Participants { get; set; }
     }
 
+    [Route("/WatchParty/{Id}/LaunchTargets", "GET", Summary = "List online iOS launch targets")]
+    [Authenticated]
+    public class PartyLaunchTargetsRequest : IReturn<PartyLaunchTargetsResponse>
+    {
+        [ApiMember(Name = "Id", Description = "Party ID", IsRequired = true)]
+        public string Id { get; set; }
+    }
+
+    public class PartyLaunchTargetsResponse
+    {
+        public List<PartyLaunchTarget> Targets { get; set; }
+    }
+
     public class ParticipantInfo
     {
         public string UserId { get; set; }
@@ -114,6 +127,9 @@ namespace WatchPartyForEmby.Api
     {
         [ApiMember(Name = "Id", Description = "Party ID", IsRequired = true)]
         public string Id { get; set; }
+
+        [ApiMember(Name = "SessionIds", Description = "Explicit target Emby Session IDs", IsRequired = true)]
+        public List<string> SessionIds { get; set; } = new List<string>();
     }
 
     public class SynchronizePartyResponse
@@ -301,6 +317,37 @@ namespace WatchPartyForEmby.Api
             };
         }
 
+        public object Get(PartyLaunchTargetsRequest request)
+        {
+            var currentUser = GetAuthenticatedUser();
+            var plugin = Plugin.Instance;
+            WatchPartyItem party;
+            lock (plugin.ConfigurationSyncRoot)
+            {
+                party = plugin.Configuration.WatchParties.FirstOrDefault(p => p.Id == request.Id);
+            }
+            if (party == null)
+            {
+                throw new ArgumentException($"Party {request.Id} not found");
+            }
+            if (!WatchPartyAuthorizationPolicy.CanSynchronizeParty(
+                    party,
+                    currentUser.Id.ToString(),
+                    currentUser.Policy?.IsAdministrator == true))
+            {
+                throw new UnauthorizedAccessException(
+                    "Only the master can inspect launch targets");
+            }
+
+            var targets = ServerEntryPoint.Current?
+                .GetPartyLaunchTargets(request.Id)
+                ?? Array.Empty<PartyLaunchTarget>();
+            return new PartyLaunchTargetsResponse
+            {
+                Targets = targets.ToList()
+            };
+        }
+
         public void Post(SetReadyRequest request)
         {
             var currentUser = GetAuthenticatedUser();
@@ -386,7 +433,7 @@ namespace WatchPartyForEmby.Api
                     Message = "播放同步服务尚未启动"
                 }
                 : await ServerEntryPoint.Current
-                    .SynchronizePartyNowAsync(request.Id)
+                    .SynchronizePartyNowAsync(request.Id, request.SessionIds)
                     .ConfigureAwait(false);
 
             return new SynchronizePartyResponse
@@ -500,10 +547,9 @@ namespace WatchPartyForEmby.Api
                     && PlaybackControlCapabilities.CanReceivePlaybackCommand(
                         session.SupportsRemoteControl,
                         session.PlayableMediaTypes);
-                var needsIosWebSocket = string.Equals(
-                    session?.Client,
-                    "Emby for iOS",
-                    StringComparison.Ordinal);
+                var needsIosWebSocket =
+                    OfficialIosWebSocketTransport.IsOfficialIosClient(
+                        session?.Client);
 
                 return new ParticipantSessionDescriptor
                 {

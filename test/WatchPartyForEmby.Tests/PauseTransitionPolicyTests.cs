@@ -18,7 +18,8 @@ namespace WatchPartyForEmby.Tests
                 PlaybackStateReporterRole.Participant,
                 previousIsPaused: true,
                 reportedIsPaused,
-                authoritativeIsPlaying));
+                authoritativeIsPlaying,
+                hasActiveMaster: true));
         }
 
         [Theory]
@@ -34,7 +35,8 @@ namespace WatchPartyForEmby.Tests
                 PlaybackStateReporterRole.Master,
                 previousIsPaused,
                 reportedIsPaused,
-                authoritativeIsPlaying: true));
+                authoritativeIsPlaying: true,
+                hasActiveMaster: true));
         }
 
         [Fact]
@@ -46,7 +48,8 @@ namespace WatchPartyForEmby.Tests
                 PlaybackStateReporterRole.Master,
                 previousIsPaused: false,
                 reportedIsPaused: false,
-                authoritativeIsPlaying: false));
+                authoritativeIsPlaying: false,
+                hasActiveMaster: true));
         }
 
         [Fact]
@@ -58,7 +61,27 @@ namespace WatchPartyForEmby.Tests
                 PlaybackStateReporterRole.Participant,
                 previousIsPaused: true,
                 reportedIsPaused: true,
-                authoritativeIsPlaying: false));
+                authoritativeIsPlaying: false,
+                hasActiveMaster: true));
+        }
+
+        [Theory]
+        [InlineData(true, true)]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        [InlineData(false, false)]
+        public void ParticipantIsFreeWhenMasterIsOffline(
+            bool reportedIsPaused,
+            bool authoritativeIsPlaying)
+        {
+            Assert.Equal(
+                PlaybackStateAuthorityAction.Ignore,
+                PauseTransitionPolicy.Decide(
+                    PlaybackStateReporterRole.Participant,
+                    previousIsPaused: !reportedIsPaused,
+                    reportedIsPaused,
+                    authoritativeIsPlaying,
+                    hasActiveMaster: false));
         }
 
         [Theory]

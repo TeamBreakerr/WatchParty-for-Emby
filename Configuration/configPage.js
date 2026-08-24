@@ -1297,6 +1297,38 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             return { text: '仅在线上报', className: 'is-warning' };
         }
 
+        selectedLaunchTargets(partyId) {
+            this.selectedLaunchTargetIdsByParty =
+                this.selectedLaunchTargetIdsByParty || new Map();
+            const key = String(partyId || '');
+            if (!this.selectedLaunchTargetIdsByParty.has(key)) {
+                this.selectedLaunchTargetIdsByParty.set(key, new Set());
+            }
+            return this.selectedLaunchTargetIdsByParty.get(key);
+        }
+
+        updateLaunchTargetSelection(partyId, sessionId, selected) {
+            const selectedIds = this.selectedLaunchTargets(partyId);
+            if (selected) {
+                selectedIds.add(sessionId);
+            } else {
+                selectedIds.delete(sessionId);
+            }
+            return Array.from(selectedIds);
+        }
+
+        reconcileLaunchTargetSelection(partyId, targets) {
+            const selectedIds = this.selectedLaunchTargets(partyId);
+            const selectableIds = new Set((targets || [])
+                .filter(target => target.CanLaunch)
+                .map(target => String(target.SessionId || '')));
+            Array.from(selectedIds).forEach(sessionId => {
+                if (!selectableIds.has(sessionId)) {
+                    selectedIds.delete(sessionId);
+                }
+            });
+        }
+
         renderPartyList(view, config) {
             const container = view.querySelector('#activePartiesList');
             const focusedButton = container.querySelector
@@ -1324,8 +1356,12 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 <div class="watch-party-list">`;
 
             parties.forEach(party => {
+                const partyId = String(party.Id || '');
                 const runtime = this.partyRuntimeById?.get(String(party.Id || '')) || party;
                 const participants = runtime.Participants || [];
+                const launchTargetsLoaded = this.launchTargetsByParty?.has(partyId) === true;
+                const launchTargets = this.launchTargetsByParty?.get(partyId) || [];
+                const selectedLaunchTargetIds = this.selectedLaunchTargets(partyId);
                 const onlineCount = participants.filter(participant =>
                     participant.IsOnline && !participant.IsDormant).length;
                 const masterOnline = runtime.MasterOnline === true
@@ -1355,6 +1391,38 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         ${participantRows
                             ? `<div class="watch-party-client-list">${participantRows}</div>`
                             : '<div class="watch-party-runtime-empty">当前还没有客户端进入这个房间。</div>'}
+                    </div>`;
+                const launchTargetRows = launchTargets.map(target => {
+                    const sessionId = String(target.SessionId || '');
+                    const encodedSessionId = encodeURIComponent(sessionId);
+                    const selected = target.CanLaunch && selectedLaunchTargetIds.has(sessionId);
+                    const sessionSuffix = sessionId ? sessionId.slice(-8) : '未知';
+                    const device = target.DeviceName || target.Client || 'iOS 设备';
+                    const statusClass = target.CanLaunch ? 'is-ready' : 'is-warning';
+                    return `
+                        <label class="watch-party-launch-target${target.CanLaunch ? '' : ' is-disabled'}">
+                            <input type="checkbox" class="launchTargetCheckbox" data-partyid="${encodeURIComponent(partyId)}" data-sessionid="${encodedSessionId}"${selected ? ' checked' : ''}${target.CanLaunch ? '' : ' disabled'}>
+                            <span class="watch-party-launch-target-main">
+                                <span class="watch-party-launch-target-name">${this.escapeHtml(target.UserName || '未知用户')} · ${this.escapeHtml(device)}</span>
+                                <span class="watch-party-launch-target-meta">${this.escapeHtml(target.Client || 'Emby for iOS')} · Session …${this.escapeHtml(sessionSuffix)}${target.InRoom ? ' · 已在房间' : ''}</span>
+                            </span>
+                            <span class="watch-party-client-state ${statusClass}">${this.escapeHtml(target.Message || (target.CanLaunch ? '可开播' : '不可开播'))}</span>
+                        </label>`;
+                }).join('');
+                const launchTargetDetails = `
+                    <div class="watch-party-launch-panel">
+                        <div class="watch-party-launch-heading">
+                            <div>
+                                <strong>在线官方 iOS Session</strong>
+                                <span>选择本次需要拉起的设备；未勾选的 Session 不会收到命令。</span>
+                            </div>
+                            <span class="watch-party-launch-count">${launchTargets.length}</span>
+                        </div>
+                        <div class="watch-party-launch-list">
+                            ${launchTargetRows || `<div class="watch-party-runtime-empty">${launchTargetsLoaded
+                                ? '当前没有在线的官方 iOS Session。'
+                                : '正在读取在线 Session……'}</div>`}
+                        </div>
                     </div>`;
                 const statusText = party.IsActive ? '已启用' : '已停用';
                 const statusClass = party.IsActive ? 'is-active' : 'is-inactive';
@@ -1411,11 +1479,12 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                             </div>
                             ${queueDetails}
                             ${runtimeDetails}
+                            ${party.IsActive ? launchTargetDetails : ''}
                         </div>
                         <div class="watch-party-list-actions">
                             ${party.IsActive ? `
-                            <button is="emby-button" type="button" class="button-flat btnSyncParty" data-partyid="${encodedPartyId}" title="结束等候，发现在线官方 iOS 客户端并立即播放房间选定的具体版本">
-                                <span>一键同步 · 在线开播</span>
+                            <button is="emby-button" type="button" class="button-flat btnSyncParty" data-partyid="${encodedPartyId}" title="向勾选的在线官方 iOS Session 播放房间选定的具体版本"${selectedLaunchTargetIds.size > 0 ? '' : ' disabled'}>
+                                <span>一键开播</span>
                             </button>` : ''}
                             ${party.IsActive && party.IsWaitingRoom ? `
                             <button is="emby-button" type="button" class="button-flat btnStartParty" data-partyid="${encodedPartyId}">
@@ -1459,7 +1528,22 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             container.querySelectorAll('.btnSyncParty').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     const partyId = decodeURIComponent(e.target.closest('button').dataset.partyid);
-                    this.syncParty(view, partyId);
+                    const sessionIds = Array.from(this.selectedLaunchTargets(partyId));
+                    this.syncParty(view, partyId, sessionIds);
+                });
+            });
+
+            container.querySelectorAll('.launchTargetCheckbox').forEach(checkbox => {
+                checkbox.addEventListener('change', (event) => {
+                    const input = event.currentTarget || event.target;
+                    const partyId = decodeURIComponent(input.dataset.partyid);
+                    const sessionId = decodeURIComponent(input.dataset.sessionid);
+                    this.updateLaunchTargetSelection(partyId, sessionId, input.checked);
+                    const syncButton = Array.from(container.querySelectorAll('.btnSyncParty'))
+                        .find(button => decodeURIComponent(button.dataset.partyid) === partyId);
+                    if (syncButton) {
+                        syncButton.disabled = this.selectedLaunchTargets(partyId).size === 0;
+                    }
                 });
             });
 
@@ -1490,11 +1574,22 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             const requestVersion = (this.partyRuntimeRequestVersion || 0) + 1;
             this.partyRuntimeRequestVersion = requestVersion;
             return ApiClient.getJSON(ApiClient.getUrl('WatchParty/List')).then(result => {
+                const parties = result.Parties || [];
+                return Promise.all(parties.map(party => {
+                    const partyId = String(party.Id || '');
+                    return ApiClient.getJSON(ApiClient.getUrl(
+                        `WatchParty/${encodeURIComponent(partyId)}/LaunchTargets`))
+                        .then(response => [partyId, response.Targets || []])
+                        .catch(() => [partyId, []]);
+                })).then(targetEntries => ({ parties, targetEntries }));
+            }).then(({ parties, targetEntries }) => {
                 if (this.isViewPaused || this.partyRuntimeRequestVersion !== requestVersion) {
                     return [];
                 }
-                const parties = result.Parties || [];
                 this.partyRuntimeById = new Map(parties.map(party => [String(party.Id || ''), party]));
+                this.launchTargetsByParty = new Map(targetEntries);
+                targetEntries.forEach(([partyId, targets]) =>
+                    this.reconcileLaunchTargetSelection(partyId, targets));
                 const fingerprint = JSON.stringify(parties.map(party => ({
                     Id: party.Id,
                     IsPlaying: party.IsPlaying,
@@ -1511,7 +1606,8 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                         IsPaused: participant.IsPaused,
                         IsHost: participant.IsHost,
                         CurrentPositionTicks: participant.CurrentPositionTicks
-                    }))
+                    })),
+                    LaunchTargets: this.launchTargetsByParty.get(String(party.Id || ''))
                 })));
                 if (this.config && fingerprint !== this.partyRuntimeFingerprint) {
                     this.partyRuntimeFingerprint = fingerprint;
@@ -1535,16 +1631,29 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             });
         }
 
-        syncParty(view, partyId) {
+        syncParty(view, partyId, requestedSessionIds = null) {
+            const sessionIds = requestedSessionIds
+                || Array.from(this.selectedLaunchTargets(partyId));
+            if (sessionIds.length === 0) {
+                toast({ type: 'error', text: '请先勾选至少一个在线 iOS Session。' });
+                return Promise.resolve({
+                    Accepted: false,
+                    Message: '请先勾选至少一个在线 iOS Session。'
+                });
+            }
+
             loading.show();
             return ApiClient.ajax({
                 type: 'POST',
-                url: ApiClient.getUrl(`WatchParty/${encodeURIComponent(partyId)}/Sync`)
+                url: ApiClient.getUrl(`WatchParty/${encodeURIComponent(partyId)}/Sync`),
+                dataType: 'json',
+                contentType: 'application/json',
+                data: JSON.stringify({ SessionIds: sessionIds })
             }).then(result => {
                 loading.hide();
                 const message = result?.Message || (result?.Accepted
-                    ? '已发现在线客户端并发送具体版本播放命令。'
-                    : '没有在线客户端具备可用的播放控制连接。');
+                    ? '已向勾选的客户端发送具体版本播放命令。'
+                    : '勾选的客户端当前没有可用的播放控制连接。');
                 toast({
                     type: result?.Accepted ? 'success' : 'error',
                     text: message
@@ -1553,7 +1662,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 return result;
             }).catch(error => {
                 loading.hide();
-                toast({ type: 'error', text: `一键同步失败：${error.message || error}` });
+                toast({ type: 'error', text: `一键开播失败：${error.message || error}` });
                 throw error;
             });
         }

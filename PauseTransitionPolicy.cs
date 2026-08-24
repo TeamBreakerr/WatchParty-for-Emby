@@ -23,13 +23,19 @@ namespace WatchPartyForEmby
             PlaybackStateReporterRole reporterRole,
             bool previousIsPaused,
             bool reportedIsPaused,
-            bool authoritativeIsPlaying)
+            bool authoritativeIsPlaying,
+            bool hasActiveMaster)
         {
             if (reporterRole == PlaybackStateReporterRole.Master)
             {
                 return reportedIsPaused != previousIsPaused
                     ? PlaybackStateAuthorityAction.BroadcastMaster
                     : PlaybackStateAuthorityAction.Ignore;
+            }
+
+            if (!hasActiveMaster)
+            {
+                return PlaybackStateAuthorityAction.Ignore;
             }
 
             var authoritativeIsPaused = !authoritativeIsPlaying;

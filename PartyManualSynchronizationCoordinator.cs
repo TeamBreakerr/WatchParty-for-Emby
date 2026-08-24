@@ -59,9 +59,9 @@ namespace WatchPartyForEmby
             var sentCount = result.Participants.Count(participant => participant.CommandSent);
             result.Accepted = sentCount > 0;
             result.Message = result.Participants.Count == 0
-                ? "房间中没有可同步的在线客户端"
+                ? "所选 Session 当前不可开播"
                 : sentCount > 0
-                    ? $"已向 {sentCount} 台客户端发送同步命令"
+                    ? $"已向 {sentCount} 台客户端发送开播命令"
                     : "没有客户端具备可用的控制连接";
             return result;
         }

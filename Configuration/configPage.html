@@ -533,6 +533,126 @@
             font-size: 0.8rem;
         }
 
+        .watch-party-launch-panel {
+            display: grid;
+            gap: 0.65rem;
+            margin-top: 0.75rem;
+            padding: 0.8rem;
+            border: 1px solid #c9dae8;
+            border-radius: 11px;
+            background: #f4f8fb;
+        }
+
+        .watch-party-launch-heading {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.8rem;
+        }
+
+        .watch-party-launch-heading strong,
+        .watch-party-launch-heading span {
+            display: block;
+        }
+
+        .watch-party-launch-heading strong {
+            color: var(--wp-text-strong);
+            font-size: 0.84rem;
+        }
+
+        .watch-party-launch-heading div > span {
+            margin-top: 0.15rem;
+            color: var(--wp-text-muted);
+            font-size: 0.74rem;
+            line-height: 1.45;
+        }
+
+        .watch-party-launch-count {
+            min-width: 1.8rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 999px;
+            background: #dfeef8;
+            color: var(--wp-blue);
+            font-size: 0.76rem;
+            font-weight: 700;
+            text-align: center;
+        }
+
+        .watch-party-launch-list {
+            display: grid;
+            gap: 0.45rem;
+        }
+
+        .watch-party-launch-target {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 0.7rem;
+            padding: 0.65rem 0.7rem;
+            border: 1px solid #d5e1ea;
+            border-radius: 9px;
+            background: #ffffff;
+            cursor: pointer;
+            transition: border-color 160ms ease, box-shadow 160ms ease;
+        }
+
+        .watch-party-launch-target:hover {
+            border-color: #88aecb;
+            box-shadow: 0 4px 14px rgba(42, 91, 126, 0.08);
+        }
+
+        .watch-party-launch-target.is-disabled {
+            cursor: default;
+            opacity: 0.68;
+        }
+
+        .watch-party-launch-target input[type="checkbox"] {
+            appearance: none;
+            width: 1.15rem;
+            height: 1.15rem;
+            margin: 0;
+            border: 1.5px solid #93a7b7;
+            border-radius: 5px;
+            background: #ffffff;
+            cursor: pointer;
+        }
+
+        .watch-party-launch-target input[type="checkbox"]:checked {
+            border-color: var(--wp-blue);
+            background: var(--wp-blue);
+            box-shadow: inset 0 0 0 3px #ffffff;
+        }
+
+        .watch-party-launch-target input[type="checkbox"]:disabled {
+            cursor: default;
+            background: #e9eef2;
+        }
+
+        .watch-party-launch-target-main,
+        .watch-party-launch-target-name,
+        .watch-party-launch-target-meta {
+            display: block;
+            min-width: 0;
+        }
+
+        .watch-party-launch-target-name {
+            overflow: hidden;
+            color: var(--wp-text-strong);
+            font-size: 0.8rem;
+            font-weight: 650;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .watch-party-launch-target-meta {
+            overflow: hidden;
+            margin-top: 0.1rem;
+            color: var(--wp-text-muted);
+            font-size: 0.72rem;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         .watch-party-visually-hidden {
             position: absolute !important;
             width: 1px !important;
@@ -1253,7 +1373,7 @@
                                 <div>
                                     <p class="watch-party-section-kicker">Overview</p>
                                     <h2>房间概览</h2>
-                <p class="watch-party-section-description">在这里查看客户端并管理房间；“一键同步”会结束等候、把当前在线且可远程控制的官方 iOS 客户端加入房间，并立即播放已选具体版本。</p>
+                <p class="watch-party-section-description">在这里分别查看房间内客户端与在线官方 iOS Session；勾选目标后，“一键开播”只会让所选设备播放房间绑定的具体版本。</p>
                                 </div>
                                 <span class="watch-party-badge">实时配置</span>
                             </div>
@@ -1307,7 +1427,7 @@
                                                 <select is="emby-select" id="mediaVersionId" class="emby-select-withcolor emby-select">
                                                     <option value="">正在读取具体版本……</option>
                                                 </select>
-                                                <div class="fieldDescription">一键同步会使用这里选择的文件/版本，不要求其他人再从媒体库查找。</div>
+                                                <div class="fieldDescription">一键开播会使用这里选择的文件/版本，不要求其他人再从媒体库查找。</div>
                                                 <input type="hidden" id="selectedMediaSourceId" />
                                                 <input type="hidden" id="selectedMediaVersionItemId" />
                                             </div>
@@ -1393,7 +1513,7 @@
                                                     <input is="emby-checkbox" type="checkbox" id="isPartyActive" />
                                                     <span>创建后立即启用</span>
                                                 </label>
-                                                <div class="fieldDescription">启用后，普通同步只跟随已进入房间并正在播放该内容的用户；需要把当前在线 iOS 客户端直接拉入房间时，请使用房间卡片中的“一键同步”。</div>
+                                                <div class="fieldDescription">启用后，普通同步只跟随已进入房间并正在播放该内容的用户；需要把在线 iOS Session 直接拉入房间时，请勾选设备并使用“一键开播”。</div>
                                             </div>
 
                                             <div class="checkboxContainer">
@@ -1409,7 +1529,7 @@
                                                     <input is="emby-checkbox" type="checkbox" id="autoStartWhenReady" />
                                                     <span>达到最低人数后自动结束等候</span>
                                                 </label>
-                                                    <div class="fieldDescription">自动结束等候只统计已进入房间并开始播放的用户；“发现在线客户端并播放”会直接发现当前在线的官方 iOS 客户端并下发已选具体版本。</div>
+                                                    <div class="fieldDescription">自动结束等候只统计已进入房间并开始播放的用户；“一键开播”会向勾选的在线官方 iOS Session 下发已选具体版本。</div>
                                             </div>
 
                                             <div class="inputContainer" id="minReadyCountContainer">

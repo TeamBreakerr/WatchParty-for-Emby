@@ -138,9 +138,48 @@ namespace WatchPartyForEmby
             return _participantDormancies.IsDormant(partyId, sessionId);
         }
 
-        public async Task<PartyManualSynchronizationResult> SynchronizePartyNowAsync(
-            string partyId)
+        public IReadOnlyList<PartyLaunchTarget> GetPartyLaunchTargets(string partyId)
         {
+            WatchPartyItem party;
+            lock (_plugin.ConfigurationSyncRoot)
+            {
+                party = _plugin.Configuration.WatchParties.FirstOrDefault(candidate =>
+                    candidate.IsActive
+                    && string.Equals(candidate.Id, partyId, StringComparison.Ordinal));
+            }
+            if (party == null)
+            {
+                return Array.Empty<PartyLaunchTarget>();
+            }
+
+            var masterSessionId = _plugin.PartyParticipants.GetMasterSession(party.Id);
+            return OfficialIosPartyLaunchTargetProjector.Project(
+                _sessionManager.Sessions,
+                masterSessionId,
+                session => CanUserJoinParty(party, session.UserId, logDenied: false),
+                sessionId => _plugin.PartyParticipants.TryGetSession(
+                    party.Id,
+                    sessionId,
+                    out _));
+        }
+
+        public async Task<PartyManualSynchronizationResult> SynchronizePartyNowAsync(
+            string partyId,
+            IEnumerable<string> requestedSessionIds)
+        {
+            var selectedSessionIds = new HashSet<string>(
+                (requestedSessionIds ?? Array.Empty<string>())
+                    .Where(sessionId => !string.IsNullOrWhiteSpace(sessionId)),
+                StringComparer.Ordinal);
+            if (selectedSessionIds.Count == 0)
+            {
+                return new PartyManualSynchronizationResult
+                {
+                    Accepted = false,
+                    Message = "请至少选择一台在线客户端"
+                };
+            }
+
             WatchPartyItem party;
             lock (_plugin.ConfigurationSyncRoot)
             {
@@ -184,10 +223,17 @@ namespace WatchPartyForEmby
             // A manual sync is also the explicit join action. Discover every current
             // official iOS session instead of requiring a prior PlaybackStart/Progress
             // report, then register eligible users before dispatching PlayNow.
-            var targetSessions = OfficialIosPartySessionDiscovery.Select(
+            var targetSessions = OfficialIosPartySessionDiscovery.SelectRequested(
                 activeSessions.Values,
-                masterSessionId,
-                session => CanUserJoinParty(party, session.UserId));
+                selectedSessionIds,
+                session => OfficialIosPartyLaunchTargetProjector.BuildEvaluatedTarget(
+                    session,
+                    masterSessionId,
+                    CanUserJoinParty(party, session.UserId),
+                    _plugin.PartyParticipants.TryGetSession(
+                        party.Id,
+                        session.Id,
+                        out _)).CanLaunch);
             var targets = new List<PartyManualSynchronizationTarget>();
             foreach (var session in targetSessions)
             {
@@ -285,7 +331,7 @@ namespace WatchPartyForEmby
                 candidate != null
                 && string.Equals(candidate.Id, sessionId, StringComparison.Ordinal));
             return session != null
-                && (!string.Equals(session.Client, "Emby for iOS", StringComparison.Ordinal)
+                && (!OfficialIosWebSocketTransport.IsOfficialIosClient(session.Client)
                     || OfficialIosWebSocketTransport.HasActiveWebSocketController(
                         session.SessionControllers));
         }
@@ -725,6 +771,14 @@ namespace WatchPartyForEmby
 
         private bool CanUserJoinParty(WatchPartyItem party, string userId)
         {
+            return CanUserJoinParty(party, userId, logDenied: true);
+        }
+
+        private bool CanUserJoinParty(
+            WatchPartyItem party,
+            string userId,
+            bool logDenied)
+        {
             if (party.AllowedUserIds != null && party.AllowedUserIds.Count > 0)
             {
                 if (!party.AllowedUserIds.Any(allowedUserId =>
@@ -733,7 +787,10 @@ namespace WatchPartyForEmby
                             userId,
                             StringComparison.OrdinalIgnoreCase)))
                 {
-                    _logger.Warn($"[Party {party.Id}] User {userId} not in allowed list");
+                    if (logDenied)
+                    {
+                        _logger.Warn($"[Party {party.Id}] User {userId} not in allowed list");
+                    }
                     return false;
                 }
             }
@@ -746,7 +803,10 @@ namespace WatchPartyForEmby
             if (party.MaxParticipants > 0
                 && _plugin.PartyParticipants.DistinctUserCount(party.Id) >= party.MaxParticipants)
             {
-                _logger.Warn($"[Party {party.Id}] Maximum participants ({party.MaxParticipants}) reached");
+                if (logDenied)
+                {
+                    _logger.Warn($"[Party {party.Id}] Maximum participants ({party.MaxParticipants}) reached");
+                }
                 return false;
             }
 
@@ -1442,6 +1502,18 @@ namespace WatchPartyForEmby
             WatchPartyItem party,
             SessionInfo session)
         {
+            // The master may disconnect after the progress event was classified but
+            // before this asynchronous restore is dispatched. A participant is free
+            // whenever there is no live master clock; the room's persisted IsPlaying
+            // value is only history in that state, not authority.
+            if (!HasActiveMasterSession(party))
+            {
+                _logger.Debug(
+                    $"[Party {party.Id}] Leaving participant {session.Id} playback state unchanged " +
+                    "because the master is offline");
+                return;
+            }
+
             var authoritativeIsPaused = party.IsWaitingRoom || !party.IsPlaying;
             _logger.Info(
                 $"[Party {party.Id}] Ignoring playback-state change from participant " +
@@ -1869,7 +1941,7 @@ namespace WatchPartyForEmby
             {
                 return false;
             }
-            if (!string.Equals(targetSession.Client, "Emby for iOS", StringComparison.Ordinal))
+            if (!OfficialIosWebSocketTransport.IsOfficialIosClient(targetSession.Client))
             {
                 return true;
             }
@@ -3454,7 +3526,8 @@ namespace WatchPartyForEmby
                             : PlaybackStateReporterRole.Participant,
                         wasPaused,
                         e.IsPaused,
-                        party.IsPlaying);
+                        party.IsPlaying,
+                        HasActiveMasterSession(party));
 
                     if (!ignoreParticipantPosition)
                     {

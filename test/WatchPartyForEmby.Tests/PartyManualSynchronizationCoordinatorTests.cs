@@ -103,7 +103,7 @@ namespace WatchPartyForEmby.Tests
                 CancellationToken.None);
 
             Assert.True(result.Accepted);
-            Assert.Equal("已向 1 台客户端发送同步命令", result.Message);
+            Assert.Equal("已向 1 台客户端发送开播命令", result.Message);
             Assert.True(result.Participants[0].CommandSent);
             Assert.False(result.Participants[1].CommandSent);
             Assert.Equal("客户端在线，但控制连接未建立", result.Participants[1].Message);

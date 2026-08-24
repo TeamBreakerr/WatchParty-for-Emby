@@ -98,6 +98,7 @@ namespace WatchPartyForEmby.Tests
         [InlineData(typeof(PartyParticipantsRequest))]
         [InlineData(typeof(SetReadyRequest))]
         [InlineData(typeof(StartPartyRequest))]
+        [InlineData(typeof(PartyLaunchTargetsRequest))]
         [InlineData(typeof(SynchronizePartyRequest))]
         [InlineData(typeof(GetUsersRequest))]
         public void StateAndIdentityEndpointsRequireAnAuthenticatedEmbySession(Type requestType)

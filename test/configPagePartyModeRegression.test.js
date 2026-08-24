@@ -650,7 +650,7 @@ test('room overview count stays in sync with the rendered room list', () => {
     assert.match(view.querySelector('#activePartiesList').innerHTML, /1 个启用/);
 });
 
-test('room overview shows each client control state and offers one-click synchronization', () => {
+test('room overview separates room clients from selectable online iOS sessions', () => {
     const view = createView();
     const controller = loadController([], []);
     controller.escapeHtml = value => String(value ?? '');
@@ -671,6 +671,29 @@ test('room overview shows each client control state and offers one-click synchro
             ]
         }]
     ]);
+    controller.launchTargetsByParty = new Map([
+        ['active', [
+            {
+                SessionId: 'online-session-12345678',
+                UserName: 'friend',
+                DeviceName: 'iPhone 16',
+                Client: 'Emby for iOS',
+                InRoom: false,
+                CanLaunch: true,
+                Message: '在线 · 可拉入房间'
+            },
+            {
+                SessionId: 'stale-session-87654321',
+                UserName: 'old client',
+                DeviceName: 'iPhone 13',
+                Client: 'Emby for iOS',
+                InRoom: true,
+                CanLaunch: false,
+                Message: '在线，但控制连接未建立'
+            }
+        ]]
+    ]);
+    controller.updateLaunchTargetSelection('active', 'online-session-12345678', true);
 
     controller.renderPartyList(view, {
         WatchParties: [
@@ -682,26 +705,48 @@ test('room overview shows each client control state and offers one-click synchro
     assert.match(html, /xsq/);
     assert.match(html, /Emby for iOS/);
     assert.match(html, /可控制/);
+    assert.match(html, /在线官方 iOS Session/);
+    assert.match(html, /iPhone 16/);
+    assert.match(html, /online-session-12345678[^>]* checked/);
+    assert.match(html, /stale-session-87654321[^>]* disabled/);
     assert.match(html, /btnSyncParty/);
-    assert.match(html, /一键同步/);
+    assert.match(html, /一键开播/);
+    assert.doesNotMatch(html, /一键同步/);
 });
 
-test('one-click synchronization posts to the selected room and reports success', async () => {
+test('one-click launch posts only explicitly selected session ids', async () => {
     const view = createView();
     const toasts = [];
     const controller = loadController(toasts, []);
     let request;
     global.ApiClient.ajax = async options => {
         request = options;
-        return { Accepted: true, Message: '已向 1 台客户端发送同步命令' };
+        return { Accepted: true, Message: '已向 1 台客户端发送开播命令' };
     };
     controller.refreshPartyRuntimeStatus = async () => [];
 
-    await controller.syncParty(view, 'room-1');
+    await controller.syncParty(view, 'room-1', ['ios-selected']);
 
     assert.equal(request.type, 'POST');
     assert.equal(request.url, 'WatchParty/room-1/Sync');
-    assert.match(toasts.join('\n'), /已向 1 台客户端发送同步命令/);
+    assert.equal(request.dataType, 'json');
+    assert.equal(request.contentType, 'application/json');
+    assert.deepEqual(JSON.parse(request.data), { SessionIds: ['ios-selected'] });
+    assert.match(toasts.join('\n'), /已向 1 台客户端发送开播命令/);
+});
+
+test('one-click launch refuses an empty selection without sending a request', async () => {
+    const view = createView();
+    const toasts = [];
+    const controller = loadController(toasts, []);
+    let requestCount = 0;
+    global.ApiClient.ajax = async () => { requestCount++; };
+
+    const result = await controller.syncParty(view, 'room-1', []);
+
+    assert.equal(requestCount, 0);
+    assert.equal(result.Accepted, false);
+    assert.match(toasts.join('\n'), /请先勾选至少一个在线 iOS Session/);
 });
 
 test('room count and default-disabled console status settle before ancillary data finishes loading', async () => {
@@ -932,6 +977,14 @@ test('embedded page presents a task-oriented configuration workspace', () => {
     assert.match(html, /id="activePartiesList"[^>]+role="region"/);
     assert.match(html, /@media \(max-width: 760px\)/);
     assert.match(html, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test('plugin page is registered in both the admin navigation and homepage user menu', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../Plugin.cs'), 'utf8');
+
+    assert.match(source, /EnableInMainMenu\s*=\s*true/);
+    assert.match(source, /EnableInUserMenu\s*=\s*true/);
+    assert.match(source, /DisplayName\s*=\s*"一起看控制台"/);
 });
 
 test('embedded page stays legible and uses the full Emby settings width in a light theme', () => {

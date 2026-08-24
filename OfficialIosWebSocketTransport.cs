@@ -41,7 +41,7 @@ namespace WatchPartyForEmby
             CancellationToken cancellationToken)
         {
             if (string.IsNullOrEmpty(sessionId)
-                || !string.Equals(client, OfficialIosClient, StringComparison.Ordinal))
+                || !IsOfficialIosClient(client))
             {
                 return false;
             }
@@ -89,7 +89,7 @@ namespace WatchPartyForEmby
             string client,
             IEnumerable<ISessionController> controllers)
         {
-            if (!string.Equals(client, OfficialIosClient, StringComparison.Ordinal))
+            if (!IsOfficialIosClient(client))
             {
                 return true;
             }
@@ -104,7 +104,7 @@ namespace WatchPartyForEmby
             TimeSpan pollInterval,
             CancellationToken cancellationToken)
         {
-            if (!string.Equals(client, OfficialIosClient, StringComparison.Ordinal))
+            if (!IsOfficialIosClient(client))
             {
                 return true;
             }
@@ -141,6 +141,14 @@ namespace WatchPartyForEmby
             }
 
             return false;
+        }
+
+        public static bool IsOfficialIosClient(string client)
+        {
+            return string.Equals(
+                client,
+                OfficialIosClient,
+                StringComparison.OrdinalIgnoreCase);
         }
 
         public static bool HasActiveWebSocketController(

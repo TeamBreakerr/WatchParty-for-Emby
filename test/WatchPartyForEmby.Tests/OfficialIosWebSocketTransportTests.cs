@@ -131,6 +131,20 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void LowercaseOfficialIosCannotBypassWebSocketRequirement()
+        {
+            var firebase = SessionControllerProxy.Create<FirebaseSessionControllerProxy>(
+                isSessionActive: true);
+            var transport = new OfficialIosWebSocketTransport(TimeSpan.FromSeconds(10));
+
+            Assert.True(OfficialIosWebSocketTransport.IsOfficialIosClient(
+                "emby for ios"));
+            Assert.False(transport.CanDispatchPlaybackCommand(
+                "emby for ios",
+                new[] { firebase.Controller }));
+        }
+
+        [Fact]
         public async Task PlaybackCommandWaitsForAReconnectingIosWebSocket()
         {
             var firebase = SessionControllerProxy.Create<FirebaseSessionControllerProxy>(
