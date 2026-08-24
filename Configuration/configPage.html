@@ -625,20 +625,38 @@
         }
 
         .watch-party-list-actions {
-            display: flex;
-            flex-wrap: wrap;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(7.75rem, 10.5rem));
             justify-content: center;
-            gap: 0.45rem;
-            padding-top: 0.85rem;
+            align-items: stretch;
+            gap: 0.65rem;
+            width: 100%;
+            box-sizing: border-box;
+            padding-top: 1rem;
             border-top: 1px solid var(--wp-border);
         }
 
         .watch-party-list-actions .emby-button {
-            min-width: 7rem;
+            display: inline-flex !important;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            min-width: 0;
+            min-height: 2.9rem;
+            box-sizing: border-box;
+            padding: 0.65rem 1rem !important;
             margin: 0;
             border: 1px solid #d7e1e8 !important;
             border-radius: 9px !important;
             background: #f7fafc !important;
+            line-height: 1.2 !important;
+            text-align: center;
+        }
+
+        .watch-party-list-actions .emby-button > span {
+            display: block;
+            width: 100%;
+            text-align: center;
         }
 
         .watch-party-list-actions .btnStartParty {
@@ -1197,7 +1215,7 @@
             }
 
             .watch-party-list-actions .emby-button {
-                flex: 1 1 8rem;
+                min-height: 3rem;
             }
 
             .autocomplete-dropdown {

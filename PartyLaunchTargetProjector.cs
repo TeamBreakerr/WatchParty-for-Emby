@@ -15,7 +15,7 @@ namespace WatchPartyForEmby
             IEnumerable<SessionInfo> sessions,
             string masterSessionId,
             Func<SessionInfo, bool> canJoin,
-            Func<string, bool> isInRoom)
+            Func<SessionInfo, bool> isInRoom)
         {
             return Project(
                 sessions,
@@ -31,7 +31,7 @@ namespace WatchPartyForEmby
             string masterSessionId,
             string masterUserId,
             Func<SessionInfo, bool> canJoin,
-            Func<string, bool> isInRoom,
+            Func<SessionInfo, bool> isInRoom,
             DateTime nowUtc)
         {
             if (canJoin == null)
@@ -49,7 +49,7 @@ namespace WatchPartyForEmby
                     masterSessionId,
                     masterUserId,
                     canJoin(session),
-                    isInRoom(session.Id),
+                    isInRoom(session),
                     nowUtc))
                 .OrderByDescending(target => target.IsMaster)
                 .ThenByDescending(target => target.CanLaunch)

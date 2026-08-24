@@ -44,14 +44,16 @@ namespace WatchPartyForEmby
                 mode,
                 operation,
                 cancellationToken,
-                allowDormant: false).ConfigureAwait(false);
+                allowDormant: false,
+                authorizationStillValid: null).ConfigureAwait(false);
         }
 
         public async Task<bool> EnqueueExplicitPlayNowAsync(
             string partyId,
             string sessionId,
             Func<CancellationToken, Task> operation,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            Func<bool> authorizationStillValid = null)
         {
             return await EnqueueCoreAsync(
                 partyId,
@@ -60,7 +62,8 @@ namespace WatchPartyForEmby
                 ParticipantCommandQueueMode.Ordered,
                 operation,
                 cancellationToken,
-                allowDormant: true).ConfigureAwait(false);
+                allowDormant: true,
+                authorizationStillValid).ConfigureAwait(false);
         }
 
         private async Task<bool> EnqueueCoreAsync(
@@ -70,7 +73,8 @@ namespace WatchPartyForEmby
             ParticipantCommandQueueMode mode,
             Func<CancellationToken, Task> operation,
             CancellationToken cancellationToken,
-            bool allowDormant)
+            bool allowDormant,
+            Func<bool> authorizationStillValid)
         {
             if (string.IsNullOrEmpty(partyId) || string.IsNullOrEmpty(sessionId))
             {
@@ -85,12 +89,20 @@ namespace WatchPartyForEmby
             {
                 return false;
             }
+            if (authorizationStillValid != null && !authorizationStillValid())
+            {
+                return false;
+            }
 
             var commandSent = false;
             Func<CancellationToken, Task> guardedOperation = async queuedToken =>
             {
                 if (!allowDormant
                     && !_dormancies.CanReceiveCommand(partyId, sessionId, command))
+                {
+                    return;
+                }
+                if (authorizationStillValid != null && !authorizationStillValid())
                 {
                     return;
                 }

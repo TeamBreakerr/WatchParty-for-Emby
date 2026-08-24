@@ -1098,11 +1098,18 @@ test('room actions are a centered full-width footer and media paths wrap in full
     const html = fs.readFileSync(path.resolve(__dirname, '../Configuration/configPage.html'), 'utf8');
     const cardRule = html.match(/\.watch-party-list-card\s*\{([\s\S]*?)\n\s*\}/);
     const actionRule = html.match(/\.watch-party-list-actions\s*\{([\s\S]*?)\n\s*\}/);
+    const actionButtonRule = html.match(/\.watch-party-list-actions \.emby-button\s*\{([\s\S]*?)\n\s*\}/);
     const pathRule = html.match(/\.watch-party-media-version-path\s*\{([\s\S]*?)\n\s*\}/);
 
     assert.match(cardRule[1], /grid-template-columns:\s*minmax\(0, 1fr\);/);
+    assert.match(actionRule[1], /display:\s*grid;/);
+    assert.match(actionRule[1], /grid-template-columns:\s*repeat\(auto-fit,/);
     assert.match(actionRule[1], /justify-content:\s*center;/);
     assert.match(actionRule[1], /border-top:/);
+    assert.match(actionButtonRule[1], /display:\s*inline-flex\s*!important;/);
+    assert.match(actionButtonRule[1], /align-items:\s*center;/);
+    assert.match(actionButtonRule[1], /justify-content:\s*center;/);
+    assert.match(actionButtonRule[1], /text-align:\s*center;/);
     assert.match(pathRule[1], /white-space:\s*normal;/);
     assert.match(pathRule[1], /overflow-wrap:\s*anywhere;/);
     assert.doesNotMatch(pathRule[1], /text-overflow:\s*ellipsis|overflow:\s*hidden/);

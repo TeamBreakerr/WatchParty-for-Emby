@@ -97,6 +97,56 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public async Task ExpiredGenerationAuthorizationDropsAQueuedExplicitPlayNow()
+        {
+            using (var dormancies = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan))
+            {
+                var queue = new DormancyAwarePlaybackCommandQueue(dormancies, 8);
+                dormancies.MarkDormant(
+                    "party",
+                    "ios",
+                    "old-playback",
+                    DateTime.UtcNow);
+                var firstStarted = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var releaseFirst = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var currentPlaySessionId = "old-playback";
+                var invocationCount = 0;
+
+                var blocker = queue.EnqueueExplicitPlayNowAsync(
+                    "party",
+                    "ios",
+                    async _ =>
+                    {
+                        firstStarted.TrySetResult(true);
+                        await releaseFirst.Task.ConfigureAwait(false);
+                    },
+                    CancellationToken.None);
+                await firstStarted.Task;
+
+                var queued = queue.EnqueueExplicitPlayNowAsync(
+                    "party",
+                    "ios",
+                    _ =>
+                    {
+                        invocationCount++;
+                        return Task.CompletedTask;
+                    },
+                    CancellationToken.None,
+                    authorizationStillValid: () =>
+                        currentPlaySessionId == "old-playback");
+
+                currentPlaySessionId = "replacement-playback";
+                releaseFirst.TrySetResult(true);
+
+                Assert.True(await blocker);
+                Assert.False(await queued);
+                Assert.Equal(0, invocationCount);
+            }
+        }
+
+        [Fact]
         public async Task CommandQueuedBeforeStopIsDroppedWhenDormancyBegins()
         {
             using (var dormancies = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan))

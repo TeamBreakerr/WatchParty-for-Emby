@@ -29,6 +29,8 @@ namespace WatchPartyForEmby
             new SeriesSelectionCoordinator();
         private readonly SeriesEpisodeTransitionTracker _seriesEpisodeTransitions =
             new SeriesEpisodeTransitionTracker();
+        private readonly SeriesPlaybackHandoffTracker _seriesPlaybackHandoffs =
+            new SeriesPlaybackHandoffTracker(SeriesPlaybackHandoffWindow);
         private readonly object _seriesTransitionLock = new object();
         private readonly object _configurationMaintenanceLock = new object();
         private readonly ConcurrentDictionary<string, DateTime> _lastProgressCheckpoint = new ConcurrentDictionary<string, DateTime>();
@@ -123,6 +125,8 @@ namespace WatchPartyForEmby
         private static readonly TimeSpan MasterSeekDrasticDebounce = TimeSpan.FromSeconds(10);
         private static readonly TimeSpan SeriesSelectionCoalesceWindow =
             TimeSpan.FromSeconds(1);
+        private static readonly TimeSpan SeriesPlaybackHandoffWindow =
+            TimeSpan.FromSeconds(15);
         private DateTime _lastPartyValidationUtc = DateTime.MinValue;
         private readonly object _masterSeekSyncLock = new object();
         private readonly Dictionary<string, PendingMasterSeekSync> _pendingMasterSeeks =
@@ -158,10 +162,7 @@ namespace WatchPartyForEmby
                 masterSessionId,
                 party.MasterUserId,
                 session => CanUserJoinParty(party, session.UserId, logDenied: false),
-                sessionId => _plugin.PartyParticipants.TryGetSession(
-                    party.Id,
-                    sessionId,
-                    out _),
+                session => IsRegisteredPartyPlayback(party, session),
                 DateTime.UtcNow);
         }
 
@@ -1891,7 +1892,8 @@ namespace WatchPartyForEmby
             string targetSessionId,
             PlayRequest request,
             CancellationToken cancellationToken,
-            bool allowDormant = false)
+            bool allowDormant = false,
+            Func<bool> dormantAuthorizationStillValid = null)
         {
             if (string.IsNullOrEmpty(targetSessionId) || request == null)
             {
@@ -1910,6 +1912,7 @@ namespace WatchPartyForEmby
                 ? cancellationToken
                 : _lifetimeCts.Token;
             var transportAvailable = false;
+            var authorizationValidAtDispatch = true;
             Func<CancellationToken, Task> dispatch = async queuedToken =>
             {
                 transportAvailable = await WaitForOfficialIosWebSocketAsync(
@@ -1918,6 +1921,12 @@ namespace WatchPartyForEmby
                     queuedToken).ConfigureAwait(false);
                 if (!transportAvailable)
                 {
+                    return;
+                }
+                if (dormantAuthorizationStillValid != null
+                    && !dormantAuthorizationStillValid())
+                {
+                    authorizationValidAtDispatch = false;
                     return;
                 }
                 await _sessionManager.SendPlayCommand(
@@ -1931,7 +1940,8 @@ namespace WatchPartyForEmby
                     partyId,
                     targetSessionId,
                     dispatch,
-                    commandToken).ConfigureAwait(false)
+                    commandToken,
+                    dormantAuthorizationStillValid).ConfigureAwait(false)
                 : await _playbackCommandQueue.EnqueueAsync(
                     partyId,
                     targetSessionId,
@@ -1939,7 +1949,9 @@ namespace WatchPartyForEmby
                     ParticipantCommandQueueMode.Ordered,
                     dispatch,
                     commandToken).ConfigureAwait(false);
-            commandSent = commandSent && transportAvailable;
+            commandSent = commandSent
+                && transportAvailable
+                && authorizationValidAtDispatch;
             if (!commandSent && !allowDormant)
             {
                 CanDispatchParticipantCommand(
@@ -2197,6 +2209,7 @@ namespace WatchPartyForEmby
             _lastProgressCheckpoint.TryRemove(partyId, out _);
             _participantDormancies.ClearParty(partyId);
             _seriesSelections.ClearParty(partyId);
+            _seriesPlaybackHandoffs.ClearParty(partyId);
             _plugin.PartyParticipants.ClearParty(partyId);
             _plugin.PartyReadyUsers.ClearParty(partyId);
         }
@@ -2733,17 +2746,25 @@ namespace WatchPartyForEmby
                                             currentEpisode.ItemId,
                                             StringComparison.OrdinalIgnoreCase))
                                     {
-                                        var transitionSessions = GetSeriesTransitionSessions(party, e.Session)
-                                            .Where(session => transitionWasQueued
-                                                || (session.Id != e.Session.Id
-                                                    && !IsMasterSession(party, session)))
-                                            .ToList();
                                         if (!SeriesPartyQueue.TrySelectEpisode(party, startedEpisodeId))
                                         {
                                             _logger.Warn($"[Party {party.Id}] Master selected episode {startedEpisodeId}, but it is not in the queue");
                                             return;
                                         }
 
+                                        var handoffAuthorizations =
+                                            ConsumeSeriesPlaybackHandoffAuthorizations(
+                                                party,
+                                                e.Session.UserId,
+                                                DateTime.UtcNow);
+                                        var transitionSessions = GetSeriesTransitionSessions(
+                                                party,
+                                                e.Session,
+                                                handoffAuthorizations.Keys)
+                                            .Where(session => transitionWasQueued
+                                                || (session.Id != e.Session.Id
+                                                    && !IsMasterSession(party, session)))
+                                            .ToList();
                                         selectionToken.ThrowIfCancellationRequested();
                                         ResetSeriesEpisodeSyncState(party);
                                         party.CurrentPositionTicks = userStartPosition;
@@ -2765,7 +2786,8 @@ namespace WatchPartyForEmby
                                             SeriesPartyQueue.GetCurrentEpisode(party),
                                             transitionSessions,
                                             userStartPosition,
-                                            selectionToken);
+                                            selectionToken,
+                                            handoffAuthorizations);
                                     }
                                 }
                                 finally
@@ -2797,7 +2819,15 @@ namespace WatchPartyForEmby
                         // stopped with the old master, so Unpause/seek cannot revive
                         // them; mirror the new Start with PlayNow just like a cross-
                         // episode transition.
-                        var restartSessions = GetSeriesTransitionSessions(party, e.Session)
+                        var handoffAuthorizations =
+                            ConsumeSeriesPlaybackHandoffAuthorizations(
+                                party,
+                                e.Session.UserId,
+                                nowUtc);
+                        var restartSessions = GetSeriesTransitionSessions(
+                                party,
+                                e.Session,
+                                handoffAuthorizations.Keys)
                             .Where(session => !IsMasterSession(party, session))
                             .ToList();
                         if (restartSessions.Count > 0)
@@ -2811,7 +2841,8 @@ namespace WatchPartyForEmby
                                 party,
                                 currentEpisode,
                                 restartSessions,
-                                userStartPosition);
+                                userStartPosition,
+                                handoffAuthorizations: handoffAuthorizations);
                         }
                     }
 
@@ -4209,7 +4240,10 @@ namespace WatchPartyForEmby
             _logger.Debug($"[Party {party.Id}] Persisted playback progress checkpoint");
         }
 
-        private List<SessionInfo> GetSeriesTransitionSessions(WatchPartyItem party, SessionInfo masterSession)
+        private List<SessionInfo> GetSeriesTransitionSessions(
+            WatchPartyItem party,
+            SessionInfo masterSession,
+            IEnumerable<string> handoffSessionIds = null)
         {
             var sessionIds = new HashSet<string>(StringComparer.Ordinal);
             if (masterSession != null)
@@ -4234,7 +4268,147 @@ namespace WatchPartyForEmby
                 }
             }
 
-            return _sessionManager.Sessions.Where(session => sessionIds.Contains(session.Id)).ToList();
+            if (handoffSessionIds != null)
+            {
+                foreach (var sessionId in handoffSessionIds.Where(
+                    sessionId => !string.IsNullOrWhiteSpace(sessionId)))
+                {
+                    if (_plugin.PartyParticipants.TryGetSession(
+                            party.Id,
+                            sessionId,
+                            out _))
+                    {
+                        sessionIds.Add(sessionId);
+                    }
+                }
+            }
+
+            var nowUtc = DateTime.UtcNow;
+            return _sessionManager.Sessions
+                .Where(session => session != null
+                    && sessionIds.Contains(session.Id)
+                    && PartySessionLivenessPolicy.IsOnline(session, nowUtc))
+                .GroupBy(session => session.Id, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .ToList();
+        }
+
+        private IReadOnlyCollection<SeriesPlaybackHandoffSession> GetActiveSeriesFollowerSessions(
+            WatchPartyItem party,
+            string masterSessionId)
+        {
+            var nowUtc = DateTime.UtcNow;
+            var capturedSessions = new List<SeriesPlaybackHandoffSession>();
+            foreach (var session in PartySessionDiscovery.Discover(
+                _sessionManager.Sessions,
+                nowUtc))
+            {
+                if (session == null
+                    || string.IsNullOrWhiteSpace(session.Id)
+                    || string.Equals(
+                        session.Id,
+                        masterSessionId,
+                        StringComparison.Ordinal)
+                    || IsMasterSession(party, session)
+                    || !SupportsRemoteControlledPlayback(session)
+                    || !IsRegisteredPartyPlayback(party, session)
+                    || !_plugin.PartyParticipants.TryGetSession(
+                        party.Id,
+                        session.Id,
+                        out var participant)
+                    || string.IsNullOrWhiteSpace(participant.PlaySessionId))
+                {
+                    continue;
+                }
+
+                capturedSessions.Add(new SeriesPlaybackHandoffSession(
+                    session.Id,
+                    participant.PlaySessionId));
+            }
+
+            return capturedSessions;
+        }
+
+        private Dictionary<string, SeriesPlaybackHandoffSession>
+            ConsumeSeriesPlaybackHandoffAuthorizations(
+            WatchPartyItem party,
+            string masterUserId,
+            DateTime startedAtUtc)
+        {
+            var handoffSessions = _seriesPlaybackHandoffs.Consume(
+                party.Id,
+                masterUserId,
+                startedAtUtc,
+                captured => IsSeriesPlaybackHandoffStillEligible(party, captured));
+            var authorizations = handoffSessions.ToDictionary(
+                session => session.SessionId,
+                session => session,
+                StringComparer.Ordinal);
+            if (authorizations.Count > 0)
+            {
+                _logger.Info(
+                    $"[Party {party.Id}] Recovered {authorizations.Count} active follower " +
+                    "session(s) from the generation-bound series handoff");
+            }
+
+            return authorizations;
+        }
+
+        private bool IsSeriesPlaybackHandoffStillEligible(
+            WatchPartyItem party,
+            SeriesPlaybackHandoffSession captured)
+        {
+            if (party == null
+                || captured == null
+                || !_plugin.PartyParticipants.IsCurrentPlaybackSession(
+                    party.Id,
+                    captured.SessionId,
+                    captured.PlaySessionId)
+                || !_plugin.PartyParticipants.TryGetSession(
+                    party.Id,
+                    captured.SessionId,
+                    out var participant)
+                || !string.Equals(
+                    participant.PlaySessionId,
+                    captured.PlaySessionId,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var liveSession = PartySessionDiscovery.Discover(
+                    _sessionManager.Sessions,
+                    DateTime.UtcNow)
+                .FirstOrDefault(session => string.Equals(
+                    session.Id,
+                    captured.SessionId,
+                    StringComparison.Ordinal));
+            if (liveSession == null
+                || !string.Equals(
+                    participant.UserId,
+                    liveSession.UserId,
+                    StringComparison.OrdinalIgnoreCase)
+                || !CanUserJoinParty(party, liveSession.UserId, logDenied: false)
+                || !SupportsRemoteControlledPlayback(liveSession))
+            {
+                return false;
+            }
+
+            if (liveSession.NowPlayingItem == null)
+            {
+                // The mirrored Stop has already returned this follower to the home
+                // screen. Its captured PlaySessionId is still the exact generation
+                // that was active when the master stopped.
+                return true;
+            }
+
+            var liveItem = _libraryManager.GetItemById(liveSession.NowPlayingItem.Id);
+            var matchingParty = FindPartyForItem(liveItem);
+            return matchingParty != null
+                && string.Equals(
+                    matchingParty.Id,
+                    party.Id,
+                    StringComparison.Ordinal);
         }
 
         private static bool SupportsRemoteControlledPlayback(SessionInfo session)
@@ -4278,7 +4452,9 @@ namespace WatchPartyForEmby
             WatchPartyEpisode episode,
             IReadOnlyCollection<SessionInfo> sessions,
             long startPositionTicks = 0,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            IReadOnlyDictionary<string, SeriesPlaybackHandoffSession>
+                handoffAuthorizations = null)
         {
             var commandCancellationToken = cancellationToken.CanBeCanceled
                 ? cancellationToken
@@ -4292,7 +4468,25 @@ namespace WatchPartyForEmby
 
             foreach (var session in sessions)
             {
+                SeriesPlaybackHandoffSession handoffAuthorization = null;
+                if (session != null)
+                {
+                    handoffAuthorizations?.TryGetValue(
+                        session.Id,
+                        out handoffAuthorization);
+                }
+                if (handoffAuthorization != null
+                    && !IsSeriesPlaybackHandoffStillEligible(
+                        party,
+                        handoffAuthorization))
+                {
+                    _seriesEpisodeTransitions.CancelExpectedStart(
+                        session.Id,
+                        episode.ItemId);
+                    continue;
+                }
                 if (session != null
+                    && handoffAuthorization == null
                     && !CanDispatchParticipantCommand(
                         party.Id,
                         session.Id,
@@ -4344,14 +4538,21 @@ namespace WatchPartyForEmby
                         _ = RetrySeriesEpisodeUntilConfirmedAsync(
                             party.Id,
                             episode.ItemId,
-                            session.Id);
+                            session.Id,
+                            handoffAuthorization);
                     }
                     var commandSent = await SendPlayCommandSerialAsync(
                         party.Id,
                         session.Id,
                         session.Id,
                         playRequest,
-                        commandCancellationToken);
+                        commandCancellationToken,
+                        allowDormant: handoffAuthorization != null,
+                        dormantAuthorizationStillValid: handoffAuthorization == null
+                            ? null
+                            : () => IsSeriesPlaybackHandoffStillEligible(
+                                party,
+                                handoffAuthorization));
                     if (!commandSent)
                     {
                         _seriesEpisodeTransitions.CancelExpectedStart(
@@ -4389,7 +4590,8 @@ namespace WatchPartyForEmby
         private async Task RetrySeriesEpisodeUntilConfirmedAsync(
             string partyId,
             string episodeItemId,
-            string sessionId)
+            string sessionId,
+            SeriesPlaybackHandoffSession handoffAuthorization)
         {
             try
             {
@@ -4435,7 +4637,19 @@ namespace WatchPartyForEmby
                         return;
                     }
 
-                    if (!CanDispatchParticipantCommand(
+                    if (handoffAuthorization != null
+                        && !IsSeriesPlaybackHandoffStillEligible(
+                            party,
+                            handoffAuthorization))
+                    {
+                        _seriesEpisodeTransitions.CancelExpectedStart(
+                            sessionId,
+                            episodeItemId);
+                        return;
+                    }
+
+                    if (handoffAuthorization == null
+                        && !CanDispatchParticipantCommand(
                             partyId,
                             sessionId,
                             ParticipantRoomCommand.PlayNow,
@@ -4466,7 +4680,14 @@ namespace WatchPartyForEmby
                         currentEpisode,
                         new[] { session },
                         targetPosition,
-                        _lifetimeCts.Token);
+                        _lifetimeCts.Token,
+                        handoffAuthorization == null
+                            ? null
+                            : new Dictionary<string, SeriesPlaybackHandoffSession>(
+                                StringComparer.Ordinal)
+                            {
+                                [sessionId] = handoffAuthorization
+                            });
                 }
             }
             catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
@@ -4525,7 +4746,7 @@ namespace WatchPartyForEmby
             _participantResumeLatencies.CancelPendingResume(sessionId);
             _logger.Info(
                 $"[Party {party.Id}] Retaining participant {userName} " +
-                $"({sessionId}) after transient Stop while the master remains active");
+                $"({sessionId}) as dormant after PlaybackStopped");
         }
 
         private async Task HandlePlaybackStoppedAsync(PlaybackStopEventArgs e)
@@ -4569,6 +4790,9 @@ namespace WatchPartyForEmby
                     var stoppedPosition = Math.Max(0, currentParticipant.CurrentPositionTicks);
                     var stoppedEpisodeId = FindSeriesEpisodeId(party, e.Item);
                     var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+                    var activeSeriesFollowerSessions = isMaster && party.IsSeriesParty
+                        ? GetActiveSeriesFollowerSessions(party, e.Session.Id)
+                        : Array.Empty<SeriesPlaybackHandoffSession>();
 
                     if (!isMaster)
                     {
@@ -4633,7 +4857,17 @@ namespace WatchPartyForEmby
                                 "playback stopped",
                                 freezeAtFallbackPosition: true))
                         {
+                            _seriesPlaybackHandoffs.ClearParty(party.Id);
                             return;
+                        }
+
+                        if (party.IsSeriesParty)
+                        {
+                            _seriesPlaybackHandoffs.Capture(
+                                party.Id,
+                                e.Session.UserId,
+                                activeSeriesFollowerSessions,
+                                DateTime.UtcNow);
                         }
 
                         await StopParticipantsAfterMasterStop(

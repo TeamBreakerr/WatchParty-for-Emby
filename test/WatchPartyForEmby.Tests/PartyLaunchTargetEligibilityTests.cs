@@ -86,7 +86,7 @@ namespace WatchPartyForEmby.Tests
                 },
                 masterSessionId: null,
                 canJoin: _ => true,
-                isInRoom: sessionId => sessionId == "ready");
+                isInRoom: session => session.Id == "ready");
 
             Assert.Equal(
                 new[] { "ready", "stale" },
@@ -183,6 +183,37 @@ namespace WatchPartyForEmby.Tests
                     canJoin: true,
                     inRoom: false,
                     nowUtc: DateTime.UtcNow).CanLaunch));
+        }
+
+        [Fact]
+        public void ProjectorDeterminesRoomPresenceFromTheLiveSession()
+        {
+            var controller =
+                SessionControllerProxy.Create<WebSocketSessionControllerProxy>(
+                    isSessionActive: true);
+            var active = Session(
+                "active-session",
+                controller.Controller,
+                "room-user",
+                "Emby Web",
+                DateTime.UtcNow);
+            var idle = Session(
+                "idle-session",
+                controller.Controller,
+                "idle-user",
+                "Emby Web",
+                DateTime.UtcNow);
+
+            var targets = PartyLaunchTargetProjector.Project(
+                new[] { active, idle },
+                masterSessionId: null,
+                masterUserId: null,
+                canJoin: _ => true,
+                isInRoom: session => session.UserId == "room-user",
+                nowUtc: DateTime.UtcNow);
+
+            Assert.True(targets.Single(target => target.SessionId == active.Id).InRoom);
+            Assert.False(targets.Single(target => target.SessionId == idle.Id).InRoom);
         }
 
         [Fact]
