@@ -308,6 +308,78 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void QualityChangeCanAdoptAReplacementWithoutPlaybackStart()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 24, 13, 2, 47, DateTimeKind.Utc);
+            registry.UpsertSession(
+                "party",
+                "web-session",
+                "master",
+                "Master",
+                "old-playback",
+                now.AddSeconds(-2),
+                out _,
+                out _);
+
+            Assert.True(registry.TryAdoptQualityChangePlayback(
+                "party",
+                "web-session",
+                "reloaded-playback",
+                now,
+                out var previousPlayback));
+            Assert.Equal("old-playback", previousPlayback);
+            Assert.True(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                "reloaded-playback"));
+            Assert.False(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                "old-playback"));
+            Assert.True(registry.IsRetiredPlaybackId(
+                "party",
+                "web-session",
+                "old-playback"));
+        }
+
+        [Fact]
+        public void QualityChangeCannotAdoptAPlaybackThatWasAlreadyRetired()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 24, 13, 3, 0, DateTimeKind.Utc);
+            registry.UpsertSession(
+                "party",
+                "web-session",
+                "master",
+                "Master",
+                "old-playback",
+                now,
+                out _,
+                out _);
+            registry.UpsertSession(
+                "party",
+                "web-session",
+                "master",
+                "Master",
+                "current-playback",
+                now.AddSeconds(1),
+                out _,
+                out _);
+
+            Assert.False(registry.TryAdoptQualityChangePlayback(
+                "party",
+                "web-session",
+                "old-playback",
+                now.AddSeconds(2),
+                out _));
+            Assert.True(registry.IsCurrentPlaybackSession(
+                "party",
+                "web-session",
+                "current-playback"));
+        }
+
+        [Fact]
         public void UnknownProgressCannotReplaceAKnownPlaybackRegardlessOfLastActivity()
         {
             var registry = new PartySessionRegistry();

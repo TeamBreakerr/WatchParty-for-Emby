@@ -322,6 +322,54 @@ namespace WatchPartyForEmby
         }
 
         /// <summary>
+        /// Replaces a registered playback generation when Emby explicitly reports a
+        /// quality/stream change without emitting PlaybackStart for the replacement.
+        /// The caller must gate this operation on the concrete QualityChange event;
+        /// ordinary Progress is intentionally not allowed to establish a new identity.
+        /// Retired playback ids remain tombstoned so a delayed callback cannot reclaim
+        /// the session after this replacement.
+        /// </summary>
+        public bool TryAdoptQualityChangePlayback(
+            string partyId,
+            string sessionId,
+            string playSessionId,
+            DateTime nowUtc,
+            out string previousPlaySessionId)
+        {
+            lock (_syncRoot)
+            {
+                previousPlaySessionId = null;
+                if (string.IsNullOrEmpty(partyId)
+                    || string.IsNullOrEmpty(sessionId)
+                    || string.IsNullOrEmpty(playSessionId)
+                    || !_sessionsByParty.TryGetValue(partyId, out var sessions)
+                    || !sessions.TryGetValue(sessionId, out var participant)
+                    || IsRetiredPlayback(partyId, sessionId, playSessionId)
+                    || string.Equals(
+                        participant.PlaySessionId,
+                        playSessionId,
+                        StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                previousPlaySessionId = participant.PlaySessionId;
+                RetirePreviousPlayback(
+                    partyId,
+                    sessionId,
+                    participant.PlaySessionId,
+                    playSessionId);
+                participant.PlaySessionId = playSessionId;
+                if (nowUtc != DateTime.MinValue)
+                {
+                    participant.LastActivityAt = nowUtc;
+                }
+
+                return true;
+            }
+        }
+
+        /// <summary>
         /// Returns true when a playback id was retired after the same Emby SessionId
         /// moved on to a newer playback. A delayed PlaybackStart for that old id must
         /// be ignored rather than replacing the current registry entry.

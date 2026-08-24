@@ -2432,7 +2432,7 @@ namespace WatchPartyForEmby
                     session.Id,
                     playSessionId))
             {
-                _logger.Debug(
+                _logger.Info(
                     $"[Party {party.Id}] Rejected explicit seek from stale playback " +
                     $"{playSessionId ?? "<none>"} in master session {session.Id}");
                 return false;
@@ -3385,26 +3385,68 @@ namespace WatchPartyForEmby
                 if (party != null && party.IsActive)
                 {
                     var nowUtc = DateTime.UtcNow;
+                    // Validate access before any playback-generation mutation. A
+                    // QualityChange from a session that has just lost room access must
+                    // not be able to retire the current generation and then get rejected
+                    // only after the registry has already been changed.
+                    if (!CanUserJoinParty(party, e.Session.UserId, logDenied: false))
+                    {
+                        _logger.Debug(
+                            $"[Party {party.Id}] Ignoring progress from unauthorized or over-capacity user {e.Session.UserId}");
+                        return;
+                    }
+
                     // One Emby Web SessionId can briefly retain several PlaySessionIds
-                    // after a seek or stream reload. Ignore progress from the replaced
-                    // playback before it can overwrite the participant's current playback
-                    // id or move the authoritative party clock backwards and forwards.
+                    // after a seek or stream reload. Keep the strict identity check for
+                    // ordinary progress, but allow Emby's explicit QualityChange event to
+                    // establish the replacement when it omitted PlaybackStart. Without
+                    // this narrow exception a healthy Web player can keep reporting under
+                    // the new id while the room remains frozen on the old generation.
                     var acceptsPlaybackProgress = _plugin.PartyParticipants.IsCurrentPlaybackSession(
                         party.Id,
                         e.Session.Id,
                         e.PlaySessionId);
+                    var adoptedPlaybackGeneration = false;
+                    string previousPlaybackSessionId = null;
+                    if (!acceptsPlaybackProgress
+                        && PlaybackGenerationAdoptionPolicy.IsQualityChange(e.EventName))
+                    {
+                        adoptedPlaybackGeneration = _plugin.PartyParticipants
+                            .TryAdoptQualityChangePlayback(
+                                party.Id,
+                                e.Session.Id,
+                                e.PlaySessionId,
+                                nowUtc,
+                                out previousPlaybackSessionId);
+                        acceptsPlaybackProgress = adoptedPlaybackGeneration;
+                        if (adoptedPlaybackGeneration)
+                        {
+                            _playbackSyncCoordinator.ResetForNewPlayback(
+                                e.Session.Id,
+                                previousPlaybackSessionId,
+                                e.PlaySessionId);
+
+                            // A participant replacement must re-enter the initial-sync
+                            // path. Preserve the master pause state so a stream quality
+                            // change itself cannot look like a user pause/resume action.
+                            if (!IsMasterSession(party, e.Session))
+                            {
+                                ClearSessionEpisodeMarkers(party.Id, e.Session.Id);
+                            }
+
+                            _logger.Info(
+                                $"[Party {party.Id}] Adopted playback generation " +
+                                $"{e.PlaySessionId} after QualityChange without " +
+                                $"PlaybackStart; retired {previousPlaybackSessionId ?? "<none>"} " +
+                                $"for session {e.Session.Id}");
+                        }
+                    }
                     if (!acceptsPlaybackProgress)
                     {
                         _logger.Debug(
                             $"[Party {party.Id}] Ignoring stale progress from playback " +
-                            $"{e.PlaySessionId} for session {e.Session.Id}");
-                        return;
-                    }
-
-                    if (!CanUserJoinParty(party, e.Session.UserId))
-                    {
-                        _logger.Debug(
-                            $"[Party {party.Id}] Ignoring progress from unauthorized or over-capacity user {e.Session.UserId}");
+                            $"{e.PlaySessionId} (event={e.EventName}) for " +
+                            $"session {e.Session.Id}");
                         return;
                     }
 
@@ -3460,8 +3502,8 @@ namespace WatchPartyForEmby
                     // action. In particular, iOS commonly sends the old paused state
                     // while the server is already re-syncing it to the master clock.
                     var isInitialParticipantReport = !isMaster
-                        && !wasInSyncedSet
-                        && !hasPriorPauseState;
+                        && (adoptedPlaybackGeneration
+                            || (!wasInSyncedSet && !hasPriorPauseState));
                     var reportedPosition = e.PlaybackPositionTicks;
                     var ignoreParticipantPosition = false;
                     var pendingParticipantTarget = 0L;
@@ -3517,7 +3559,8 @@ namespace WatchPartyForEmby
                     // command. A stable transition is committed by a short delayed task.
                     var deferMasterPauseTransition = false;
                     var ignoreMasterPauseTransition = false;
-                    if (isMaster
+                    if (!adoptedPlaybackGeneration
+                        && isMaster
                         && !WaitingRoomPolicy.SuppressesPlaybackControl(party)
                         && inboundPauseState.IsTransition
                         && !inboundPauseState.IsExpectedCommandEcho)
@@ -3546,9 +3589,16 @@ namespace WatchPartyForEmby
                         }
                     }
 
-                    var applyPauseTransition = !isMaster
-                        || (!deferMasterPauseTransition && !ignoreMasterPauseTransition);
-                    var effectiveIsPaused = applyPauseTransition ? e.IsPaused : wasPaused;
+                    var applyPauseTransition = PlaybackGenerationAdoptionPolicy.ShouldApplyPauseTransition(
+                        adoptedPlaybackGeneration,
+                        isMaster,
+                        deferMasterPauseTransition,
+                        ignoreMasterPauseTransition);
+                    var effectiveIsPaused = PlaybackGenerationAdoptionPolicy.ResolveEffectivePauseState(
+                        adoptedPlaybackGeneration,
+                        wasPaused,
+                        e.IsPaused,
+                        applyPauseTransition);
                     var pauseTransitionAction = PauseTransitionPolicy.Decide(
                         isMaster
                             ? PlaybackStateReporterRole.Master
@@ -3580,7 +3630,8 @@ namespace WatchPartyForEmby
                         var syncedSessions = _partySyncedSessions.GetOrAdd(
                             party.Id,
                             _ => new ConcurrentDictionary<string, byte>());
-                        if ((resumedFromDormancy
+                        if ((adoptedPlaybackGeneration
+                                || resumedFromDormancy
                                 || participantReturnedAfterGap
                                 || !syncedSessions.ContainsKey(e.Session.Id))
                             && HasActiveMasterSession(party)
