@@ -323,13 +323,13 @@ namespace WatchPartyForEmby
 
         /// <summary>
         /// Replaces a registered playback generation when Emby explicitly reports a
-        /// quality/stream change without emitting PlaybackStart for the replacement.
-        /// The caller must gate this operation on the concrete QualityChange event;
+        /// explicit stream change without emitting PlaybackStart for the replacement.
+        /// The caller must gate this operation on a concrete stream-change event;
         /// ordinary Progress is intentionally not allowed to establish a new identity.
         /// Retired playback ids remain tombstoned so a delayed callback cannot reclaim
         /// the session after this replacement.
         /// </summary>
-        public bool TryAdoptQualityChangePlayback(
+        public bool TryAdoptStreamChangePlayback(
             string partyId,
             string sessionId,
             string playSessionId,

@@ -3378,10 +3378,11 @@ namespace WatchPartyForEmby
 
                     // One Emby Web SessionId can briefly retain several PlaySessionIds
                     // after a seek or stream reload. Keep the strict identity check for
-                    // ordinary progress, but allow Emby's explicit QualityChange event to
-                    // establish the replacement when it omitted PlaybackStart. Without
-                    // this narrow exception a healthy Web player can keep reporting under
-                    // the new id while the room remains frozen on the old generation.
+                    // ordinary progress, but allow Emby's explicit quality/audio/subtitle
+                    // stream-change events to establish the replacement when they omit
+                    // PlaybackStart. Without this narrow exception a healthy Web player
+                    // can keep reporting under the new id while the room remains frozen
+                    // on the old generation.
                     var acceptsPlaybackProgress = _plugin.PartyParticipants.IsCurrentPlaybackSession(
                         party.Id,
                         e.Session.Id,
@@ -3389,10 +3390,10 @@ namespace WatchPartyForEmby
                     var adoptedPlaybackGeneration = false;
                     string previousPlaybackSessionId = null;
                     if (!acceptsPlaybackProgress
-                        && PlaybackGenerationAdoptionPolicy.IsQualityChange(e.EventName))
+                        && PlaybackGenerationAdoptionPolicy.IsExplicitStreamChange(e.EventName))
                     {
                         adoptedPlaybackGeneration = _plugin.PartyParticipants
-                            .TryAdoptQualityChangePlayback(
+                            .TryAdoptStreamChangePlayback(
                                 party.Id,
                                 e.Session.Id,
                                 e.PlaySessionId,
@@ -3416,7 +3417,7 @@ namespace WatchPartyForEmby
 
                             _logger.Info(
                                 $"[Party {party.Id}] Adopted playback generation " +
-                                $"{e.PlaySessionId} after QualityChange without " +
+                                $"{e.PlaySessionId} after {e.EventName} without " +
                                 $"PlaybackStart; retired {previousPlaybackSessionId ?? "<none>"} " +
                                 $"for session {e.Session.Id}");
                         }

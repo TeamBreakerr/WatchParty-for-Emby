@@ -8,14 +8,31 @@ namespace WatchPartyForEmby.Tests
         [Fact]
         public void QualityChangeIsAnExplicitReplacementSignal()
         {
-            Assert.True(PlaybackGenerationAdoptionPolicy.IsQualityChange(ProgressEvent.QualityChange));
+            Assert.True(PlaybackGenerationAdoptionPolicy.IsExplicitStreamChange(
+                ProgressEvent.QualityChange));
+        }
+
+        [Fact]
+        public void SubtitleTrackChangeIsAnExplicitReplacementSignal()
+        {
+            Assert.True(PlaybackGenerationAdoptionPolicy.IsExplicitStreamChange(
+                ProgressEvent.SubtitleTrackChange));
+        }
+
+        [Fact]
+        public void AudioTrackChangeIsAnExplicitReplacementSignal()
+        {
+            Assert.True(PlaybackGenerationAdoptionPolicy.IsExplicitStreamChange(
+                ProgressEvent.AudioTrackChange));
         }
 
         [Fact]
         public void OrdinaryProgressAndMissingEventsAreNotReplacementSignals()
         {
-            Assert.False(PlaybackGenerationAdoptionPolicy.IsQualityChange(ProgressEvent.TimeUpdate));
-            Assert.False(PlaybackGenerationAdoptionPolicy.IsQualityChange(default(ProgressEvent)));
+            Assert.False(PlaybackGenerationAdoptionPolicy.IsExplicitStreamChange(
+                ProgressEvent.TimeUpdate));
+            Assert.False(PlaybackGenerationAdoptionPolicy.IsExplicitStreamChange(
+                default(ProgressEvent)));
         }
 
         [Fact]

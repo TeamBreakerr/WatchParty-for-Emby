@@ -3,16 +3,18 @@ using MediaBrowser.Model.Session;
 namespace WatchPartyForEmby
 {
     /// <summary>
-    /// Identifies the one Emby playback-progress event that explicitly describes a
+    /// Identifies Emby playback-progress events that explicitly describe a selected
     /// stream/player replacement. Ordinary progress must never be allowed to replace a
     /// registered PlaySessionId, because delayed callbacks from an older player can carry
     /// a different position and seize the authoritative clock.
     /// </summary>
     public static class PlaybackGenerationAdoptionPolicy
     {
-        public static bool IsQualityChange(ProgressEvent eventName)
+        public static bool IsExplicitStreamChange(ProgressEvent eventName)
         {
-            return eventName == ProgressEvent.QualityChange;
+            return eventName == ProgressEvent.QualityChange
+                || eventName == ProgressEvent.AudioTrackChange
+                || eventName == ProgressEvent.SubtitleTrackChange;
         }
 
         /// <summary>

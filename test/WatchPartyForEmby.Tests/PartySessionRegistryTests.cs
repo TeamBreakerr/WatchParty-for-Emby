@@ -308,7 +308,7 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
-        public void QualityChangeCanAdoptAReplacementWithoutPlaybackStart()
+        public void ExplicitStreamChangeCanAdoptAReplacementWithoutPlaybackStart()
         {
             var registry = new PartySessionRegistry();
             var now = new DateTime(2026, 8, 24, 13, 2, 47, DateTimeKind.Utc);
@@ -322,7 +322,7 @@ namespace WatchPartyForEmby.Tests
                 out _,
                 out _);
 
-            Assert.True(registry.TryAdoptQualityChangePlayback(
+            Assert.True(registry.TryAdoptStreamChangePlayback(
                 "party",
                 "web-session",
                 "reloaded-playback",
@@ -344,7 +344,7 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
-        public void QualityChangeCannotAdoptAPlaybackThatWasAlreadyRetired()
+        public void ExplicitStreamChangeCannotAdoptAPlaybackThatWasAlreadyRetired()
         {
             var registry = new PartySessionRegistry();
             var now = new DateTime(2026, 8, 24, 13, 3, 0, DateTimeKind.Utc);
@@ -367,7 +367,7 @@ namespace WatchPartyForEmby.Tests
                 out _,
                 out _);
 
-            Assert.False(registry.TryAdoptQualityChangePlayback(
+            Assert.False(registry.TryAdoptStreamChangePlayback(
                 "party",
                 "web-session",
                 "old-playback",
