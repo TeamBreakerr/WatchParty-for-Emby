@@ -88,6 +88,19 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         websocket_include = (
             DEPLOY_ROOT / "emby-websocket-timeout.conf"
         ).read_text()
+        websocket_diagnostic = (
+            DEPLOY_ROOT / "emby-websocket-diagnostic.conf"
+        ).read_text()
+        overlay_ensure = (DEPLOY_ROOT / "ensure-xiaoya-overlays.sh").read_text()
+        host_service = (
+            DEPLOY_ROOT / "watchparty-xiaoya-overlay.service"
+        ).read_text()
+        host_timer = (
+            DEPLOY_ROOT / "watchparty-xiaoya-overlay.timer"
+        ).read_text()
+        host_installer = (
+            DEPLOY_ROOT / "install-host-overlay-watchdog.sh"
+        ).read_text()
 
         self.assertIn("include /data/emby-115-locations.conf;", installer)
         self.assertIn("include /data/emby-115-access.conf;", installer)
@@ -95,12 +108,19 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         self.assertIn("ensure-emby-115-guard.sh", installer)
         self.assertIn("/etc/crontabs/root", installer)
         self.assertIn("emby-websocket-timeout.conf", installer)
+        self.assertIn("emby-websocket-diagnostic.conf", installer)
         self.assertIn("ensure-emby-websocket-timeout.sh", installer)
+        self.assertIn("ensure-xiaoya-overlays.sh", installer)
         self.assertIn("/data/ensure-emby-websocket-timeout.sh --reload", installer)
         self.assertIn("validate_config", websocket_timeout)
         self.assertIn("Nginx rejected the WebSocket patch", websocket_timeout)
-        self.assertIn("proxy_read_timeout 3600s;", websocket_include)
+        self.assertIn("proxy_read_timeout 86400s;", websocket_include)
         self.assertIn("proxy_socket_keepalive on;", websocket_include)
+        self.assertIn("log_format emby_websocket_diagnostic", websocket_diagnostic)
+        self.assertIn("/data/install-emby-115-proxy.sh --reload", overlay_ensure)
+        self.assertIn("ExecStart=/usr/bin/docker exec xiaoya /data/ensure-xiaoya-overlays.sh", host_service)
+        self.assertIn("OnUnitActiveSec=1min", host_timer)
+        self.assertIn("enable --now watchparty-xiaoya-overlay.timer", host_installer)
         self.assertIn("/updateall.xiaoya-original", wrapper)
         self.assertIn("install-emby-115-proxy.sh --reload", keeper)
         self.assertIn("xiaoyakeeper-xiaoya-begin", keeper)

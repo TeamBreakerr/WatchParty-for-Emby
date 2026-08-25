@@ -31,13 +31,45 @@ ordinary restart of the existing container.
 The same installer also repairs Xiaoya's inner `/etc/nginx/http.d/emby.conf`.
 Its stock `listen 2345` server sets `proxy_read_timeout 20s`, and the stock
 `/socket`/`/embywebsocket` locations inherit that value. The persistent
-`emby-websocket-timeout.conf` include raises the WebSocket read/send timeout,
-disables proxy buffering, and enables TCP keepalive in both locations. The
-idempotent `ensure-emby-websocket-timeout.sh` script validates the locations,
-backs up the file, runs `nginx -t`, and restores the backup if validation fails.
-The installer calls it after updates and adds a once-per-minute self-healing
-cron entry, so a regenerated inner config is repaired without changing Emby's
-client protocol or injecting an application-level KeepAlive message.
+`emby-websocket-timeout.conf` include raises the WebSocket read/send timeout to
+24 hours, disables proxy buffering, and enables TCP keepalive in both
+locations. The idempotent `ensure-emby-websocket-timeout.sh` script validates
+the locations,
+installs a privacy-safe diagnostic format, backs up both runtime files, runs
+`nginx -t`, and restores the backups if validation fails. The diagnostic log
+contains only a timestamp, proxy layer, Nginx connection sequence, status,
+duration, completion state, upstream timing, byte counts and a transport-boundary
+hint. A duration in the narrow 24-hour timeout window is explicitly classified
+as an Nginx idle timeout even though upgraded tunnels retain HTTP status 101.
+The log deliberately excludes addresses, request paths, query strings,
+headers, cookies, user agents and tokens.
+
+The log's `termination_hint` is evidence about the boundary Nginx observed. A
+downstream close can mean the iOS app/device or the network path, and a normal
+WebSocket close handshake can end cleanly at both peers; the log does not claim
+an identity that Nginx cannot observe. Comparing the outer Nginx Proxy Manager
+event with the inner Xiaoya event separates downstream/network failures from
+inner Nginx timeouts and Emby-upstream failures.
+
+The outer Nginx Proxy Manager has a native persistent override point:
+`/data/nginx/custom/http_top.conf`. Install
+`emby-websocket-diagnostic.conf` there, and keep the host-specific WebSocket
+location in NPM's database-backed Advanced configuration. Both live under
+NPM's `/data` mount and are independent of Xiaoya container updates.
+
+Xiaoya's image does not automatically include an Nginx file from `/data`.
+`/etc/nginx/http.d` belongs to the image and is replaced when the container is
+recreated. Persistence is therefore provided at three levels:
+
+1. all overlay sources live in Xiaoya's persistent `/data` bind mount;
+2. XiaoyaKeeper's supported `mycmd.txt` post-update hook runs the installer
+   immediately after `update_xiaoya`;
+3. `watchparty-xiaoya-overlay.timer` runs on the Docker host every minute and
+   repairs drift even when another updater bypasses XiaoyaKeeper.
+
+The installer also keeps an in-container once-per-minute check for ordinary
+runtime regeneration. None of these mechanisms changes Emby's client protocol
+or injects an application-level KeepAlive message.
 
 Build the guard for this ARM64 Xiaoya host before installation:
 
@@ -47,3 +79,7 @@ Build the guard for this ARM64 Xiaoya host before installation:
 
 Copy the resulting binary and the deployment files to Xiaoya's persistent
 `/data`, then run `install-emby-115-proxy.sh --reload` inside the container.
+Install the supplied service and timer in `/etc/systemd/system`, then enable the
+timer, to retain the host-level fallback across Xiaoya container updates. When
+the deployment directory is the host side of Xiaoya's `/data` mount, run
+`install-host-overlay-watchdog.sh` as root to install and enable both units.

@@ -1,0 +1,12 @@
+[Unit]
+Description=Check Watch Party Xiaoya proxy overlays every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=watchparty-xiaoya-overlay.service
+
+[Install]
+WantedBy=timers.target

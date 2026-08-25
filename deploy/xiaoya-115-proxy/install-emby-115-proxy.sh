@@ -17,6 +17,7 @@ cron_backup=
 cron_existed=0
 guard_cron='* * * * * /data/ensure-emby-115-guard.sh'
 websocket_timeout_cron='* * * * * /data/ensure-emby-websocket-timeout.sh --reload'
+overlay_cron='* * * * * /data/ensure-xiaoya-overlays.sh'
 
 cleanup() {
     status=$?
@@ -62,6 +63,8 @@ emby-115-throttle.conf
 emby-115-guard
 emby_115_policy.lua
 ensure-emby-115-guard.sh
+ensure-xiaoya-overlays.sh
+emby-websocket-diagnostic.conf
 emby-websocket-timeout.conf
 ensure-emby-websocket-timeout.sh
 updateall-emby-115-wrapper.sh'
@@ -74,10 +77,13 @@ done
 
 if [ ! -x /data/emby-115-guard ] \
     || [ ! -x /data/ensure-emby-115-guard.sh ] \
+    || [ ! -x /data/ensure-xiaoya-overlays.sh ] \
     || [ ! -x /data/ensure-emby-websocket-timeout.sh ]; then
     echo "115 guard executables are not executable" >&2
     exit 1
 fi
+
+mkdir -p /data/logs
 
 if ! grep -Fq 'location /d/ {' "$default_config"; then
     echo "could not find the official /d/ location in $default_config" >&2
@@ -117,6 +123,9 @@ if ! grep -Fq '/data/ensure-emby-115-guard.sh' "$cron_file"; then
 fi
 if ! grep -Fq '/data/ensure-emby-websocket-timeout.sh' "$cron_file"; then
     printf '%s\n' "$websocket_timeout_cron" >>"$cron_file"
+fi
+if ! grep -Fq '/data/ensure-xiaoya-overlays.sh' "$cron_file"; then
+    printf '%s\n' "$overlay_cron" >>"$cron_file"
 fi
 
 /data/ensure-emby-115-guard.sh

@@ -1,0 +1,8 @@
+[Unit]
+Description=Restore Watch Party Xiaoya proxy overlays after container recreation
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec xiaoya /data/ensure-xiaoya-overlays.sh
