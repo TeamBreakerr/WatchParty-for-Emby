@@ -91,16 +91,12 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         websocket_diagnostic = (
             DEPLOY_ROOT / "emby-websocket-diagnostic.conf"
         ).read_text()
-        overlay_ensure = (DEPLOY_ROOT / "ensure-xiaoya-overlays.sh").read_text()
-        host_service = (
-            DEPLOY_ROOT / "watchparty-xiaoya-overlay.service"
-        ).read_text()
-        host_timer = (
-            DEPLOY_ROOT / "watchparty-xiaoya-overlay.timer"
-        ).read_text()
-        host_installer = (
-            DEPLOY_ROOT / "install-host-overlay-watchdog.sh"
-        ).read_text()
+        retired_periodic_overlays = (
+            "ensure-xiaoya-overlays.sh",
+            "install-host-overlay-watchdog.sh",
+            "watchparty-xiaoya-overlay.service",
+            "watchparty-xiaoya-overlay.timer",
+        )
 
         self.assertIn("include /data/emby-115-locations.conf;", installer)
         self.assertIn("include /data/emby-115-access.conf;", installer)
@@ -110,20 +106,46 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         self.assertIn("emby-websocket-timeout.conf", installer)
         self.assertIn("emby-websocket-diagnostic.conf", installer)
         self.assertIn("ensure-emby-websocket-timeout.sh", installer)
-        self.assertIn("ensure-xiaoya-overlays.sh", installer)
         self.assertIn("/data/ensure-emby-websocket-timeout.sh --reload", installer)
         self.assertIn("validate_config", websocket_timeout)
         self.assertIn("Nginx rejected the WebSocket patch", websocket_timeout)
         self.assertIn("proxy_read_timeout 86400s;", websocket_include)
         self.assertIn("proxy_socket_keepalive on;", websocket_include)
         self.assertIn("log_format emby_websocket_diagnostic", websocket_diagnostic)
-        self.assertIn("/data/install-emby-115-proxy.sh --reload", overlay_ensure)
-        self.assertIn("ExecStart=/usr/bin/docker exec xiaoya /data/ensure-xiaoya-overlays.sh", host_service)
-        self.assertIn("OnUnitActiveSec=1min", host_timer)
-        self.assertIn("enable --now watchparty-xiaoya-overlay.timer", host_installer)
+        for retired_overlay in retired_periodic_overlays:
+            self.assertFalse((DEPLOY_ROOT / retired_overlay).exists())
         self.assertIn("/updateall.xiaoya-original", wrapper)
         self.assertIn("install-emby-115-proxy.sh --reload", keeper)
         self.assertIn("xiaoyakeeper-xiaoya-begin", keeper)
+
+    def test_installer_retires_the_previous_periodic_overlay(self):
+        installer = (DEPLOY_ROOT / "install-emby-115-proxy.sh").read_text()
+        readme = (DEPLOY_ROOT / "README.md").read_text()
+
+        self.assertIn(
+            "legacy_overlay_script=/data/ensure-xiaoya-overlays.sh", installer
+        )
+        self.assertIn(
+            'sed -i "\\|$legacy_overlay_script|d" "$cron_file"', installer
+        )
+        self.assertIn('rm -f "$legacy_overlay_script"', installer)
+        self.assertIn("install_committed=0", installer)
+        self.assertIn(
+            '[ "$status" -ne 0 ] && [ "$install_committed" -eq 0 ]', installer
+        )
+        self.assertLess(
+            installer.index('nginx -s reload'),
+            installer.index("install_committed=1"),
+        )
+        self.assertLess(
+            installer.index("install_committed=1"),
+            installer.index('sed -i "\\|$legacy_overlay_script|d" "$cron_file"'),
+        )
+        self.assertNotIn("overlay_cron='* * * * *", installer)
+        self.assertIn(
+            "systemctl disable --now watchparty-xiaoya-overlay.timer", readme
+        )
+        self.assertIn("systemctl daemon-reload", readme)
 
     def test_integration_probe_models_two_streams_followed_by_a_seek(self):
         integration = (REPO_ROOT / "test" / "xiaoya115ProxyIntegration.sh").read_text()

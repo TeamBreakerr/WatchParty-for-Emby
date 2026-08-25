@@ -12,18 +12,19 @@ emby_config_backup=
 runtime_backup=
 runtime_existed=0
 updateall_backup=
+install_committed=0
 cron_file=/etc/crontabs/root
 cron_backup=
 cron_existed=0
 guard_cron='* * * * * /data/ensure-emby-115-guard.sh'
 websocket_timeout_cron='* * * * * /data/ensure-emby-websocket-timeout.sh --reload'
-overlay_cron='* * * * * /data/ensure-xiaoya-overlays.sh'
+legacy_overlay_script=/data/ensure-xiaoya-overlays.sh
 
 cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
     set +e
-    if [ "$status" -ne 0 ]; then
+    if [ "$status" -ne 0 ] && [ "$install_committed" -eq 0 ]; then
         if [ -n "$default_backup" ]; then
             cp -p "$default_backup" "$default_config"
         fi
@@ -44,6 +45,8 @@ cleanup() {
             rm -f "$cron_file"
         fi
         echo "restored Nginx configuration after failed 115 proxy installation" >&2
+    elif [ "$status" -ne 0 ]; then
+        echo "installation remains active; retry to finish legacy overlay cleanup" >&2
     fi
     [ -z "$default_backup" ] || rm -f "$default_backup"
     [ -z "$emby_config_backup" ] || rm -f "$emby_config_backup"
@@ -63,7 +66,6 @@ emby-115-throttle.conf
 emby-115-guard
 emby_115_policy.lua
 ensure-emby-115-guard.sh
-ensure-xiaoya-overlays.sh
 emby-websocket-diagnostic.conf
 emby-websocket-timeout.conf
 ensure-emby-websocket-timeout.sh
@@ -77,7 +79,6 @@ done
 
 if [ ! -x /data/emby-115-guard ] \
     || [ ! -x /data/ensure-emby-115-guard.sh ] \
-    || [ ! -x /data/ensure-xiaoya-overlays.sh ] \
     || [ ! -x /data/ensure-emby-websocket-timeout.sh ]; then
     echo "115 guard executables are not executable" >&2
     exit 1
@@ -124,10 +125,6 @@ fi
 if ! grep -Fq '/data/ensure-emby-websocket-timeout.sh' "$cron_file"; then
     printf '%s\n' "$websocket_timeout_cron" >>"$cron_file"
 fi
-if ! grep -Fq '/data/ensure-xiaoya-overlays.sh' "$cron_file"; then
-    printf '%s\n' "$overlay_cron" >>"$cron_file"
-fi
-
 /data/ensure-emby-115-guard.sh
 /data/ensure-emby-websocket-timeout.sh
 
@@ -147,3 +144,14 @@ fi
 if [ "${1:-}" = "--reload" ]; then
     nginx -s reload
 fi
+
+# The installed Nginx state is now committed. A later retirement failure must
+# be retried without restoring files that the running worker already loaded.
+install_committed=1
+
+# Retire the previous full-overlay minute cron only after this installation has
+# validated and, when requested, reloaded successfully.
+if grep -Fq "$legacy_overlay_script" "$cron_file"; then
+    sed -i "\|$legacy_overlay_script|d" "$cron_file"
+fi
+rm -f "$legacy_overlay_script"

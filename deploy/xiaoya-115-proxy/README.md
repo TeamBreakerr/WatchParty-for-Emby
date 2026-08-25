@@ -59,17 +59,15 @@ NPM's `/data` mount and are independent of Xiaoya container updates.
 
 Xiaoya's image does not automatically include an Nginx file from `/data`.
 `/etc/nginx/http.d` belongs to the image and is replaced when the container is
-recreated. Persistence is therefore provided at three levels:
+recreated. Persistence is therefore provided at two levels:
 
 1. all overlay sources live in Xiaoya's persistent `/data` bind mount;
 2. XiaoyaKeeper's supported `mycmd.txt` post-update hook runs the installer
-   immediately after `update_xiaoya`;
-3. `watchparty-xiaoya-overlay.timer` runs on the Docker host every minute and
-   repairs drift even when another updater bypasses XiaoyaKeeper.
+   immediately after `update_xiaoya`.
 
-The installer also keeps an in-container once-per-minute check for ordinary
-runtime regeneration. None of these mechanisms changes Emby's client protocol
-or injects an application-level KeepAlive message.
+The installer also retains the existing in-container lightweight checks for the
+115 guard and WebSocket include. None of these mechanisms changes Emby's client
+protocol or injects an application-level KeepAlive message.
 
 Build the guard for this ARM64 Xiaoya host before installation:
 
@@ -79,7 +77,16 @@ Build the guard for this ARM64 Xiaoya host before installation:
 
 Copy the resulting binary and the deployment files to Xiaoya's persistent
 `/data`, then run `install-emby-115-proxy.sh --reload` inside the container.
-Install the supplied service and timer in `/etc/systemd/system`, then enable the
-timer, to retain the host-level fallback across Xiaoya container updates. When
-the deployment directory is the host side of Xiaoya's `/data` mount, run
-`install-host-overlay-watchdog.sh` as root to install and enable both units.
+The installer also removes the retired `/data/ensure-xiaoya-overlays.sh`
+minute-cron entry and script after a successful upgrade.
+
+Hosts that previously installed `watchparty-xiaoya-overlay.timer` need this
+one-time host cleanup because a container cannot manage its host's systemd:
+
+```sh
+sudo systemctl disable --now watchparty-xiaoya-overlay.timer
+sudo systemctl stop watchparty-xiaoya-overlay.service
+sudo rm -f /etc/systemd/system/watchparty-xiaoya-overlay.timer
+sudo rm -f /etc/systemd/system/watchparty-xiaoya-overlay.service
+sudo systemctl daemon-reload
+```
