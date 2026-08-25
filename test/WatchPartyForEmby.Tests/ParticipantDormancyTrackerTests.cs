@@ -197,6 +197,42 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void RecentDormancyExposesOnlyTheExactStoppedPlaybackGeneration()
+        {
+            using (var tracker = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan))
+            {
+                var stoppedAt = new DateTime(2026, 8, 25, 14, 30, 0, DateTimeKind.Utc);
+                tracker.MarkDormant(
+                    "party",
+                    "ios",
+                    "episode-1-playback",
+                    stoppedAt);
+
+                Assert.True(tracker.TryGetRecentDormancy(
+                    "party",
+                    "ios",
+                    stoppedAt.AddSeconds(2),
+                    TimeSpan.FromSeconds(15),
+                    out var recent));
+                Assert.Equal("episode-1-playback", recent.PlaySessionId);
+                Assert.Equal(stoppedAt, recent.StoppedAtUtc);
+
+                Assert.False(tracker.TryGetRecentDormancy(
+                    "party",
+                    "ios",
+                    stoppedAt.AddSeconds(16),
+                    TimeSpan.FromSeconds(15),
+                    out _));
+                Assert.False(tracker.TryGetRecentDormancy(
+                    "party",
+                    "other-ios",
+                    stoppedAt.AddSeconds(2),
+                    TimeSpan.FromSeconds(15),
+                    out _));
+            }
+        }
+
+        [Fact]
         public void ClearingAPartyRemovesItsDormantCommandBlock()
         {
             using (var tracker = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan))

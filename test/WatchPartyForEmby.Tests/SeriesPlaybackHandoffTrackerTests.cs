@@ -143,6 +143,84 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public async Task FollowerThatStopsBeforeMasterCanUseOnlyItsRecentDormantGeneration()
+        {
+            var now = new DateTime(2026, 8, 25, 1, 44, 0, DateTimeKind.Utc);
+            var handoffWindow = TimeSpan.FromSeconds(15);
+            var tracker = new SeriesPlaybackHandoffTracker(handoffWindow);
+            using var dormancies = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan);
+            var commands = new DormancyAwarePlaybackCommandQueue(dormancies, 4);
+
+            dormancies.MarkDormant(
+                "party",
+                "ios",
+                "episode-1-playback",
+                now);
+            Assert.True(dormancies.TryGetRecentDormancy(
+                "party",
+                "ios",
+                now.AddSeconds(1),
+                handoffWindow,
+                out var recentDormancy));
+
+            tracker.Capture(
+                "party",
+                "master-user",
+                new[]
+                {
+                    new SeriesPlaybackHandoffSession(
+                        "ios",
+                        recentDormancy.PlaySessionId,
+                        recentDormancy.StoppedAtUtc.Add(handoffWindow))
+                },
+                now.AddSeconds(1));
+            var handoff = tracker.Consume(
+                "party",
+                "master-user",
+                now.AddSeconds(6),
+                session => session.PlaySessionId == "episode-1-playback");
+            var dispatchCount = 0;
+
+            var sent = await commands.EnqueueExplicitPlayNowAsync(
+                "party",
+                handoff.Single().SessionId,
+                _ =>
+                {
+                    dispatchCount++;
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None,
+                authorizationStillValid: () => handoff.Single().IsValidAt(now.AddSeconds(6)));
+
+            Assert.True(sent);
+            Assert.True(dormancies.IsDormant("party", "ios"));
+            Assert.Equal(1, dispatchCount);
+        }
+
+        [Fact]
+        public void DormantFollowerAuthorizationExpiresFromItsOwnStopTime()
+        {
+            var now = new DateTime(2026, 8, 25, 1, 44, 0, DateTimeKind.Utc);
+            var tracker = new SeriesPlaybackHandoffTracker(TimeSpan.FromSeconds(15));
+            tracker.Capture(
+                "party",
+                "master-user",
+                new[]
+                {
+                    new SeriesPlaybackHandoffSession(
+                        "ios",
+                        "episode-1-playback",
+                        now.AddSeconds(15))
+                },
+                now.AddSeconds(10));
+
+            Assert.Empty(tracker.Consume(
+                "party",
+                "master-user",
+                now.AddSeconds(16)));
+        }
+
+        [Fact]
         public void EligibilityEvaluationRunsAfterTheTrackerLockIsReleased()
         {
             var now = new DateTime(2026, 8, 25, 1, 44, 0, DateTimeKind.Utc);

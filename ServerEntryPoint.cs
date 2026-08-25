@@ -38,6 +38,12 @@ namespace WatchPartyForEmby
         private readonly PlaybackSyncCoordinator _playbackSyncCoordinator = new PlaybackSyncCoordinator();
         private readonly MasterSeekSourceTracker _masterSeekSources =
             new MasterSeekSourceTracker();
+        private readonly PlaybackGenerationCandidateTracker _playbackGenerationCandidates =
+            new PlaybackGenerationCandidateTracker(
+                PlaybackGenerationQuietPeriod,
+                PlaybackGenerationConfirmationGap,
+                requiredConfirmations: 2,
+                PlaybackGenerationPositionTolerance);
         private readonly ParticipantDormancyTracker _participantDormancies =
             new ParticipantDormancyTracker(ParticipantDormancyRetentionPeriod);
         private readonly CancellationTokenSource _lifetimeCts = new CancellationTokenSource();
@@ -108,6 +114,16 @@ namespace WatchPartyForEmby
         // the SessionId and PlaySessionId did not change.
         private static readonly TimeSpan ParticipantReconciliationGap =
             TimeSpan.FromSeconds(20);
+        // Emby Web occasionally rebuilds its player without sending PlaybackStart. Two
+        // plausible TimeUpdate reports can replace the generation only after the old
+        // one has stopped reporting, keeping one-off and alternating zombie callbacks
+        // from seizing the master clock.
+        private static readonly TimeSpan PlaybackGenerationQuietPeriod =
+            TimeSpan.FromSeconds(3);
+        private static readonly TimeSpan PlaybackGenerationConfirmationGap =
+            TimeSpan.FromSeconds(12);
+        private static readonly TimeSpan PlaybackGenerationPositionTolerance =
+            TimeSpan.FromSeconds(5);
         // A WebSocket can disappear briefly while iOS rebuilds its player or crosses
         // a relayed IPv4 path. Wait for one bounded recovery window before declaring
         // a master command lost; Firebase remains intentionally disabled.
@@ -2188,6 +2204,7 @@ namespace WatchPartyForEmby
             var sessions = _plugin.PartyParticipants.GetSessions(partyId);
             _playbackSyncCoordinator.ClearParty(partyId);
             _masterSeekSources.ClearParty(partyId);
+            _playbackGenerationCandidates.ClearParty(partyId);
             foreach (var participant in sessions)
             {
                 _participantResumeCoordinator.CancelSession(participant.SessionId);
@@ -2662,6 +2679,7 @@ namespace WatchPartyForEmby
                             new PlaystateRequest { Command = PlaystateCommand.Stop });
                         return;
                     }
+                    _playbackGenerationCandidates.Reset(party.Id, e.Session.Id);
                     if (_participantDormancies.TryReactivate(
                             party.Id,
                             e.Session.Id,
@@ -3377,20 +3395,62 @@ namespace WatchPartyForEmby
                     }
 
                     // One Emby Web SessionId can briefly retain several PlaySessionIds
-                    // after a seek or stream reload. Keep the strict identity check for
-                    // ordinary progress, but allow Emby's explicit quality/audio/subtitle
-                    // stream-change events to establish the replacement when they omit
-                    // PlaybackStart. Without this narrow exception a healthy Web player
-                    // can keep reporting under the new id while the room remains frozen
-                    // on the old generation.
+                    // after a seek or stream reload. Explicit stream-change events can
+                    // replace the generation immediately. If Emby omits both that event
+                    // and PlaybackStart, require a stable ordinary-progress candidate
+                    // after the current generation has gone quiet. This recovers the
+                    // healthy player without letting one old or alternating callback
+                    // seize the authoritative clock.
                     var acceptsPlaybackProgress = _plugin.PartyParticipants.IsCurrentPlaybackSession(
                         party.Id,
                         e.Session.Id,
                         e.PlaySessionId);
                     var adoptedPlaybackGeneration = false;
                     string previousPlaybackSessionId = null;
+                    string playbackGenerationAdoptionTrigger = null;
+                    if (acceptsPlaybackProgress)
+                    {
+                        _playbackGenerationCandidates.Reset(party.Id, e.Session.Id);
+                    }
+                    else if (PlaybackGenerationAdoptionPolicy.IsExplicitStreamChange(
+                        e.EventName))
+                    {
+                        playbackGenerationAdoptionTrigger = e.EventName.ToString();
+                    }
+                    else if (IsEmbyWebSession(e.Session)
+                        && e.EventName == ProgressEvent.TimeUpdate
+                        && e.PlaybackPositionTicks.HasValue
+                        && _plugin.PartyParticipants.TryGetSession(
+                            party.Id,
+                            e.Session.Id,
+                            out var registeredParticipant)
+                        && !_plugin.PartyParticipants.IsRetiredPlaybackId(
+                            party.Id,
+                            e.Session.Id,
+                            e.PlaySessionId)
+                        && _playbackGenerationCandidates.Observe(
+                            party.Id,
+                            e.Session.Id,
+                            registeredParticipant.PlaySessionId,
+                            e.PlaySessionId,
+                            registeredParticipant.LastActivityAt,
+                            nowUtc,
+                            e.PlaybackPositionTicks.Value,
+                            e.IsPaused))
+                    {
+                        playbackGenerationAdoptionTrigger =
+                            "confirmed ordinary Web progress";
+                    }
+                    else if (_plugin.PartyParticipants.IsRetiredPlaybackId(
+                        party.Id,
+                        e.Session.Id,
+                        e.PlaySessionId))
+                    {
+                        _playbackGenerationCandidates.Reset(party.Id, e.Session.Id);
+                    }
+
                     if (!acceptsPlaybackProgress
-                        && PlaybackGenerationAdoptionPolicy.IsExplicitStreamChange(e.EventName))
+                        && playbackGenerationAdoptionTrigger != null)
                     {
                         adoptedPlaybackGeneration = _plugin.PartyParticipants
                             .TryAdoptStreamChangePlayback(
@@ -3402,6 +3462,9 @@ namespace WatchPartyForEmby
                         acceptsPlaybackProgress = adoptedPlaybackGeneration;
                         if (adoptedPlaybackGeneration)
                         {
+                            _playbackGenerationCandidates.Reset(
+                                party.Id,
+                                e.Session.Id);
                             _playbackSyncCoordinator.ResetForNewPlayback(
                                 e.Session.Id,
                                 previousPlaybackSessionId,
@@ -3417,7 +3480,7 @@ namespace WatchPartyForEmby
 
                             _logger.Info(
                                 $"[Party {party.Id}] Adopted playback generation " +
-                                $"{e.PlaySessionId} after {e.EventName} without " +
+                                $"{e.PlaySessionId} after {playbackGenerationAdoptionTrigger} without " +
                                 $"PlaybackStart; retired {previousPlaybackSessionId ?? "<none>"} " +
                                 $"for session {e.Session.Id}");
                         }
@@ -4312,7 +4375,6 @@ namespace WatchPartyForEmby
                         StringComparison.Ordinal)
                     || IsMasterSession(party, session)
                     || !SupportsRemoteControlledPlayback(session)
-                    || !IsRegisteredPartyPlayback(party, session)
                     || !_plugin.PartyParticipants.TryGetSession(
                         party.Id,
                         session.Id,
@@ -4322,9 +4384,34 @@ namespace WatchPartyForEmby
                     continue;
                 }
 
+                DateTime? authorizationExpiresAtUtc = null;
+                if (!IsRegisteredPartyPlayback(party, session))
+                {
+                    if (!_participantDormancies.TryGetRecentDormancy(
+                            party.Id,
+                            session.Id,
+                            nowUtc,
+                            SeriesPlaybackHandoffWindow,
+                            out var recentDormancy)
+                        || !string.Equals(
+                            recentDormancy.PlaySessionId,
+                            participant.PlaySessionId,
+                            StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    // The follower reported Stop before the master did. Authorize only
+                    // this exact generation, and expire from the follower's own Stop so
+                    // the master handoff cannot extend an old dormant registration.
+                    authorizationExpiresAtUtc = recentDormancy.StoppedAtUtc
+                        .Add(SeriesPlaybackHandoffWindow);
+                }
+
                 capturedSessions.Add(new SeriesPlaybackHandoffSession(
                     session.Id,
-                    participant.PlaySessionId));
+                    participant.PlaySessionId,
+                    authorizationExpiresAtUtc));
             }
 
             return capturedSessions;
@@ -4359,8 +4446,10 @@ namespace WatchPartyForEmby
             WatchPartyItem party,
             SeriesPlaybackHandoffSession captured)
         {
+            var nowUtc = DateTime.UtcNow;
             if (party == null
                 || captured == null
+                || !captured.IsValidAt(nowUtc)
                 || !_plugin.PartyParticipants.IsCurrentPlaybackSession(
                     party.Id,
                     captured.SessionId,
@@ -4379,7 +4468,7 @@ namespace WatchPartyForEmby
 
             var liveSession = PartySessionDiscovery.Discover(
                     _sessionManager.Sessions,
-                    DateTime.UtcNow)
+                    nowUtc)
                 .FirstOrDefault(session => string.Equals(
                     session.Id,
                     captured.SessionId,

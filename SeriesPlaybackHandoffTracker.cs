@@ -6,7 +6,10 @@ namespace WatchPartyForEmby
 {
     public sealed class SeriesPlaybackHandoffSession
     {
-        public SeriesPlaybackHandoffSession(string sessionId, string playSessionId)
+        public SeriesPlaybackHandoffSession(
+            string sessionId,
+            string playSessionId,
+            DateTime? authorizationExpiresAtUtc = null)
         {
             if (string.IsNullOrWhiteSpace(sessionId)
                 || string.IsNullOrWhiteSpace(playSessionId))
@@ -16,10 +19,18 @@ namespace WatchPartyForEmby
 
             SessionId = sessionId;
             PlaySessionId = playSessionId;
+            AuthorizationExpiresAtUtc = authorizationExpiresAtUtc;
         }
 
         public string SessionId { get; }
         public string PlaySessionId { get; }
+        public DateTime? AuthorizationExpiresAtUtc { get; }
+
+        public bool IsValidAt(DateTime observedAtUtc)
+        {
+            return !AuthorizationExpiresAtUtc.HasValue
+                || observedAtUtc <= AuthorizationExpiresAtUtc.Value;
+        }
     }
 
     /// <summary>
@@ -58,7 +69,7 @@ namespace WatchPartyForEmby
 
             var sessionsById = (activeFollowerSessions
                     ?? Array.Empty<SeriesPlaybackHandoffSession>())
-                .Where(session => session != null)
+                .Where(session => session != null && session.IsValidAt(stoppedAtUtc))
                 .GroupBy(session => session.SessionId, StringComparer.Ordinal)
                 .ToDictionary(
                     group => group.Key,
@@ -120,6 +131,7 @@ namespace WatchPartyForEmby
             // plugin configuration. Run it after releasing the tracker lock so room
             // cleanup can never acquire those locks in the opposite order.
             return handoff.Sessions
+                .Where(session => session.IsValidAt(startedAtUtc))
                 .Where(session => isStillEligible == null || isStillEligible(session))
                 .ToArray();
         }

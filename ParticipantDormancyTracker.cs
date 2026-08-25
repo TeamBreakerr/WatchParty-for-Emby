@@ -125,6 +125,41 @@ namespace WatchPartyForEmby
             }
         }
 
+        /// <summary>
+        /// Returns a value snapshot for a Stop that happened inside a bounded handoff
+        /// window. Reading this snapshot does not reactivate the participant or make it
+        /// commandable.
+        /// </summary>
+        public bool TryGetRecentDormancy(
+            string partyId,
+            string sessionId,
+            DateTime observedAtUtc,
+            TimeSpan maximumAge,
+            out DormancySnapshot snapshot)
+        {
+            if (maximumAge <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maximumAge));
+            }
+
+            snapshot = null;
+            var key = Key(partyId, sessionId);
+            lock (_syncRoot)
+            {
+                if (!_registrations.TryGetValue(key, out var current)
+                    || observedAtUtc < current.StoppedAtUtc
+                    || observedAtUtc - current.StoppedAtUtc > maximumAge)
+                {
+                    return false;
+                }
+
+                snapshot = new DormancySnapshot(
+                    current.PlaySessionId,
+                    current.StoppedAtUtc);
+                return true;
+            }
+        }
+
         public bool TryClaim(Registration registration)
         {
             if (registration == null)
@@ -246,6 +281,18 @@ namespace WatchPartyForEmby
             {
                 _cancellation.Dispose();
             }
+        }
+
+        public sealed class DormancySnapshot
+        {
+            internal DormancySnapshot(string playSessionId, DateTime stoppedAtUtc)
+            {
+                PlaySessionId = playSessionId;
+                StoppedAtUtc = stoppedAtUtc;
+            }
+
+            public string PlaySessionId { get; }
+            public DateTime StoppedAtUtc { get; }
         }
     }
 }
