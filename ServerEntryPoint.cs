@@ -911,18 +911,30 @@ namespace WatchPartyForEmby
             string reason,
             bool freezeAtFallbackPosition = false)
         {
-            // Commands scheduled by the departed playback generation must not run
-            // after the room loses (or promotes) its master. Followers keep their
-            // players open, but become locally controllable until a new authoritative
-            // master generation starts.
-            _partyPlaybackTransitions.Cancel(party.Id);
-            CancelParticipantResumePipelines(party.Id);
-
             // A promoted/new master may use a different browser session. Let that
             // session use the progress-jump fallback until its explicit seek endpoint
             // has been observed once.
             _masterSeekSources.ClearParty(party.Id);
-            if (TryPromoteActiveMasterSession(party, userId, out var promotedSessionId))
+            var promoted = TryPromoteActiveMasterSession(
+                party,
+                userId,
+                out var promotedSessionId);
+            var departureDecision = MasterPlaybackLifecyclePolicy.DecideMasterDeparture(
+                new MasterDepartureContext
+                {
+                    HasReplacementMaster = promoted,
+                    WasWaitingRoom = party.IsWaitingRoom
+                });
+            // Commands scheduled by the departed playback generation must not run
+            // after the room loses (or promotes) its master. Followers keep their
+            // players open, but become locally controllable until a new authoritative
+            // master generation starts.
+            if (departureDecision.CancelPendingWork)
+            {
+                _partyPlaybackTransitions.Cancel(party.Id);
+                CancelParticipantResumePipelines(party.Id);
+            }
+            if (departureDecision.PromoteReplacementMaster)
             {
                 _logger.Info(
                     $"[Party {party.Id}] Promoted session {promotedSessionId} as master after {reason}");
@@ -941,13 +953,11 @@ namespace WatchPartyForEmby
             party.IsPlaying = false;
             _playbackSyncCoordinator.StopMasterClock(party.Id, frozenPosition, nowUtc);
             CancelPendingMasterSeekSync(party.Id);
-            if (!party.IsWaitingRoom && party.MinReadyCount > 1)
-            {
-                party.IsWaitingRoom = true;
-                _logger.Info(
-                    $"[Party {party.Id}] Re-enabled waiting room after master departure " +
-                    $"(MinReadyCount={party.MinReadyCount})");
-            }
+            // Do not turn an actively running room back into a waiting room merely
+            // because its master stopped. Participants keep their current players and
+            // are free to pause, seek, or stop locally until a new master appears.
+            // Preserve an already waiting room's state through the explicit policy.
+            party.IsWaitingRoom = departureDecision.PreserveWaitingRoom;
 
             if (_partySyncedSessions.TryGetValue(party.Id, out var syncedSessions))
             {
@@ -2679,6 +2689,19 @@ namespace WatchPartyForEmby
                                 : _seriesSelections.Register(party.Id, startedEpisodeId);
                     }
 
+                    var masterPlaybackStartDecision =
+                        MasterPlaybackLifecyclePolicy.DecideMasterPlaybackStarted(
+                            new MasterPlaybackStartContext
+                            {
+                                IsMaster = isMaster,
+                                MasterWasInactiveBeforeStart = masterWasInactiveBeforeStart,
+                                IsSeriesParty = party.IsSeriesParty,
+                                StartedEpisodeId = startedEpisodeId,
+                                CurrentEpisodeId = currentEpisode?.ItemId,
+                                HasQueuedEpisodeSelection = masterSeriesSelection != null
+                                    || (isMaster && episodeSwitchTarget != null)
+                            });
+
                     if (party.IsSeriesParty
                         && !string.IsNullOrEmpty(startedEpisodeId)
                         && currentEpisode != null
@@ -2699,6 +2722,19 @@ namespace WatchPartyForEmby
                                 episodeSwitchTarget ?? currentEpisode,
                                 new[] { e.Session },
                                 currentPosition);
+                            return;
+                        }
+
+                        // A master-side episode mismatch is a real handoff only when
+                        // the lifecycle policy authorizes PlayNow for followers. This
+                        // defensive gate keeps an inconsistent/stale start from
+                        // mutating the queue or launching a command wave.
+                        if (!masterPlaybackStartDecision.SendPlayNowToParticipants)
+                        {
+                            _seriesSelections.Cancel(masterSeriesSelection);
+                            _logger.Debug(
+                                $"[Party {party.Id}] Ignoring master episode mismatch " +
+                                $"{startedEpisodeId} without an authorized lifecycle switch");
                             return;
                         }
 
@@ -2778,21 +2814,17 @@ namespace WatchPartyForEmby
                         }
                     }
 
-                    if (party.IsSeriesParty
-                        && isMaster
-                        && masterWasInactiveBeforeStart
-                        && masterSeriesSelection == null
-                        && currentEpisode != null
-                        && string.Equals(
-                            startedEpisodeId,
-                            currentEpisode.ItemId,
-                            StringComparison.OrdinalIgnoreCase))
+                    if (masterPlaybackStartDecision.Disposition
+                        == MasterPlaybackStartDisposition.ResumeCurrentEpisode)
                     {
                         // A same-episode master restart re-establishes authority only.
                         // Followers were deliberately left in their existing players,
                         // so replacing them with PlayNow would cause Web reloads and
                         // could pull an already-exited iOS client back into playback.
-                        _seriesPlaybackHandoffs.ClearParty(party.Id);
+                        if (masterPlaybackStartDecision.ClearHandoffAuthorizations)
+                        {
+                            _seriesPlaybackHandoffs.ClearParty(party.Id);
+                        }
                         _logger.Info(
                             $"[Party {party.Id}] Master resumed current episode " +
                             $"{currentEpisode.ItemId}; retaining participant players");
@@ -4751,7 +4783,7 @@ namespace WatchPartyForEmby
             QueuePlaybackEvent(
                 e?.Session?.Id,
                 "PlaybackStopped",
-                () => HandlePlaybackStoppedAsync(e));
+                () => HandlePlaybackStopped(e));
         }
 
         private void MarkParticipantDormant(
@@ -4773,7 +4805,7 @@ namespace WatchPartyForEmby
                 $"({sessionId}) as dormant after PlaybackStopped");
         }
 
-        private Task HandlePlaybackStoppedAsync(PlaybackStopEventArgs e)
+        private Task HandlePlaybackStopped(PlaybackStopEventArgs e)
         {
             try
             {
@@ -4814,26 +4846,32 @@ namespace WatchPartyForEmby
                     var stoppedPosition = Math.Max(0, currentParticipant.CurrentPositionTicks);
                     var stoppedEpisodeId = FindSeriesEpisodeId(party, e.Item);
                     var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
-                    var activeSeriesFollowerSessions = isMaster && party.IsSeriesParty
-                        ? GetActiveSeriesFollowerSessions(party, e.Session.Id)
-                        : Array.Empty<SeriesPlaybackHandoffSession>();
-
-                    if (!isMaster)
-                    {
-                        if (party.IsSeriesParty
-                            && _seriesEpisodeTransitions.ShouldRetainSessionOnStop(
-                                e.Session.Id,
-                                stoppedEpisodeId,
-                                currentEpisode?.ItemId,
-                                DateTime.UtcNow))
+                    var retainsForEpisodeTransition = party.IsSeriesParty
+                        && _seriesEpisodeTransitions.ShouldRetainSessionOnStop(
+                            e.Session.Id,
+                            stoppedEpisodeId,
+                            currentEpisode?.ItemId,
+                            DateTime.UtcNow);
+                    var stopDecision = MasterPlaybackLifecyclePolicy.DecidePlaybackStopped(
+                        new PlaybackStopContext
                         {
-                            _logger.Info(
-                                $"[Party {party.Id}] Keeping participant session " +
-                                $"{e.Session.Id} commandable while it switches from " +
-                                $"episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
-                            return Task.CompletedTask;
-                        }
+                            IsMaster = isMaster,
+                            IsSeriesParty = party.IsSeriesParty,
+                            IsExpectedEpisodeTransition = retainsForEpisodeTransition
+                        });
 
+                    if (stopDecision.Disposition
+                        == PlaybackStopDisposition.RetainParticipantForEpisodeTransition)
+                    {
+                        _logger.Info(
+                            $"[Party {party.Id}] Keeping participant session " +
+                            $"{e.Session.Id} commandable while it switches from " +
+                            $"episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
+                        return Task.CompletedTask;
+                    }
+
+                    if (stopDecision.Disposition == PlaybackStopDisposition.MarkParticipantDormant)
+                    {
                         MarkParticipantDormant(
                             party,
                             e.Session.Id,
@@ -4843,20 +4881,18 @@ namespace WatchPartyForEmby
                         return Task.CompletedTask;
                     }
 
-                    if (party.IsSeriesParty)
+                    if (stopDecision.Disposition
+                        == PlaybackStopDisposition.RetainMasterForEpisodeTransition)
                     {
-                        if (_seriesEpisodeTransitions.ShouldRetainSessionOnStop(
-                                e.Session.Id,
-                                stoppedEpisodeId,
-                                currentEpisode?.ItemId,
-                                DateTime.UtcNow))
-                        {
-                            _logger.Info(
-                                $"[Party {party.Id}] Retaining session {e.Session.Id} while it switches " +
-                                $"from episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
-                            return Task.CompletedTask;
-                        }
+                        _logger.Info(
+                            $"[Party {party.Id}] Retaining session {e.Session.Id} while it switches " +
+                            $"from episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
+                        return Task.CompletedTask;
                     }
+
+                    var activeSeriesFollowerSessions = stopDecision.CaptureSeriesHandoff
+                        ? GetActiveSeriesFollowerSessions(party, e.Session.Id)
+                        : Array.Empty<SeriesPlaybackHandoffSession>();
 
                     if (!TryRemoveParticipant(
                             party.Id,
@@ -4870,9 +4906,7 @@ namespace WatchPartyForEmby
                         return Task.CompletedTask;
                     }
 
-                    isMaster = removedMaster;
-
-                    if (isMaster)
+                    if (removedMaster && stopDecision.RemoveMaster)
                     {
                         if (HandleMasterDeparture(
                                 party,

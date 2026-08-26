@@ -22,11 +22,12 @@ function methodBody(startMarker, endMarker) {
     return source.slice(start, end);
 }
 
-test('master PlaybackStopped retires authority without stopping participant players', () => {
+test('PlaybackStopped is delegated to the lifecycle policy and never broadcasts Stop', () => {
     const handler = methodBody(
-        'private Task HandlePlaybackStoppedAsync',
+        'private Task HandlePlaybackStopped',
         'public void Dispose()');
 
+    assert.match(handler, /MasterPlaybackLifecyclePolicy\.DecidePlaybackStopped/);
     assert.match(handler, /HandleMasterDeparture/);
     assert.match(handler, /Capture\(/);
     assert.doesNotMatch(handler, /PlaystateCommand\.Stop/);
@@ -35,6 +36,7 @@ test('master PlaybackStopped retires authority without stopping participant play
 });
 
 test('same-episode master recovery keeps followers in their current players', () => {
+    assert.match(source, /MasterPlaybackLifecyclePolicy\.DecideMasterPlaybackStarted/);
     assert.match(source, /Master resumed current episode/);
     assert.match(source, /retaining participant players/);
     assert.doesNotMatch(source, /Followers were stopped with the old master/);
