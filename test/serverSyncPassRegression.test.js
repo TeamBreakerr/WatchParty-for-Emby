@@ -37,7 +37,7 @@ test('PlaybackStopped exhaustively applies the lifecycle policy without follower
 
 test('same-episode master recovery keeps followers in their current players', () => {
     assert.match(source, /MasterPlaybackLifecyclePolicy\.DecideMasterPlaybackStarted/);
-    assert.match(source, /Master resumed current episode/);
+    assert.match(source, /Master authority resumed for item/);
     assert.match(source, /retaining participant players/);
     assert.doesNotMatch(source, /Followers were stopped with the old master/);
     assert.doesNotMatch(source, /restarting \{restartSessions\.Count\} participant session/);
@@ -48,7 +48,7 @@ test('same-episode master recovery reconciles active followers without PlayNow',
         'private async Task HandlePlaybackStartAsync',
         'private async void CheckAndSyncUsers');
 
-    assert.match(recovery, /MasterPlaybackStartDisposition\.ResumeCurrentEpisode/);
+    assert.match(recovery, /MasterPlaybackStartDisposition\.ReestablishAuthority/);
     assert.match(recovery, /HandleMasterPause/);
     assert.match(recovery, /HandleMasterResume/);
 });
@@ -73,4 +73,31 @@ test('cross-episode handoff still sends a bounded PlayNow command path', () => {
 
     assert.match(episodeDispatcher, /PlayCommand = PlayCommand\.PlayNow/);
     assert.match(episodeDispatcher, /TryBeginCommandAttempt/);
+});
+
+test('configuration maintenance releases its lock before entering a party lifecycle boundary', () => {
+    assert.doesNotMatch(
+        source,
+        /lock \(_plugin\.ConfigurationSyncRoot\)\s*\{\s*CleanupRemovedPartiesCore\(\)/);
+    assert.doesNotMatch(
+        source,
+        /lock \(_plugin\.ConfigurationSyncRoot\)\s*\{\s*CleanupIneligibleParticipantsCore\(\)/);
+
+    const removedPartyCleanup = methodBody(
+        'private void CleanupRemovedParties()',
+        'private void ClearPartyRuntimeState');
+    assert.match(
+        removedPartyCleanup,
+        /Never enter a party lifecycle boundary while holding the\s*\/\/ configuration lock/);
+    assert.match(removedPartyCleanup, /ClearPartyRuntimeState\(removedId\)/);
+});
+
+test('a stale master cannot replace the current authority pause confirmation', () => {
+    const progressHandler = methodBody(
+        'private async Task HandlePlaybackProgressAsync',
+        'private void ScheduleMasterPauseStateCommit');
+    assert.match(
+        progressHandler,
+        /if \(deferMasterPauseTransition\)[\s\S]*?TryExecuteCurrentMasterPlayback\([\s\S]*?ScheduleMasterPauseStateCommit/);
+    assert.match(progressHandler, /if \(!scheduledForCurrentAuthority\)[\s\S]*?return;/);
 });

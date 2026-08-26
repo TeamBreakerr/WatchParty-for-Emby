@@ -18,14 +18,14 @@ namespace WatchPartyForEmby
     {
         NotMaster,
         ContinueCurrentGeneration,
-        ResumeCurrentEpisode,
+        ReestablishAuthority,
         SwitchEpisode
     }
 
     public sealed class MasterPlaybackStartContext
     {
         public bool IsMaster { get; set; }
-        public bool MasterWasInactiveBeforeStart { get; set; }
+        public bool AuthorityWasReestablished { get; set; }
         public bool IsSeriesParty { get; set; }
         public string StartedEpisodeId { get; set; }
         public string CurrentEpisodeId { get; set; }
@@ -70,11 +70,10 @@ namespace WatchPartyForEmby
                     context.StartedEpisodeId,
                     context.CurrentEpisodeId,
                     StringComparison.OrdinalIgnoreCase);
-            if (context.IsSeriesParty
-                && context.MasterWasInactiveBeforeStart
-                && sameEpisode)
+            if (context.AuthorityWasReestablished
+                && (!context.IsSeriesParty || sameEpisode))
             {
-                return MasterPlaybackStartDisposition.ResumeCurrentEpisode;
+                return MasterPlaybackStartDisposition.ReestablishAuthority;
             }
 
             return context.IsSeriesParty

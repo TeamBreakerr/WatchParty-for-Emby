@@ -10,8 +10,12 @@ namespace WatchPartyForEmby.Tests
         [Fact]
         public async Task ReplacementMasterWaitsForStoppedMasterCleanup()
         {
-            var coordinator = new MasterSessionLifecycleCoordinator();
             var registry = new PartySessionRegistry();
+            using var dormancies = new ParticipantDormancyTracker(
+                Timeout.InfiniteTimeSpan);
+            var coordinator = new MasterSessionLifecycleCoordinator(
+                registry,
+                dormancies);
             var now = new DateTime(2026, 8, 27, 2, 0, 0, DateTimeKind.Utc);
             registry.AddOrUpdate(
                 "party",
@@ -51,13 +55,17 @@ namespace WatchPartyForEmby.Tests
             var replacement = Task.Run(() =>
             {
                 replacementAttempted.TrySetResult(true);
-                return coordinator.Execute(
+                var registered = false;
+                coordinator.Execute(
                     "party",
                     () =>
                     {
                         Assert.True(cleanupCompleted);
-                        return registry.SetMasterSession("party", "master-b");
+                        registered = registry.SetMasterSession(
+                            "party",
+                            "master-b");
                     });
+                return registered;
             });
 
             await replacementAttempted.Task;
@@ -74,10 +82,12 @@ namespace WatchPartyForEmby.Tests
         [Fact]
         public async Task PromotionAfterParticipantStopClearsDormancyInOrder()
         {
-            var coordinator = new MasterSessionLifecycleCoordinator();
             var registry = new PartySessionRegistry();
             using var dormancies = new ParticipantDormancyTracker(
                 Timeout.InfiniteTimeSpan);
+            var coordinator = new MasterSessionLifecycleCoordinator(
+                registry,
+                dormancies);
             var now = new DateTime(2026, 8, 27, 2, 10, 0, DateTimeKind.Utc);
             registry.AddOrUpdate(
                 "party",
@@ -114,19 +124,12 @@ namespace WatchPartyForEmby.Tests
             var promote = Task.Run(() =>
             {
                 promotionAttempted.TrySetResult(true);
-                return coordinator.Execute(
+                var assignment = coordinator.TryAssignMaster(
                     "party",
-                    () =>
-                    {
-                        var registered = registry.SetMasterSession(
-                            "party",
-                            "candidate");
-                        if (registered)
-                        {
-                            dormancies.Cancel("party", "candidate");
-                        }
-                        return registered;
-                    });
+                    "candidate",
+                    replaceExisting: true,
+                    retirePreviousAuthority: null);
+                return assignment.Registered;
             });
 
             await promotionAttempted.Task;
@@ -141,13 +144,135 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public async Task ReplacementFirstRetiresOldAuthorityAndRejectsItsDelayedProgress()
+        {
+            var registry = new PartySessionRegistry();
+            using var dormancies = new ParticipantDormancyTracker(
+                Timeout.InfiniteTimeSpan);
+            var coordinator = new MasterSessionLifecycleCoordinator(
+                registry,
+                dormancies);
+            using var transitions = new PartyPlaybackTransitionCoordinator(
+                CancellationToken.None);
+            var now = new DateTime(2026, 8, 27, 3, 0, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "master-a",
+                Participant("master", "master-a", "play-a", now));
+            registry.AddOrUpdate(
+                "party",
+                "master-b",
+                Participant("master", "master-b", "play-b", now.AddSeconds(1)));
+            Assert.True(registry.SetMasterSession("party", "master-a"));
+            dormancies.MarkDormant(
+                "party",
+                "master-b",
+                "play-b",
+                now.AddSeconds(1));
+
+            var oldProgressClassified = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var replacementCompleted = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var authoritativePosition = 33L;
+            var oldTransition = transitions.Begin("party");
+
+            var delayedOldProgress = Task.Run(async () =>
+            {
+                Assert.True(registry.IsMasterSession("party", "master-a"));
+                oldProgressClassified.TrySetResult(true);
+                await replacementCompleted.Task;
+                return coordinator.TryExecuteCurrentMasterPlayback(
+                    "party",
+                    "master-a",
+                    "play-a",
+                    () => authoritativePosition = 774L);
+            });
+
+            await oldProgressClassified.Task;
+            var assignment = coordinator.TryAssignMaster(
+                "party",
+                "master-b",
+                replaceExisting: true,
+                previousMasterSessionId => transitions.Cancel("party"));
+            replacementCompleted.TrySetResult(true);
+
+            Assert.True(assignment.Registered);
+            Assert.True(assignment.AuthorityChanged);
+            Assert.Equal("master-a", assignment.PreviousMasterSessionId);
+            Assert.True(oldTransition.Token.IsCancellationRequested);
+            Assert.Equal("master-b", registry.GetMasterSession("party"));
+            Assert.False(dormancies.IsDormant("party", "master-b"));
+            Assert.False(await delayedOldProgress);
+            Assert.Equal(33L, authoritativePosition);
+
+            // A's delayed Stop is now a participant Stop. It must retain only A and
+            // cannot disturb B's replacement authority.
+            Assert.Equal(
+                PlaybackStopRegistryResolution.RetainParticipant,
+                registry.ResolvePlaybackStop(
+                    "party",
+                    "master-a",
+                    "play-a",
+                    out _));
+            Assert.Equal("master-b", registry.GetMasterSession("party"));
+        }
+
+        [Fact]
+        public void ReplacedPlaybackGenerationCannotCommitThroughAnOldMasterSnapshot()
+        {
+            var registry = new PartySessionRegistry();
+            using var dormancies = new ParticipantDormancyTracker(
+                Timeout.InfiniteTimeSpan);
+            var coordinator = new MasterSessionLifecycleCoordinator(
+                registry,
+                dormancies);
+            var now = new DateTime(2026, 8, 27, 3, 10, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "master",
+                Participant("master", "master", "play-a", now));
+            Assert.True(registry.SetMasterSession("party", "master"));
+            Assert.True(registry.IsMasterSession("party", "master"));
+
+            coordinator.Execute(
+                "party",
+                () => registry.AddOrUpdate(
+                    "party",
+                    "master",
+                    Participant("master", "master", "play-b", now.AddSeconds(1))));
+
+            var authoritativePosition = 40L;
+            var applied = coordinator.TryExecuteCurrentMasterPlayback(
+                "party",
+                "master",
+                "play-a",
+                () => authoritativePosition = 900L);
+
+            Assert.False(applied);
+            Assert.Equal(40L, authoritativePosition);
+            Assert.True(coordinator.TryExecuteCurrentMasterPlayback(
+                "party",
+                "master",
+                "play-b",
+                () => authoritativePosition = 41L));
+            Assert.Equal(41L, authoritativePosition);
+        }
+
+        [Fact]
         public void SamePartyLifecycleBoundaryIsReentrant()
         {
-            var coordinator = new MasterSessionLifecycleCoordinator();
+            var registry = new PartySessionRegistry();
+            using var dormancies = new ParticipantDormancyTracker(
+                Timeout.InfiniteTimeSpan);
+            var coordinator = new MasterSessionLifecycleCoordinator(
+                registry,
+                dormancies);
 
-            var result = coordinator.Execute(
+            var result = 0;
+            coordinator.Execute(
                 "party",
-                () => coordinator.Execute("party", () => 42));
+                () => coordinator.Execute("party", () => result = 42));
 
             Assert.Equal(42, result);
         }

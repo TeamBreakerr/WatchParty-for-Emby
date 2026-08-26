@@ -866,6 +866,50 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void CurrentMasterPlaybackRequiresTheCurrentSessionAndPlaybackGeneration()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 27, 4, 0, 0, DateTimeKind.Utc);
+
+            registry.AddOrUpdate(
+                "party",
+                "master-web",
+                Participant("master", "master-web", now, "play-a"));
+            registry.AddOrUpdate(
+                "party",
+                "viewer-ios",
+                Participant("viewer", "viewer-ios", now, "play-viewer"));
+            Assert.True(registry.SetMasterSession("party", "master-web"));
+
+            Assert.True(registry.IsCurrentMasterPlayback(
+                "party",
+                "master-web",
+                "play-a"));
+            Assert.False(registry.IsCurrentMasterPlayback(
+                "party",
+                "master-web",
+                "play-old"));
+            Assert.False(registry.IsCurrentMasterPlayback(
+                "party",
+                "viewer-ios",
+                "play-viewer"));
+
+            registry.AddOrUpdate(
+                "party",
+                "master-web",
+                Participant("master", "master-web", now.AddSeconds(1), "play-b"));
+
+            Assert.False(registry.IsCurrentMasterPlayback(
+                "party",
+                "master-web",
+                "play-a"));
+            Assert.True(registry.IsCurrentMasterPlayback(
+                "party",
+                "master-web",
+                "play-b"));
+        }
+
+        [Fact]
         public void MasterPromotionUsesTheMostRecentRemainingSessionOfTheSameUser()
         {
             var registry = new PartySessionRegistry();

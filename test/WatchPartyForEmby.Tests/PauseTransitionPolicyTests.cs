@@ -1,4 +1,3 @@
-using System.Threading.Tasks;
 using Xunit;
 
 namespace WatchPartyForEmby.Tests
@@ -84,50 +83,5 @@ namespace WatchPartyForEmby.Tests
                     hasActiveMaster: false));
         }
 
-        [Theory]
-        [InlineData(true)]
-        [InlineData(false)]
-        public async Task MasterTransitionBroadcastsAndNeverUsesParticipantRestore(bool reportedIsPaused)
-        {
-            var participantRestoreCount = 0;
-            var pauseBroadcastCount = 0;
-            var resumeBroadcastCount = 0;
-
-            await PlaybackStateAuthorityDispatcher.Dispatch(
-                PlaybackStateAuthorityAction.BroadcastMaster,
-                reportedIsPaused,
-                () => Count(ref participantRestoreCount),
-                () => Count(ref pauseBroadcastCount),
-                () => Count(ref resumeBroadcastCount));
-
-            Assert.Equal(0, participantRestoreCount);
-            Assert.Equal(reportedIsPaused ? 1 : 0, pauseBroadcastCount);
-            Assert.Equal(reportedIsPaused ? 0 : 1, resumeBroadcastCount);
-        }
-
-        [Fact]
-        public async Task ParticipantDivergenceRestoresOnlyTheReportingParticipant()
-        {
-            var participantRestoreCount = 0;
-            var pauseBroadcastCount = 0;
-            var resumeBroadcastCount = 0;
-
-            await PlaybackStateAuthorityDispatcher.Dispatch(
-                PlaybackStateAuthorityAction.RestoreParticipant,
-                reportedIsPaused: true,
-                () => Count(ref participantRestoreCount),
-                () => Count(ref pauseBroadcastCount),
-                () => Count(ref resumeBroadcastCount));
-
-            Assert.Equal(1, participantRestoreCount);
-            Assert.Equal(0, pauseBroadcastCount);
-            Assert.Equal(0, resumeBroadcastCount);
-        }
-
-        private static Task Count(ref int count)
-        {
-            count++;
-            return Task.CompletedTask;
-        }
     }
 }

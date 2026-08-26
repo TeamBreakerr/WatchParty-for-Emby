@@ -56,14 +56,14 @@ namespace WatchPartyForEmby.Tests
                 new MasterPlaybackStartContext
                 {
                     IsMaster = true,
-                    MasterWasInactiveBeforeStart = true,
+                    AuthorityWasReestablished = true,
                     IsSeriesParty = true,
                     StartedEpisodeId = "episode-a",
                     CurrentEpisodeId = "episode-a"
                 });
 
             Assert.Equal(PlaybackStopDisposition.ResolveStoppedGeneration, stop);
-            Assert.Equal(MasterPlaybackStartDisposition.ResumeCurrentEpisode, start);
+            Assert.Equal(MasterPlaybackStartDisposition.ReestablishAuthority, start);
             Assert.NotEqual(MasterPlaybackStartDisposition.SwitchEpisode, start);
         }
 
@@ -81,13 +81,13 @@ namespace WatchPartyForEmby.Tests
                 new MasterPlaybackStartContext
                 {
                     IsMaster = true,
-                    MasterWasInactiveBeforeStart = true,
+                    AuthorityWasReestablished = true,
                     IsSeriesParty = true,
                     StartedEpisodeId = "episode-a",
                     CurrentEpisodeId = "episode-a"
                 });
 
-            Assert.Equal(MasterPlaybackStartDisposition.ResumeCurrentEpisode, start);
+            Assert.Equal(MasterPlaybackStartDisposition.ReestablishAuthority, start);
             Assert.True(dormancies.IsDormant("party", "ios"));
         }
 
@@ -98,7 +98,7 @@ namespace WatchPartyForEmby.Tests
                 new MasterPlaybackStartContext
                 {
                     IsMaster = true,
-                    MasterWasInactiveBeforeStart = true,
+                    AuthorityWasReestablished = true,
                     IsSeriesParty = true,
                     StartedEpisodeId = "episode-b",
                     CurrentEpisodeId = "episode-a",
@@ -106,6 +106,22 @@ namespace WatchPartyForEmby.Tests
                 });
 
             Assert.Equal(MasterPlaybackStartDisposition.SwitchEpisode, start);
+        }
+
+        [Fact]
+        public void ReplacementMasterReestablishesAuthorityForAMovie()
+        {
+            var start = MasterPlaybackLifecyclePolicy.DecideMasterPlaybackStarted(
+                new MasterPlaybackStartContext
+                {
+                    IsMaster = true,
+                    AuthorityWasReestablished = true,
+                    IsSeriesParty = false
+                });
+
+            Assert.Equal(
+                MasterPlaybackStartDisposition.ReestablishAuthority,
+                start);
         }
 
         [Fact]

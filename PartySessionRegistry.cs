@@ -741,6 +741,35 @@ namespace WatchPartyForEmby
         }
 
         /// <summary>
+        /// Atomically verifies both layers of master identity. A SessionId can be reused
+        /// by several player instances, so role alone is insufficient for committing an
+        /// authoritative progress, pause or seek update.
+        /// </summary>
+        public bool IsCurrentMasterPlayback(
+            string partyId,
+            string sessionId,
+            string playSessionId)
+        {
+            lock (_syncRoot)
+            {
+                return !string.IsNullOrEmpty(partyId)
+                    && !string.IsNullOrEmpty(sessionId)
+                    && !string.IsNullOrEmpty(playSessionId)
+                    && _masterSessions.TryGetValue(partyId, out var masterSessionId)
+                    && string.Equals(
+                        masterSessionId,
+                        sessionId,
+                        StringComparison.Ordinal)
+                    && _sessionsByParty.TryGetValue(partyId, out var sessions)
+                    && sessions.TryGetValue(sessionId, out var participant)
+                    && string.Equals(
+                        participant.PlaySessionId,
+                        playSessionId,
+                        StringComparison.Ordinal);
+            }
+        }
+
+        /// <summary>
         /// Promotes the most recently active remaining session of a user to master.
         /// Used when the old master session stops but the same user is still watching.
         /// </summary>
