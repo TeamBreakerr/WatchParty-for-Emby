@@ -101,7 +101,7 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
-        public async Task CapturedGenerationCanDispatchPlayNowAfterMirroredStopEntersDormancy()
+        public async Task CapturedGenerationCanDispatchPlayNowAfterFollowerNaturallyEntersDormancy()
         {
             var now = new DateTime(2026, 8, 25, 1, 44, 0, DateTimeKind.Utc);
             var tracker = new SeriesPlaybackHandoffTracker(TimeSpan.FromSeconds(15));

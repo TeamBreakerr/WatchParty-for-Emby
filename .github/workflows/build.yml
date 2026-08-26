@@ -18,8 +18,8 @@ jobs:
           node-version: 22
       - name: Test plugin logic
         run: dotnet test test/WatchPartyForEmby.Tests/WatchPartyForEmby.Tests.csproj --configuration Release
-      - name: Test control pages
-        run: node --test test/configPagePartyModeRegression.test.js
+      - name: Test JavaScript regressions
+        run: node --test test/*.test.js
       - name: Build plugin
         run: dotnet build WatchPartyForEmby.csproj --configuration Release --no-restore
       - uses: actions/upload-artifact@v4

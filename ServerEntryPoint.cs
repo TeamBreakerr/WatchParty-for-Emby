@@ -911,6 +911,13 @@ namespace WatchPartyForEmby
             string reason,
             bool freezeAtFallbackPosition = false)
         {
+            // Commands scheduled by the departed playback generation must not run
+            // after the room loses (or promotes) its master. Followers keep their
+            // players open, but become locally controllable until a new authoritative
+            // master generation starts.
+            _partyPlaybackTransitions.Cancel(party.Id);
+            CancelParticipantResumePipelines(party.Id);
+
             // A promoted/new master may use a different browser session. Let that
             // session use the progress-jump fallback until its explicit seek endpoint
             // has been observed once.
@@ -1636,57 +1643,6 @@ namespace WatchPartyForEmby
                     $"[Party {party.Id}] Error sending {(isPaused ? "pause" : "resume")} " +
                     $"to user {session.UserName}",
                     ex);
-            }
-        }
-
-        private async Task StopParticipantsAfterMasterStop(
-            WatchPartyItem party,
-            string stoppedMasterSessionId)
-        {
-            CancelParticipantResumePipelines(party.Id);
-            var sessions = GetRegisteredPartySessions(
-                party.Id,
-                ParticipantRoomCommand.Stop);
-            foreach (var session in sessions)
-            {
-                if (session == null
-                    || string.Equals(
-                        session.Id,
-                        stoppedMasterSessionId,
-                        StringComparison.Ordinal)
-                    || !_plugin.PartyParticipants.TryGetSession(
-                        party.Id,
-                        session.Id,
-                        out _))
-                {
-                    continue;
-                }
-
-                if (!SupportsRemoteControlledPlayback(session))
-                {
-                    _logger.Info(
-                        $"[Party {party.Id}] Cannot mirror master Stop to " +
-                        $"{session.UserName} ({session.Client}): remote playback is unsupported");
-                    continue;
-                }
-
-                try
-                {
-                    await SendPlaystateCommandSerialAsync(
-                        party.Id,
-                        stoppedMasterSessionId,
-                        session.Id,
-                        new PlaystateRequest { Command = PlaystateCommand.Stop });
-                    _logger.Info(
-                        $"[Party {party.Id}] Mirrored master Stop to {session.UserName} " +
-                        $"(Session: {session.Id})");
-                }
-                catch (Exception ex)
-                {
-                    _logger.ErrorException(
-                        $"[Party {party.Id}] Error mirroring master Stop to session {session.Id}",
-                        ex);
-                }
             }
         }
 
@@ -2832,36 +2788,14 @@ namespace WatchPartyForEmby
                             currentEpisode.ItemId,
                             StringComparison.OrdinalIgnoreCase))
                     {
-                        // A clean Stop followed by replaying the same episode is still
-                        // a new authoritative playback generation. Followers were
-                        // stopped with the old master, so Unpause/seek cannot revive
-                        // them; mirror the new Start with PlayNow just like a cross-
-                        // episode transition.
-                        var handoffAuthorizations =
-                            ConsumeSeriesPlaybackHandoffAuthorizations(
-                                party,
-                                e.Session.UserId,
-                                nowUtc);
-                        var restartSessions = GetSeriesTransitionSessions(
-                                party,
-                                e.Session,
-                                handoffAuthorizations.Keys)
-                            .Where(session => !IsMasterSession(party, session))
-                            .ToList();
-                        if (restartSessions.Count > 0)
-                        {
-                            ResetSeriesEpisodeSyncState(party);
-                            _logger.Info(
-                                $"[Party {party.Id}] Master started a new playback generation " +
-                                $"for {currentEpisode.ItemId}; restarting {restartSessions.Count} " +
-                                "participant session(s)");
-                            await PlaySeriesEpisodeForSessions(
-                                party,
-                                currentEpisode,
-                                restartSessions,
-                                userStartPosition,
-                                handoffAuthorizations: handoffAuthorizations);
-                        }
+                        // A same-episode master restart re-establishes authority only.
+                        // Followers were deliberately left in their existing players,
+                        // so replacing them with PlayNow would cause Web reloads and
+                        // could pull an already-exited iOS client back into playback.
+                        _seriesPlaybackHandoffs.ClearParty(party.Id);
+                        _logger.Info(
+                            $"[Party {party.Id}] Master resumed current episode " +
+                            $"{currentEpisode.ItemId}; retaining participant players");
                     }
 
                     _logger.Info($"[Watch Party] User {e.Session.UserId} started watching party content: {party.ItemName}");
@@ -4486,9 +4420,9 @@ namespace WatchPartyForEmby
 
             if (liveSession.NowPlayingItem == null)
             {
-                // The mirrored Stop has already returned this follower to the home
-                // screen. Its captured PlaySessionId is still the exact generation
-                // that was active when the master stopped.
+                // The follower may naturally finish the old episode before the master
+                // starts the next one. Its captured PlaySessionId is still the exact
+                // generation that was active at the handoff boundary.
                 return true;
             }
 
@@ -4839,7 +4773,7 @@ namespace WatchPartyForEmby
                 $"({sessionId}) as dormant after PlaybackStopped");
         }
 
-        private async Task HandlePlaybackStoppedAsync(PlaybackStopEventArgs e)
+        private Task HandlePlaybackStoppedAsync(PlaybackStopEventArgs e)
         {
             try
             {
@@ -4857,7 +4791,7 @@ namespace WatchPartyForEmby
                         _logger.Info(
                             $"[Party {party.Id}] Ignoring Stop for unregistered playback " +
                             $"{e.PlaySessionId} on session {e.Session.Id}");
-                        return;
+                        return Task.CompletedTask;
                     }
 
                     if (!_plugin.PartyParticipants.IsCurrentPlaybackSession(
@@ -4869,7 +4803,7 @@ namespace WatchPartyForEmby
                             $"[Party {party.Id}] Ignoring delayed Stop for playback " +
                             $"{e.PlaySessionId}; session {e.Session.Id} now represents " +
                             $"{currentParticipant.PlaySessionId}");
-                        return;
+                        return Task.CompletedTask;
                     }
 
                     // Never promote or recreate a master from Stop. The participant
@@ -4897,7 +4831,7 @@ namespace WatchPartyForEmby
                                 $"[Party {party.Id}] Keeping participant session " +
                                 $"{e.Session.Id} commandable while it switches from " +
                                 $"episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
-                            return;
+                            return Task.CompletedTask;
                         }
 
                         MarkParticipantDormant(
@@ -4906,7 +4840,7 @@ namespace WatchPartyForEmby
                             e.PlaySessionId,
                             e.Session.UserName ?? e.Session.UserId,
                             DateTime.UtcNow);
-                        return;
+                        return Task.CompletedTask;
                     }
 
                     if (party.IsSeriesParty)
@@ -4920,7 +4854,7 @@ namespace WatchPartyForEmby
                             _logger.Info(
                                 $"[Party {party.Id}] Retaining session {e.Session.Id} while it switches " +
                                 $"from episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
-                            return;
+                            return Task.CompletedTask;
                         }
                     }
 
@@ -4933,7 +4867,7 @@ namespace WatchPartyForEmby
                     {
                         _logger.Debug(
                             $"[Party {party.Id}] Stop for session {e.Session.Id} no longer matched current membership; ignoring teardown");
-                        return;
+                        return Task.CompletedTask;
                     }
 
                     isMaster = removedMaster;
@@ -4948,7 +4882,7 @@ namespace WatchPartyForEmby
                                 freezeAtFallbackPosition: true))
                         {
                             _seriesPlaybackHandoffs.ClearParty(party.Id);
-                            return;
+                            return Task.CompletedTask;
                         }
 
                         if (party.IsSeriesParty)
@@ -4960,9 +4894,10 @@ namespace WatchPartyForEmby
                                 DateTime.UtcNow);
                         }
 
-                        await StopParticipantsAfterMasterStop(
-                            party,
-                            e.Session.Id);
+                        // PlaybackStopped retires only the master's authoritative
+                        // generation. Followers keep playing and become free to control
+                        // themselves while no active master exists. A later cross-
+                        // episode PlaybackStart still uses the bounded handoff above.
                         _plugin.SaveConfigurationSafely();
                     }
                     else
@@ -4975,6 +4910,8 @@ namespace WatchPartyForEmby
             {
                 _logger.ErrorException("[Watch Party] Error handling playback stop", ex);
             }
+
+            return Task.CompletedTask;
         }
 
         public void Dispose()
