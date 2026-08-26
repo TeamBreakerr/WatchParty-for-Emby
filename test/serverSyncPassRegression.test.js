@@ -22,16 +22,16 @@ function methodBody(startMarker, endMarker) {
     return source.slice(start, end);
 }
 
-test('PlaybackStopped is delegated to the lifecycle policy and never broadcasts Stop', () => {
-    const handler = methodBody(
-        'private Task HandlePlaybackStopped',
+test('PlaybackStopped exhaustively applies the lifecycle policy without follower Stop', () => {
+    const lifecycleRegion = methodBody(
+        'private Task ResolveStoppedPlaybackGeneration',
         'public void Dispose()');
 
-    assert.match(handler, /MasterPlaybackLifecyclePolicy\.DecidePlaybackStopped/);
-    assert.match(handler, /HandleMasterDeparture/);
-    assert.match(handler, /Capture\(/);
-    assert.doesNotMatch(handler, /PlaystateCommand\.Stop/);
-    assert.doesNotMatch(handler, /StopParticipantsAfterMasterStop/);
+    assert.match(lifecycleRegion, /MasterPlaybackLifecyclePolicy\.DecidePlaybackStopped/);
+    assert.match(lifecycleRegion, /switch \(stopDisposition\)/);
+    assert.match(lifecycleRegion, /ResolvePlaybackStop/);
+    assert.match(lifecycleRegion, /_masterSessionLifecycles\.Execute/);
+    assert.doesNotMatch(lifecycleRegion, /PlaystateCommand\.Stop/);
     assert.doesNotMatch(source, /private async Task StopParticipantsAfterMasterStop/);
 });
 
@@ -41,6 +41,29 @@ test('same-episode master recovery keeps followers in their current players', ()
     assert.match(source, /retaining participant players/);
     assert.doesNotMatch(source, /Followers were stopped with the old master/);
     assert.doesNotMatch(source, /restarting \{restartSessions\.Count\} participant session/);
+});
+
+test('same-episode master recovery reconciles active followers without PlayNow', () => {
+    const recovery = methodBody(
+        'private async Task HandlePlaybackStartAsync',
+        'private async void CheckAndSyncUsers');
+
+    assert.match(recovery, /MasterPlaybackStartDisposition\.ResumeCurrentEpisode/);
+    assert.match(recovery, /HandleMasterPause/);
+    assert.match(recovery, /HandleMasterResume/);
+});
+
+test('a retained follower Stop forces its next accepted Start through reconciliation', () => {
+    const dormantStop = methodBody(
+        'private void MarkParticipantDormant',
+        'private Task ResolveStoppedPlaybackGeneration');
+    const playbackStart = methodBody(
+        'private async Task HandlePlaybackStartAsync',
+        'private async void CheckAndSyncUsers');
+
+    assert.match(dormantStop, /ClearSessionEpisodeMarkers/);
+    assert.match(playbackStart, /resumedFromStart/);
+    assert.match(playbackStart, /ReconcileParticipantAfterReconnect/);
 });
 
 test('cross-episode handoff still sends a bounded PlayNow command path', () => {

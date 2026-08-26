@@ -4,6 +4,13 @@ using System.Linq;
 
 namespace WatchPartyForEmby
 {
+    public enum PlaybackStopRegistryResolution
+    {
+        Ignore,
+        RetainParticipant,
+        RemovedMaster
+    }
+
     /// <summary>
     /// Tracks watch-party playback sessions keyed by Emby SessionId instead of UserId.
     /// The same user can have several active sessions (official iOS app, VidHub, Conflux,
@@ -533,6 +540,62 @@ namespace WatchPartyForEmby
                 requirePlaySessionMatch: true,
                 out removed,
                 out wasMaster);
+        }
+
+        /// <summary>
+        /// Atomically resolves a trusted PlaybackStopped event against both the current
+        /// playback generation and the current session role. A master is removed so
+        /// the caller can complete departure cleanup; an ordinary participant remains
+        /// registered for dormancy; a missing or replaced generation is ignored.
+        /// </summary>
+        public PlaybackStopRegistryResolution ResolvePlaybackStop(
+            string partyId,
+            string sessionId,
+            string expectedPlaySessionId,
+            out PartyParticipant participant)
+        {
+            lock (_syncRoot)
+            {
+                participant = null;
+                if (string.IsNullOrEmpty(partyId)
+                    || string.IsNullOrEmpty(sessionId)
+                    || string.IsNullOrEmpty(expectedPlaySessionId)
+                    || !_sessionsByParty.TryGetValue(partyId, out var sessions)
+                    || !sessions.TryGetValue(sessionId, out var stored)
+                    || string.IsNullOrEmpty(stored.PlaySessionId)
+                    || !string.Equals(
+                        stored.PlaySessionId,
+                        expectedPlaySessionId,
+                        StringComparison.Ordinal))
+                {
+                    return PlaybackStopRegistryResolution.Ignore;
+                }
+
+                participant = Clone(stored);
+                if (!_masterSessions.TryGetValue(partyId, out var masterSessionId)
+                    || !string.Equals(
+                        masterSessionId,
+                        sessionId,
+                        StringComparison.Ordinal))
+                {
+                    return PlaybackStopRegistryResolution.RetainParticipant;
+                }
+
+                if (!TryRemoveSessionInternal(
+                    partyId,
+                    sessionId,
+                    expectedPlaySessionId,
+                    requirePlaySessionMatch: true,
+                    out participant,
+                    out var wasMaster)
+                    || !wasMaster)
+                {
+                    participant = null;
+                    return PlaybackStopRegistryResolution.Ignore;
+                }
+
+                return PlaybackStopRegistryResolution.RemovedMaster;
+            }
         }
 
         public bool TryRemoveSessionIfInactive(

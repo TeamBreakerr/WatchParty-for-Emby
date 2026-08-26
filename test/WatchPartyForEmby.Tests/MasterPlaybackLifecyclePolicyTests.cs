@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using Xunit;
 
@@ -9,76 +7,52 @@ namespace WatchPartyForEmby.Tests
     public sealed class MasterPlaybackLifecyclePolicyTests
     {
         [Fact]
-        public void MasterStopRetiresOnlyAuthorityAndNeverStopsFollowers()
+        public void OrdinaryStopMustResolveTheCurrentPlaybackGeneration()
         {
-            var stop = MasterPlaybackLifecyclePolicy.DecidePlaybackStopped(
+            var disposition = MasterPlaybackLifecyclePolicy.DecidePlaybackStopped(
                 new PlaybackStopContext
                 {
-                    IsMaster = true,
                     IsSeriesParty = false,
                     IsExpectedEpisodeTransition = false
                 });
 
-            Assert.Equal(PlaybackStopDisposition.RetireMaster, stop.Disposition);
-            Assert.True(stop.RemoveMaster);
-            Assert.True(stop.RetainPlayer);
-            Assert.False(stop.CaptureSeriesHandoff);
-            Assert.False(stop.SendParticipantStop);
+            Assert.Equal(PlaybackStopDisposition.ResolveStoppedGeneration, disposition);
         }
 
         [Fact]
-        public void SeriesMasterStopDuringEpisodeHandoffKeepsTheMasterRegistration()
+        public void SeriesStopRetainsOnlyAnExpectedEpisodeHandoff()
         {
-            var stop = MasterPlaybackLifecyclePolicy.DecidePlaybackStopped(
-                new PlaybackStopContext
-                {
-                    IsMaster = true,
-                    IsSeriesParty = true,
-                    IsExpectedEpisodeTransition = true
-                });
-
-            Assert.Equal(
-                PlaybackStopDisposition.RetainMasterForEpisodeTransition,
-                stop.Disposition);
-            Assert.False(stop.RemoveMaster);
-            Assert.True(stop.RetainPlayer);
-        }
-
-        [Fact]
-        public void ParticipantStopIsDormantUnlessItBelongsToAnEpisodeHandoff()
-        {
-            var dormant = MasterPlaybackLifecyclePolicy.DecidePlaybackStopped(
-                new PlaybackStopContext
-                {
-                    IsMaster = false,
-                    IsSeriesParty = true,
-                    IsExpectedEpisodeTransition = false
-                });
             var handoff = MasterPlaybackLifecyclePolicy.DecidePlaybackStopped(
                 new PlaybackStopContext
                 {
-                    IsMaster = false,
                     IsSeriesParty = true,
                     IsExpectedEpisodeTransition = true
                 });
+            var ordinaryStop = MasterPlaybackLifecyclePolicy.DecidePlaybackStopped(
+                new PlaybackStopContext
+                {
+                    IsSeriesParty = true,
+                    IsExpectedEpisodeTransition = false
+                });
 
-            Assert.Equal(PlaybackStopDisposition.MarkParticipantDormant, dormant.Disposition);
             Assert.Equal(
-                PlaybackStopDisposition.RetainParticipantForEpisodeTransition,
-                handoff.Disposition);
+                PlaybackStopDisposition.RetainForEpisodeTransition,
+                handoff);
+            Assert.Equal(
+                PlaybackStopDisposition.ResolveStoppedGeneration,
+                ordinaryStop);
         }
 
         [Fact]
-        public void StopThenSameEpisodeRestartRetainsExistingAndDormantPlayers()
+        public void MasterStopThenSameEpisodeRestartCannotSelectFollowerPlayNow()
         {
             var stop = MasterPlaybackLifecyclePolicy.DecidePlaybackStopped(
                 new PlaybackStopContext
                 {
-                    IsMaster = true,
                     IsSeriesParty = true,
                     IsExpectedEpisodeTransition = false
                 });
-            var restart = MasterPlaybackLifecyclePolicy.DecideMasterPlaybackStarted(
+            var start = MasterPlaybackLifecyclePolicy.DecideMasterPlaybackStarted(
                 new MasterPlaybackStartContext
                 {
                     IsMaster = true,
@@ -88,30 +62,37 @@ namespace WatchPartyForEmby.Tests
                     CurrentEpisodeId = "episode-a"
                 });
 
-            using var dormancies = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan);
-            dormancies.MarkDormant("party", "ios", "old-playback", DateTime.UtcNow);
-            var followerCommands = new List<string>();
-            if (stop.SendParticipantStop)
-            {
-                followerCommands.Add("Stop");
-            }
-            if (restart.SendPlayNowToParticipants)
-            {
-                followerCommands.Add("PlayNow");
-            }
+            Assert.Equal(PlaybackStopDisposition.ResolveStoppedGeneration, stop);
+            Assert.Equal(MasterPlaybackStartDisposition.ResumeCurrentEpisode, start);
+            Assert.NotEqual(MasterPlaybackStartDisposition.SwitchEpisode, start);
+        }
 
-            Assert.Equal(PlaybackStopDisposition.RetireMaster, stop.Disposition);
-            Assert.Equal(
-                MasterPlaybackStartDisposition.ResumeCurrentEpisode,
-                restart.Disposition);
-            Assert.True(restart.RetainParticipantPlayers);
-            Assert.True(restart.ClearHandoffAuthorizations);
-            Assert.Empty(followerCommands);
+        [Fact]
+        public void SameEpisodeRestartDoesNotWakeADormantFollower()
+        {
+            using var dormancies = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan);
+            dormancies.MarkDormant(
+                "party",
+                "ios",
+                "old-playback",
+                new DateTime(2026, 8, 27, 0, 0, 0, DateTimeKind.Utc));
+
+            var start = MasterPlaybackLifecyclePolicy.DecideMasterPlaybackStarted(
+                new MasterPlaybackStartContext
+                {
+                    IsMaster = true,
+                    MasterWasInactiveBeforeStart = true,
+                    IsSeriesParty = true,
+                    StartedEpisodeId = "episode-a",
+                    CurrentEpisodeId = "episode-a"
+                });
+
+            Assert.Equal(MasterPlaybackStartDisposition.ResumeCurrentEpisode, start);
             Assert.True(dormancies.IsDormant("party", "ios"));
         }
 
         [Fact]
-        public void CrossEpisodeMasterStartRequestsPlayNowForEveryActiveFollower()
+        public void CrossEpisodeMasterStartSelectsThePlayNowHandoffPath()
         {
             var start = MasterPlaybackLifecyclePolicy.DecideMasterPlaybackStarted(
                 new MasterPlaybackStartContext
@@ -123,35 +104,18 @@ namespace WatchPartyForEmby.Tests
                     CurrentEpisodeId = "episode-a",
                     HasQueuedEpisodeSelection = true
                 });
-            var activeFollowers = new[] { "ios", "web" };
-            var commands = start.SendPlayNowToParticipants
-                ? activeFollowers.Select(sessionId => "PlayNow:" + sessionId).ToArray()
-                : Array.Empty<string>();
 
-            Assert.Equal(MasterPlaybackStartDisposition.SwitchEpisode, start.Disposition);
-            Assert.True(start.SendPlayNowToParticipants);
-            Assert.Equal(
-                new[] { "PlayNow:ios", "PlayNow:web" },
-                commands);
+            Assert.Equal(MasterPlaybackStartDisposition.SwitchEpisode, start);
         }
 
         [Fact]
-        public void MasterDepartureCancelsPendingWorkPreservesWaitingStateAndFreesFollowers()
+        public void MasterDepartureCancelsOldWorkAndLeavesFollowersFree()
         {
-            using var transitions = new PartyPlaybackTransitionCoordinator(CancellationToken.None);
+            using var transitions = new PartyPlaybackTransitionCoordinator(
+                CancellationToken.None);
             var pending = transitions.Begin("party");
-            var departure = MasterPlaybackLifecyclePolicy.DecideMasterDeparture(
-                new MasterDepartureContext
-                {
-                    HasReplacementMaster = false,
-                    WasWaitingRoom = false
-                });
 
-            if (departure.CancelPendingWork)
-            {
-                transitions.Cancel("party");
-            }
-
+            transitions.Cancel("party");
             var participantAction = PauseTransitionPolicy.Decide(
                 PlaybackStateReporterRole.Participant,
                 previousIsPaused: false,
@@ -160,26 +124,8 @@ namespace WatchPartyForEmby.Tests
                 hasActiveMaster: false);
 
             Assert.True(pending.Token.IsCancellationRequested);
-            Assert.True(departure.FreezeAuthority);
-            Assert.True(departure.RetainParticipantPlayers);
-            Assert.False(departure.PreserveWaitingRoom);
             Assert.Equal(PlaybackStateAuthorityAction.Ignore, participantAction);
         }
 
-        [Fact]
-        public void ReplacementMasterKeepsTheAuthoritativeClockAndWaitingRoomState()
-        {
-            var departure = MasterPlaybackLifecyclePolicy.DecideMasterDeparture(
-                new MasterDepartureContext
-                {
-                    HasReplacementMaster = true,
-                    WasWaitingRoom = true
-                });
-
-            Assert.True(departure.PromoteReplacementMaster);
-            Assert.False(departure.FreezeAuthority);
-            Assert.True(departure.PreserveWaitingRoom);
-            Assert.True(departure.CancelPendingWork);
-        }
     }
 }

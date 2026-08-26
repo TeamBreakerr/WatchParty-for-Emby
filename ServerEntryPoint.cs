@@ -38,6 +38,8 @@ namespace WatchPartyForEmby
         private readonly PlaybackSyncCoordinator _playbackSyncCoordinator = new PlaybackSyncCoordinator();
         private readonly MasterSeekSourceTracker _masterSeekSources =
             new MasterSeekSourceTracker();
+        private readonly MasterSessionLifecycleCoordinator _masterSessionLifecycles =
+            new MasterSessionLifecycleCoordinator();
         private readonly PlaybackGenerationCandidateTracker _playbackGenerationCandidates =
             new PlaybackGenerationCandidateTracker(
                 PlaybackGenerationQuietPeriod,
@@ -274,9 +276,10 @@ namespace WatchPartyForEmby
                         party.MasterUserId,
                         StringComparison.OrdinalIgnoreCase))
                 {
-                    if (_plugin.PartyParticipants.SetMasterSession(
+                    if (TryRegisterActiveMasterSession(
                             party.Id,
-                            session.Id))
+                            session.Id,
+                            replaceExisting: true))
                     {
                         selectedMasterSessionId = session.Id;
                     }
@@ -648,6 +651,33 @@ namespace WatchPartyForEmby
                 && _plugin.PartyParticipants.IsMasterSession(party.Id, session.Id);
         }
 
+        private bool TryRegisterActiveMasterSession(
+            string partyId,
+            string sessionId,
+            bool replaceExisting)
+        {
+            return _masterSessionLifecycles.Execute(
+                partyId,
+                () =>
+                {
+                    var registered = replaceExisting
+                        ? _plugin.PartyParticipants.SetMasterSession(partyId, sessionId)
+                        : _plugin.PartyParticipants.SetMasterSessionIfAbsent(
+                            partyId,
+                            sessionId);
+                    if (!registered)
+                    {
+                        return false;
+                    }
+
+                    // Master assignment and command eligibility are one server-level
+                    // semantic: no caller may leave the newly authoritative session
+                    // dormant.
+                    _participantDormancies.Cancel(partyId, sessionId);
+                    return true;
+                });
+        }
+
         /// <summary>
         /// Resolves whether this session is the party master. When the configured master
         /// user starts a session before any master session is registered, the first such
@@ -655,14 +685,27 @@ namespace WatchPartyForEmby
         /// </summary>
         private bool TryResolveMasterSession(WatchPartyItem party, SessionInfo session)
         {
+            if (party == null || session == null)
+            {
+                return false;
+            }
+
+            return _masterSessionLifecycles.Execute(
+                party.Id,
+                () => TryResolveMasterSessionCore(party, session));
+        }
+
+        private bool TryResolveMasterSessionCore(
+            WatchPartyItem party,
+            SessionInfo session)
+        {
             if (IsMasterSession(party, session))
             {
+                _participantDormancies.Cancel(party.Id, session.Id);
                 return true;
             }
 
-            if (party == null
-                || session == null
-                || string.IsNullOrEmpty(party.MasterUserId)
+            if (string.IsNullOrEmpty(party.MasterUserId)
                 || !string.Equals(
                     session.UserId,
                     party.MasterUserId,
@@ -697,12 +740,22 @@ namespace WatchPartyForEmby
                     return false;
                 }
 
-                _plugin.PartyParticipants.SetMasterSession(party.Id, session.Id);
+                if (!TryRegisterActiveMasterSession(
+                        party.Id,
+                        session.Id,
+                        replaceExisting: true))
+                {
+                    return false;
+                }
+
                 _logger.Info($"[Watch Party] Promoted session {session.Id} as master; previous master session {registeredMasterSessionId} is no longer active");
                 return true;
             }
 
-            return _plugin.PartyParticipants.SetMasterSessionIfAbsent(party.Id, session.Id);
+            return TryRegisterActiveMasterSession(
+                party.Id,
+                session.Id,
+                replaceExisting: false);
         }
 
         /// <summary>
@@ -792,20 +845,29 @@ namespace WatchPartyForEmby
                 return false;
             }
 
-            var candidateSessionId = MasterSessionSelectionPolicy.SelectLatestActiveSession(
-                _plugin.PartyParticipants.GetSessions(party.Id),
-                userId,
-                sessionId => _sessionManager.Sessions.Any(current =>
-                    string.Equals(current.Id, sessionId, StringComparison.Ordinal)
-                    && IsRegisteredPartyPlayback(party, current)));
-            if (!string.IsNullOrEmpty(candidateSessionId)
-                && _plugin.PartyParticipants.SetMasterSession(party.Id, candidateSessionId))
-            {
-                promotedSessionId = candidateSessionId;
-                return true;
-            }
-
-            return false;
+            string selectedSessionId = null;
+            var promoted = _masterSessionLifecycles.Execute(
+                party.Id,
+                () =>
+                {
+                    selectedSessionId = MasterSessionSelectionPolicy
+                        .SelectLatestActiveSession(
+                            _plugin.PartyParticipants.GetSessions(party.Id),
+                            userId,
+                            sessionId => _sessionManager.Sessions.Any(current =>
+                                string.Equals(
+                                    current.Id,
+                                    sessionId,
+                                    StringComparison.Ordinal)
+                                && IsRegisteredPartyPlayback(party, current)));
+                    return !string.IsNullOrEmpty(selectedSessionId)
+                        && TryRegisterActiveMasterSession(
+                            party.Id,
+                            selectedSessionId,
+                            replaceExisting: true);
+                });
+            promotedSessionId = promoted ? selectedSessionId : null;
+            return promoted;
         }
 
         private bool CanUserJoinParty(WatchPartyItem party, string userId)
@@ -879,28 +941,38 @@ namespace WatchPartyForEmby
             foreach (var participant in inactiveSessions)
             {
                 _logger.Info($"[Party {party.Id}] Removing inactive session: {participant.UserName} ({participant.SessionId}) (inactive for {party.InactiveTimeoutMinutes} minutes)");
-                if (!TryRemoveInactiveParticipant(
-                        party.Id,
-                        participant.SessionId,
-                        inactiveThreshold,
-                        out var removedMaster))
+                var removed = _masterSessionLifecycles.Execute(
+                    party.Id,
+                    () =>
+                    {
+                        if (!TryRemoveInactiveParticipant(
+                                party.Id,
+                                participant.SessionId,
+                                inactiveThreshold,
+                                out var removedMaster))
+                        {
+                            return false;
+                        }
+
+                        if (removedMaster)
+                        {
+                            var promoted = HandleMasterDeparture(
+                                party,
+                                participant.UserId,
+                                party.CurrentPositionTicks,
+                                "inactive timeout");
+                            if (!promoted)
+                            {
+                                _plugin.SaveConfigurationSafely();
+                            }
+                        }
+
+                        return true;
+                    });
+                if (!removed)
                 {
                     continue;
                 }
-
-                if (removedMaster)
-                {
-                    var promoted = HandleMasterDeparture(
-                        party,
-                        participant.UserId,
-                        party.CurrentPositionTicks,
-                        "inactive timeout");
-                    if (!promoted)
-                    {
-                        _plugin.SaveConfigurationSafely();
-                    }
-                }
-
             }
         }
 
@@ -911,30 +983,18 @@ namespace WatchPartyForEmby
             string reason,
             bool freezeAtFallbackPosition = false)
         {
-            // A promoted/new master may use a different browser session. Let that
-            // session use the progress-jump fallback until its explicit seek endpoint
-            // has been observed once.
-            _masterSeekSources.ClearParty(party.Id);
-            var promoted = TryPromoteActiveMasterSession(
-                party,
-                userId,
-                out var promotedSessionId);
-            var departureDecision = MasterPlaybackLifecyclePolicy.DecideMasterDeparture(
-                new MasterDepartureContext
-                {
-                    HasReplacementMaster = promoted,
-                    WasWaitingRoom = party.IsWaitingRoom
-                });
             // Commands scheduled by the departed playback generation must not run
             // after the room loses (or promotes) its master. Followers keep their
             // players open, but become locally controllable until a new authoritative
             // master generation starts.
-            if (departureDecision.CancelPendingWork)
-            {
-                _partyPlaybackTransitions.Cancel(party.Id);
-                CancelParticipantResumePipelines(party.Id);
-            }
-            if (departureDecision.PromoteReplacementMaster)
+            _partyPlaybackTransitions.Cancel(party.Id);
+            CancelParticipantResumePipelines(party.Id);
+
+            // A promoted/new master may use a different browser session. Let that
+            // session use the progress-jump fallback until its explicit seek endpoint
+            // has been observed once.
+            _masterSeekSources.ClearParty(party.Id);
+            if (TryPromoteActiveMasterSession(party, userId, out var promotedSessionId))
             {
                 _logger.Info(
                     $"[Party {party.Id}] Promoted session {promotedSessionId} as master after {reason}");
@@ -956,8 +1016,8 @@ namespace WatchPartyForEmby
             // Do not turn an actively running room back into a waiting room merely
             // because its master stopped. Participants keep their current players and
             // are free to pause, seek, or stop locally until a new master appears.
-            // Preserve an already waiting room's state through the explicit policy.
-            party.IsWaitingRoom = departureDecision.PreserveWaitingRoom;
+            // An already waiting room remains waiting because this path deliberately
+            // leaves IsWaitingRoom unchanged.
 
             if (_partySyncedSessions.TryGetValue(party.Id, out var syncedSessions))
             {
@@ -2167,6 +2227,13 @@ namespace WatchPartyForEmby
 
         private void ClearPartyRuntimeState(string partyId)
         {
+            _masterSessionLifecycles.Execute(
+                partyId,
+                () => ClearPartyRuntimeStateCore(partyId));
+        }
+
+        private void ClearPartyRuntimeStateCore(string partyId)
+        {
             var sessions = _plugin.PartyParticipants.GetSessions(partyId);
             _playbackSyncCoordinator.ClearParty(partyId);
             _masterSeekSources.ClearParty(partyId);
@@ -2223,18 +2290,18 @@ namespace WatchPartyForEmby
                         continue;
                     }
 
-                    if (TryRemoveParticipant(
-                            party.Id,
-                            participant.SessionId,
-                            out var removedMaster)
-                        && removedMaster)
-                    {
-                        configurationChanged |= !HandleMasterDeparture(
-                            party,
-                            participant.UserId,
-                            party.CurrentPositionTicks,
-                            "access revoked");
-                    }
+                    configurationChanged |= _masterSessionLifecycles.Execute(
+                        party.Id,
+                        () => TryRemoveParticipant(
+                                party.Id,
+                                participant.SessionId,
+                                out var removedMaster)
+                            && removedMaster
+                            && !HandleMasterDeparture(
+                                party,
+                                participant.UserId,
+                                party.CurrentPositionTicks,
+                                "access revoked"));
                 }
             }
 
@@ -2646,13 +2713,14 @@ namespace WatchPartyForEmby
                         return;
                     }
                     _playbackGenerationCandidates.Reset(party.Id, e.Session.Id);
-                    if (_participantDormancies.TryReactivate(
+                    var resumedFromStart = _participantDormancies.TryReactivate(
                             party.Id,
                             e.Session.Id,
                             nowUtc,
-                            out var resumedFromStart))
+                            out var resumedRegistration);
+                    if (resumedFromStart)
                     {
-                        resumedFromStart.Dispose();
+                        resumedRegistration.Dispose();
                         _logger.Info(
                             $"[Party {party.Id}] Participant session {e.Session.Id} " +
                             "left dormancy after its accepted PlaybackStart");
@@ -2689,7 +2757,7 @@ namespace WatchPartyForEmby
                                 : _seriesSelections.Register(party.Id, startedEpisodeId);
                     }
 
-                    var masterPlaybackStartDecision =
+                    var masterPlaybackStartDisposition =
                         MasterPlaybackLifecyclePolicy.DecideMasterPlaybackStarted(
                             new MasterPlaybackStartContext
                             {
@@ -2729,7 +2797,8 @@ namespace WatchPartyForEmby
                         // the lifecycle policy authorizes PlayNow for followers. This
                         // defensive gate keeps an inconsistent/stale start from
                         // mutating the queue or launching a command wave.
-                        if (!masterPlaybackStartDecision.SendPlayNowToParticipants)
+                        if (masterPlaybackStartDisposition
+                            != MasterPlaybackStartDisposition.SwitchEpisode)
                         {
                             _seriesSelections.Cancel(masterSeriesSelection);
                             _logger.Debug(
@@ -2814,17 +2883,14 @@ namespace WatchPartyForEmby
                         }
                     }
 
-                    if (masterPlaybackStartDecision.Disposition
+                    if (masterPlaybackStartDisposition
                         == MasterPlaybackStartDisposition.ResumeCurrentEpisode)
                     {
                         // A same-episode master restart re-establishes authority only.
                         // Followers were deliberately left in their existing players,
                         // so replacing them with PlayNow would cause Web reloads and
                         // could pull an already-exited iOS client back into playback.
-                        if (masterPlaybackStartDecision.ClearHandoffAuthorizations)
-                        {
-                            _seriesPlaybackHandoffs.ClearParty(party.Id);
-                        }
+                        _seriesPlaybackHandoffs.ClearParty(party.Id);
                         _logger.Info(
                             $"[Party {party.Id}] Master resumed current episode " +
                             $"{currentEpisode.ItemId}; retaining participant players");
@@ -2888,6 +2954,26 @@ namespace WatchPartyForEmby
 
                     if (isMaster)
                     {
+                        if (masterPlaybackStartDisposition
+                            == MasterPlaybackStartDisposition.ResumeCurrentEpisode)
+                        {
+                            // Re-establish pause/position authority on the existing
+                            // follower players. This deliberately uses state commands,
+                            // never PlayNow, and dormant followers remain filtered by
+                            // the normal registered-session command gates.
+                            if (e.IsPaused)
+                            {
+                                await HandleMasterPause(
+                                    party,
+                                    e.Session,
+                                    userStartPosition);
+                                return;
+                            }
+
+                            await HandleMasterResume(party, e.Session);
+                            return;
+                        }
+
                         _logger.Info($"[Watch Party] Session {e.Session.Id} is the master, not syncing");
                         return;
                     }
@@ -2902,6 +2988,26 @@ namespace WatchPartyForEmby
                         party.Id,
                         party.CurrentPositionTicks,
                         nowUtc);
+                    if (resumedFromStart)
+                    {
+                        var reconciliationSucceeded =
+                            await ReconcileParticipantAfterReconnect(
+                                party,
+                                e.Session,
+                                e.Item,
+                                userStartPosition,
+                                targetPosition);
+                        if (!reconciliationSucceeded)
+                        {
+                            syncedSessions.TryRemove(e.Session.Id, out _);
+                            _logger.Warn(
+                                $"[Party {party.Id}] PlaybackStart reconciliation for " +
+                                $"session {e.Session.Id} was not accepted; the next " +
+                                "trusted report will retry");
+                        }
+                        return;
+                    }
+
                     var needsInitialSync = (!isInSyncedSet || wasPaused)
                         && Math.Abs(userStartPosition - targetPosition) > TimeSpan.FromSeconds(1).Ticks;
 
@@ -3483,10 +3589,8 @@ namespace WatchPartyForEmby
                     var pauseState = _partySessionPauseState.GetOrAdd(
                         party.Id,
                         _ => new ConcurrentDictionary<string, bool>());
-                    var isMaster = TryResolveMasterSession(party, e.Session);
                     ParticipantDormancyTracker.Registration resumedRegistration = null;
-                    var resumedFromDormancy = !isMaster
-                        && _participantDormancies.TryReactivate(
+                    var resumedFromDormancy = _participantDormancies.TryReactivate(
                             party.Id,
                             e.Session.Id,
                             nowUtc,
@@ -3495,9 +3599,10 @@ namespace WatchPartyForEmby
                     {
                         resumedRegistration.Dispose();
                         _logger.Info(
-                            $"[Party {party.Id}] Participant session {e.Session.Id} returned " +
+                            $"[Party {party.Id}] Session {e.Session.Id} returned " +
                             "after a transient Emby/iOS background Stop; restoring control state");
                     }
+                    var isMaster = TryResolveMasterSession(party, e.Session);
                     var wasInSyncedSet = _partySyncedSessions.TryGetValue(
                             party.Id,
                             out var knownSyncedSessions)
@@ -4798,11 +4903,91 @@ namespace WatchPartyForEmby
                 sessionId,
                 playSessionId,
                 stoppedAtUtc);
+            // A retained Stop is no longer synchronized state. The client's own next
+            // accepted Start/Progress must pass through immediate reconciliation
+            // instead of inheriting stale "already synced" and pause markers.
+            ClearSessionEpisodeMarkers(party.Id, sessionId);
             _participantResumeCoordinator.CancelSession(sessionId);
             _participantResumeLatencies.CancelPendingResume(sessionId);
             _logger.Info(
                 $"[Party {party.Id}] Retaining participant {userName} " +
                 $"({sessionId}) as dormant after PlaybackStopped");
+        }
+
+        private Task ResolveStoppedPlaybackGeneration(
+            WatchPartyItem party,
+            PlaybackStopEventArgs e,
+            long stoppedPosition)
+        {
+            return _masterSessionLifecycles.Execute(
+                party.Id,
+                () => ResolveStoppedPlaybackGenerationCore(
+                    party,
+                    e,
+                    stoppedPosition));
+        }
+
+        private Task ResolveStoppedPlaybackGenerationCore(
+            WatchPartyItem party,
+            PlaybackStopEventArgs e,
+            long stoppedPosition)
+        {
+            var activeSeriesFollowerSessions = party.IsSeriesParty
+                ? GetActiveSeriesFollowerSessions(party, e.Session.Id)
+                : Array.Empty<SeriesPlaybackHandoffSession>();
+
+            var resolution = _plugin.PartyParticipants.ResolvePlaybackStop(
+                party.Id,
+                e.Session.Id,
+                e.PlaySessionId,
+                out var participant);
+            if (resolution == PlaybackStopRegistryResolution.Ignore)
+            {
+                _logger.Debug(
+                    $"[Party {party.Id}] Stop for session {e.Session.Id} no longer " +
+                    "matched current membership; ignoring teardown");
+                return Task.CompletedTask;
+            }
+
+            if (resolution == PlaybackStopRegistryResolution.RetainParticipant)
+            {
+                MarkParticipantDormant(
+                    party,
+                    e.Session.Id,
+                    e.PlaySessionId,
+                    participant.UserName ?? participant.UserId,
+                    DateTime.UtcNow);
+                return Task.CompletedTask;
+            }
+
+            CompleteParticipantRemoval(party.Id, e.Session.Id, participant);
+
+            if (HandleMasterDeparture(
+                    party,
+                    e.Session.UserId,
+                    stoppedPosition,
+                    "playback stopped",
+                    freezeAtFallbackPosition: true))
+            {
+                _seriesPlaybackHandoffs.ClearParty(party.Id);
+                return Task.CompletedTask;
+            }
+
+            if (party.IsSeriesParty)
+            {
+                _seriesPlaybackHandoffs.Capture(
+                    party.Id,
+                    e.Session.UserId,
+                    activeSeriesFollowerSessions,
+                    DateTime.UtcNow);
+            }
+
+            // PlaybackStopped retires only the master's authoritative generation.
+            // Followers keep playing and become free to control themselves while no
+            // active master exists. A later cross-episode PlaybackStart still uses the
+            // bounded handoff above.
+            _plugin.SaveConfigurationSafely();
+            return Task.CompletedTask;
         }
 
         private Task HandlePlaybackStopped(PlaybackStopEventArgs e)
@@ -4838,11 +5023,6 @@ namespace WatchPartyForEmby
                         return Task.CompletedTask;
                     }
 
-                    // Never promote or recreate a master from Stop. The participant
-                    // snapshot was updated only by the accepted PlaySessionId, whereas
-                    // Emby's shared SessionInfo.PlayState can have been overwritten by
-                    // a zombie reporter from another episode.
-                    var isMaster = IsMasterSession(party, e.Session);
                     var stoppedPosition = Math.Max(0, currentParticipant.CurrentPositionTicks);
                     var stoppedEpisodeId = FindSeriesEpisodeId(party, e.Item);
                     var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
@@ -4852,91 +5032,30 @@ namespace WatchPartyForEmby
                             stoppedEpisodeId,
                             currentEpisode?.ItemId,
                             DateTime.UtcNow);
-                    var stopDecision = MasterPlaybackLifecyclePolicy.DecidePlaybackStopped(
+                    var stopDisposition = MasterPlaybackLifecyclePolicy.DecidePlaybackStopped(
                         new PlaybackStopContext
                         {
-                            IsMaster = isMaster,
                             IsSeriesParty = party.IsSeriesParty,
                             IsExpectedEpisodeTransition = retainsForEpisodeTransition
                         });
-
-                    if (stopDecision.Disposition
-                        == PlaybackStopDisposition.RetainParticipantForEpisodeTransition)
+                    switch (stopDisposition)
                     {
-                        _logger.Info(
-                            $"[Party {party.Id}] Keeping participant session " +
-                            $"{e.Session.Id} commandable while it switches from " +
-                            $"episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
-                        return Task.CompletedTask;
-                    }
-
-                    if (stopDecision.Disposition == PlaybackStopDisposition.MarkParticipantDormant)
-                    {
-                        MarkParticipantDormant(
-                            party,
-                            e.Session.Id,
-                            e.PlaySessionId,
-                            e.Session.UserName ?? e.Session.UserId,
-                            DateTime.UtcNow);
-                        return Task.CompletedTask;
-                    }
-
-                    if (stopDecision.Disposition
-                        == PlaybackStopDisposition.RetainMasterForEpisodeTransition)
-                    {
-                        _logger.Info(
-                            $"[Party {party.Id}] Retaining session {e.Session.Id} while it switches " +
-                            $"from episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
-                        return Task.CompletedTask;
-                    }
-
-                    var activeSeriesFollowerSessions = stopDecision.CaptureSeriesHandoff
-                        ? GetActiveSeriesFollowerSessions(party, e.Session.Id)
-                        : Array.Empty<SeriesPlaybackHandoffSession>();
-
-                    if (!TryRemoveParticipant(
-                            party.Id,
-                            e.Session.Id,
-                            out var removedMaster,
-                            e.PlaySessionId,
-                            requirePlaySessionMatch: true))
-                    {
-                        _logger.Debug(
-                            $"[Party {party.Id}] Stop for session {e.Session.Id} no longer matched current membership; ignoring teardown");
-                        return Task.CompletedTask;
-                    }
-
-                    if (removedMaster && stopDecision.RemoveMaster)
-                    {
-                        if (HandleMasterDeparture(
-                                party,
-                                e.Session.UserId,
-                                stoppedPosition,
-                                "playback stopped",
-                                freezeAtFallbackPosition: true))
-                        {
-                            _seriesPlaybackHandoffs.ClearParty(party.Id);
+                        case PlaybackStopDisposition.RetainForEpisodeTransition:
+                            _logger.Info(
+                                $"[Party {party.Id}] Keeping session " +
+                                $"{e.Session.Id} commandable while it switches from " +
+                                $"episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
                             return Task.CompletedTask;
-                        }
-
-                        if (party.IsSeriesParty)
-                        {
-                            _seriesPlaybackHandoffs.Capture(
-                                party.Id,
-                                e.Session.UserId,
-                                activeSeriesFollowerSessions,
-                                DateTime.UtcNow);
-                        }
-
-                        // PlaybackStopped retires only the master's authoritative
-                        // generation. Followers keep playing and become free to control
-                        // themselves while no active master exists. A later cross-
-                        // episode PlaybackStart still uses the bounded handoff above.
-                        _plugin.SaveConfigurationSafely();
-                    }
-                    else
-                    {
-                        _logger.Info($"[Watch Party] Participant {e.Session.UserId} stopped watching party content");
+                        case PlaybackStopDisposition.ResolveStoppedGeneration:
+                            return ResolveStoppedPlaybackGeneration(
+                                party,
+                                e,
+                                stoppedPosition);
+                        default:
+                            throw new ArgumentOutOfRangeException(
+                                nameof(stopDisposition),
+                                stopDisposition,
+                                "Unknown playback stop disposition");
                     }
                 }
             }

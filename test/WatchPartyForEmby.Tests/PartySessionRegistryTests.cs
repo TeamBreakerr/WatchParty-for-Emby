@@ -157,6 +157,75 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void StopResolutionUsesTheRoleAtTheAtomicResolutionPoint()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 27, 1, 0, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "web-session",
+                Participant("master", "web-session", now, "playback-1"));
+
+            // This is the stale role snapshot that the event handler used to trust.
+            Assert.False(registry.IsMasterSession("party", "web-session"));
+            Assert.True(registry.SetMasterSession("party", "web-session"));
+
+            var resolution = registry.ResolvePlaybackStop(
+                "party",
+                "web-session",
+                "playback-1",
+                out var participant);
+
+            Assert.Equal(PlaybackStopRegistryResolution.RemovedMaster, resolution);
+            Assert.Equal("web-session", participant.SessionId);
+            Assert.False(registry.TryGetSession("party", "web-session", out _));
+            Assert.Null(registry.GetMasterSession("party"));
+        }
+
+        [Fact]
+        public void StopResolutionRetainsACurrentParticipantForDormancy()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 27, 1, 5, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "ios-session",
+                Participant("viewer", "ios-session", now, "playback-1"));
+
+            var resolution = registry.ResolvePlaybackStop(
+                "party",
+                "ios-session",
+                "playback-1",
+                out var participant);
+
+            Assert.Equal(PlaybackStopRegistryResolution.RetainParticipant, resolution);
+            Assert.Equal("ios-session", participant.SessionId);
+            Assert.True(registry.TryGetSession("party", "ios-session", out _));
+        }
+
+        [Fact]
+        public void StopResolutionIgnoresAReplacedPlaybackGeneration()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 8, 27, 1, 10, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "party",
+                "ios-session",
+                Participant("viewer", "ios-session", now, "new-playback"));
+
+            var resolution = registry.ResolvePlaybackStop(
+                "party",
+                "ios-session",
+                "old-playback",
+                out var participant);
+
+            Assert.Equal(PlaybackStopRegistryResolution.Ignore, resolution);
+            Assert.Null(participant);
+            Assert.True(registry.TryGetSession("party", "ios-session", out var current));
+            Assert.Equal("new-playback", current.PlaySessionId);
+        }
+
+        [Fact]
         public void StopWithoutPlaybackIdDoesNotRemoveAKnownCurrentPlayback()
         {
             var registry = new PartySessionRegistry();
