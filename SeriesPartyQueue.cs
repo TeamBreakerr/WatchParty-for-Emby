@@ -76,6 +76,21 @@ namespace WatchPartyForEmby
                 : null;
         }
 
+        public static WatchPartyEpisode GetNextEpisode(WatchPartyItem party)
+        {
+            if (party == null
+                || !party.IsSeriesParty
+                || party.EpisodeQueue == null)
+            {
+                return null;
+            }
+
+            var nextIndex = party.CurrentEpisodeIndex + 1;
+            return nextIndex >= 0 && nextIndex < party.EpisodeQueue.Count
+                ? party.EpisodeQueue[nextIndex]
+                : null;
+        }
+
         public static bool TrySelectEpisode(WatchPartyItem party, string episodeItemId)
         {
             if (party?.IsSeriesParty != true

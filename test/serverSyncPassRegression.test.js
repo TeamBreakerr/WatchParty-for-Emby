@@ -28,11 +28,34 @@ test('PlaybackStopped exhaustively applies the lifecycle policy without follower
         'public void Dispose()');
 
     assert.match(lifecycleRegion, /MasterPlaybackLifecyclePolicy\.DecidePlaybackStopped/);
-    assert.match(lifecycleRegion, /switch \(stopDisposition\)/);
+    assert.match(lifecycleRegion, /PlaybackStopDisposition\.RetainForEpisodeTransition/);
     assert.match(lifecycleRegion, /ResolvePlaybackStop/);
     assert.match(lifecycleRegion, /_masterSessionLifecycles\.Execute/);
     assert.doesNotMatch(lifecycleRegion, /PlaystateCommand\.Stop/);
     assert.doesNotMatch(source, /private async Task StopParticipantsAfterMasterStop/);
+});
+
+test('natural series completion is wired through the tested authorization coordinator', () => {
+    const stoppedHandler = methodBody(
+        'private Task HandlePlaybackStopped',
+        'public void Dispose()');
+    const naturalAdvance = methodBody(
+        'private Task ResolveStoppedPlaybackGenerationOrAdvanceEpisode',
+        'private StoppedPlaybackLifecycleResolution ResolveStoppedPlaybackGenerationCore');
+    const playbackStart = methodBody(
+        'private async Task HandlePlaybackStartAsync',
+        'private async void CheckAndSyncUsers');
+
+    assert.match(stoppedHandler, /ResolveStoppedPlaybackGenerationOrAdvanceEpisode/);
+    assert.match(naturalAdvance, /PlayedToCompletion = e\.PlayedToCompletion/);
+    assert.match(naturalAdvance, /_naturalEpisodeAdvances\.TryBegin/);
+    assert.match(naturalAdvance, /ResolveStoppedPlaybackGenerationCore/);
+    assert.match(naturalAdvance, /authorization\.SessionId/);
+    assert.match(naturalAdvance, /TryBeginCommandAttempt/);
+    assert.match(playbackStart, /ClassifyPlaybackStart/);
+    assert.match(playbackStart, /RejectDifferentSession/);
+    assert.match(playbackStart, /_naturalEpisodeAdvances\.TryComplete/);
+    assert.doesNotMatch(naturalAdvance, /TrySelectEpisode/);
 });
 
 test('same-episode master recovery keeps followers in their current players', () => {
@@ -67,12 +90,29 @@ test('a retained follower Stop forces its next accepted Start through reconcilia
 });
 
 test('cross-episode handoff still sends a bounded PlayNow command path', () => {
+    const requestFactory = methodBody(
+        'private PlayRequest CreateEpisodePlayRequest',
+        'private async Task PlaySeriesEpisodeForSessions');
     const episodeDispatcher = methodBody(
         'private async Task PlaySeriesEpisodeForSessions',
         'private async Task RetrySeriesEpisodeUntilConfirmedAsync');
 
-    assert.match(episodeDispatcher, /PlayCommand = PlayCommand\.PlayNow/);
+    assert.match(requestFactory, /PlayCommand = PlayCommand\.PlayNow/);
+    assert.match(requestFactory, /PlaybackMediaSourceSelector\.Resolve/);
+    assert.match(episodeDispatcher, /CreateEpisodePlayRequest/);
     assert.match(episodeDispatcher, /TryBeginCommandAttempt/);
+});
+
+test('manual series launch validates the selected episode media source', () => {
+    const manualLaunch = methodBody(
+        'public async Task<PartyManualSynchronizationResult> SynchronizePartyNowAsync',
+        'private bool HasPlaybackControlConnection');
+
+    assert.match(manualLaunch, /targetEpisode == null/);
+    assert.match(manualLaunch, /CreateEpisodePlayRequest/);
+    assert.doesNotMatch(
+        manualLaunch,
+        /MediaSourceId = targetEpisode\?\.MediaSourceId \?\? party\.MediaSourceId/);
 });
 
 test('configuration maintenance releases its lock before entering a party lifecycle boundary', () => {

@@ -71,6 +71,31 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void ResolvingTheNextEpisodeDoesNotMutateTheRoomAndKeepsItsMediaVersion()
+        {
+            var party = CreatePartyAtFirstEpisode();
+            party.EpisodeQueue[1].MediaSourceId = "source-s1e2";
+
+            var nextEpisode = SeriesPartyQueue.GetNextEpisode(party);
+
+            Assert.NotNull(nextEpisode);
+            Assert.Equal("s1e2", nextEpisode.ItemId);
+            Assert.Equal("source-s1e2", nextEpisode.MediaSourceId);
+            Assert.Equal(0, party.CurrentEpisodeIndex);
+            Assert.Equal("s1e1", party.CurrentEpisodeId);
+            Assert.Equal("s1e1", party.ItemId);
+        }
+
+        [Fact]
+        public void LastQueuedEpisodeHasNoNextEpisode()
+        {
+            var party = CreatePartyAtFirstEpisode();
+            Assert.True(SeriesPartyQueue.TrySelectEpisode(party, "s1e2"));
+
+            Assert.Null(SeriesPartyQueue.GetNextEpisode(party));
+        }
+
+        [Fact]
         public void SelectingQueuedEpisodeMovesTheRoomAndResetsProgress()
         {
             var party = CreatePartyAtFirstEpisode();

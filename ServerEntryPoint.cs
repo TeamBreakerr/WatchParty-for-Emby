@@ -31,6 +31,8 @@ namespace WatchPartyForEmby
             new SeriesEpisodeTransitionTracker();
         private readonly SeriesPlaybackHandoffTracker _seriesPlaybackHandoffs =
             new SeriesPlaybackHandoffTracker(SeriesPlaybackHandoffWindow);
+        private readonly NaturalEpisodeAdvanceCoordinator _naturalEpisodeAdvances =
+            new NaturalEpisodeAdvanceCoordinator();
         private readonly object _seriesTransitionLock = new object();
         private readonly object _configurationMaintenanceLock = new object();
         private readonly ConcurrentDictionary<string, DateTime> _lastProgressCheckpoint = new ConcurrentDictionary<string, DateTime>();
@@ -104,6 +106,8 @@ namespace WatchPartyForEmby
         private const int SeriesCommandMaxAttempts = 3;
         private static readonly TimeSpan SeriesCommandConfirmationRetryInterval =
             TimeSpan.FromSeconds(6);
+        private static readonly TimeSpan NaturalEpisodeConfirmationWindow =
+            TimeSpan.FromMinutes(1);
         private static readonly TimeSpan PartyValidationInterval = TimeSpan.FromMinutes(5);
         // Clients normally report progress every 5-10 seconds. Periodic calibration
         // projects a cached participant position for at most this long before comparing
@@ -295,13 +299,18 @@ namespace WatchPartyForEmby
                 });
             }
             var masterSession = GetMasterSessionForCommand(party);
-            var request = new PlayRequest
-            {
-                ItemIds = new[] { targetItem.InternalId },
-                MediaSourceId = targetEpisode?.MediaSourceId ?? party.MediaSourceId,
-                PlayCommand = PlayCommand.PlayNow,
-                StartPositionTicks = Math.Max(0, positionTicks)
-            };
+            var request = targetEpisode == null
+                ? new PlayRequest
+                {
+                    ItemIds = new[] { targetItem.InternalId },
+                    MediaSourceId = party.MediaSourceId,
+                    PlayCommand = PlayCommand.PlayNow,
+                    StartPositionTicks = Math.Max(0, positionTicks)
+                }
+                : CreateEpisodePlayRequest(
+                    targetEpisode,
+                    targetItem,
+                    positionTicks);
 
             var wasWaitingRoom = party.IsWaitingRoom;
             var wasPlaying = party.IsPlaying;
@@ -688,14 +697,24 @@ namespace WatchPartyForEmby
             string sessionId,
             bool replaceExisting)
         {
-            return _masterSessionLifecycles.TryAssignMaster(
+            MasterSessionAssignment assignment = null;
+            _masterSessionLifecycles.Execute(
                 partyId,
-                sessionId,
-                replaceExisting,
-                previousMasterSessionId => RetireMasterAuthority(
-                    partyId,
-                    previousMasterSessionId))
-                .Registered;
+                () =>
+                {
+                    assignment = _masterSessionLifecycles.TryAssignMasterWithinBoundary(
+                        partyId,
+                        sessionId,
+                        replaceExisting,
+                        previousMasterSessionId => RetireMasterAuthority(
+                            partyId,
+                            previousMasterSessionId));
+                    if (assignment.Registered)
+                    {
+                        _naturalEpisodeAdvances.CancelParty(partyId);
+                    }
+                });
+            return assignment.Registered;
         }
 
         /// <summary>
@@ -705,7 +724,8 @@ namespace WatchPartyForEmby
         /// </summary>
         private MasterSessionResolution ResolveMasterSession(
             WatchPartyItem party,
-            SessionInfo session)
+            SessionInfo session,
+            NaturalEpisodeAdvanceAuthorization naturalAdvanceConfirmation = null)
         {
             if (party == null || session == null)
             {
@@ -715,7 +735,18 @@ namespace WatchPartyForEmby
             MasterSessionResolution resolution = null;
             _masterSessionLifecycles.Execute(
                 party.Id,
-                () => resolution = ResolveMasterSessionCore(party, session));
+                () =>
+                {
+                    resolution = ResolveMasterSessionCore(party, session);
+                    if (resolution.AuthorityChanged
+                        && (naturalAdvanceConfirmation == null
+                            || !_naturalEpisodeAdvances.IsCurrent(
+                                naturalAdvanceConfirmation,
+                                DateTime.UtcNow)))
+                    {
+                        _naturalEpisodeAdvances.CancelParty(party.Id);
+                    }
+                });
             return resolution;
         }
 
@@ -2316,6 +2347,7 @@ namespace WatchPartyForEmby
             _participantDormancies.ClearParty(partyId);
             _seriesSelections.ClearParty(partyId);
             _seriesPlaybackHandoffs.ClearParty(partyId);
+            _naturalEpisodeAdvances.CancelParty(partyId);
             _plugin.PartyParticipants.ClearParty(partyId);
             _plugin.PartyReadyUsers.ClearParty(partyId);
         }
@@ -2687,20 +2719,27 @@ namespace WatchPartyForEmby
             var party = FindPartyForItem(e.Item);
             if (party == null
                 || !party.IsActive
-                || !party.IsSeriesParty
-                || !IsMasterSelectionSession(party, e.Session))
+                || !party.IsSeriesParty)
             {
                 return null;
             }
 
             var episodeItemId = FindSeriesEpisodeId(party, e.Item);
             var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+            var naturalAdvanceStart = _naturalEpisodeAdvances.ClassifyPlaybackStart(
+                party.Id,
+                e.Session.Id,
+                episodeItemId,
+                DateTime.UtcNow);
             if (string.IsNullOrEmpty(episodeItemId)
                 || currentEpisode == null
                 || string.Equals(
                     currentEpisode.ItemId,
                     episodeItemId,
                     StringComparison.OrdinalIgnoreCase)
+                || naturalAdvanceStart.Disposition
+                    == NaturalEpisodePlaybackStartDisposition.RejectDifferentSession
+                || !IsMasterSelectionSession(party, e.Session)
                 || _seriesEpisodeTransitions.IsExpectedStart(
                     e.Session.Id,
                     episodeItemId,
@@ -2807,11 +2846,46 @@ namespace WatchPartyForEmby
                             $"[Party {party.Id}] Participant session {e.Session.Id} " +
                             "left dormancy after its accepted PlaybackStart");
                     }
-                    var masterResolution = ResolveMasterSession(party, e.Session);
-                    var isMaster = masterResolution.IsMaster;
                     var startedEpisodeId = FindSeriesEpisodeId(party, e.Item);
                     var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
                     var episodeSwitchTarget = GetSeriesEpisodeSwitchTarget(party, e.Item);
+                    var naturalAdvanceStart =
+                        _naturalEpisodeAdvances.ClassifyPlaybackStart(
+                            party.Id,
+                            e.Session.Id,
+                            startedEpisodeId,
+                            nowUtc);
+                    if (naturalAdvanceStart.Disposition
+                        == NaturalEpisodePlaybackStartDisposition.RejectDifferentSession)
+                    {
+                        _seriesSelections.Cancel(pendingSeriesSelection);
+                        _logger.Info(
+                            $"[Party {party.Id}] Session {e.Session.Id} cannot confirm " +
+                            $"the pending natural advance to {startedEpisodeId}; only " +
+                            $"session {naturalAdvanceStart.Authorization.SessionId} was commanded");
+                        if (currentEpisode != null)
+                        {
+                            await PlaySeriesEpisodeForSessions(
+                                party,
+                                currentEpisode,
+                                new[] { e.Session },
+                                _playbackSyncCoordinator.GetEstimatedPartyPosition(
+                                    party.Id,
+                                    party.CurrentPositionTicks,
+                                    nowUtc));
+                        }
+                        return;
+                    }
+
+                    var naturalAdvanceConfirmation = naturalAdvanceStart.Disposition
+                            == NaturalEpisodePlaybackStartDisposition.ConfirmCommandedSession
+                        ? naturalAdvanceStart.Authorization
+                        : null;
+                    var masterResolution = ResolveMasterSession(
+                        party,
+                        e.Session,
+                        naturalAdvanceConfirmation);
+                    var isMaster = masterResolution.IsMaster;
                     var isExpectedSeriesStart = _seriesEpisodeTransitions.ConsumeExpectedStart(
                         e.Session.Id,
                         startedEpisodeId,
@@ -2911,6 +2985,17 @@ namespace WatchPartyForEmby
                                                 e.PlaySessionId,
                                                 () =>
                                                 {
+                                                    if (naturalAdvanceConfirmation != null
+                                                        && !_naturalEpisodeAdvances.IsCurrent(
+                                                            naturalAdvanceConfirmation,
+                                                            DateTime.UtcNow))
+                                                    {
+                                                        _logger.Debug(
+                                                            $"[Party {party.Id}] Natural episode " +
+                                                            "advance authorization expired before commit");
+                                                        return;
+                                                    }
+
                                                     currentEpisode = SeriesPartyQueue
                                                         .GetCurrentEpisode(party);
                                                     if (currentEpisode == null
@@ -2922,13 +3007,26 @@ namespace WatchPartyForEmby
                                                         return;
                                                     }
 
-                                                    if (!SeriesPartyQueue.TrySelectEpisode(
-                                                            party,
-                                                            startedEpisodeId))
+                                                    var episodeSelectionCommitted =
+                                                        naturalAdvanceConfirmation == null
+                                                            ? SeriesPartyQueue.TrySelectEpisode(
+                                                                party,
+                                                                startedEpisodeId)
+                                                            : _naturalEpisodeAdvances.TryComplete(
+                                                                naturalAdvanceConfirmation,
+                                                                e.Session.Id,
+                                                                startedEpisodeId,
+                                                                DateTime.UtcNow,
+                                                                () => SeriesPartyQueue
+                                                                    .TrySelectEpisode(
+                                                                        party,
+                                                                        startedEpisodeId));
+                                                    if (!episodeSelectionCommitted)
                                                     {
                                                         _logger.Warn(
-                                                            $"[Party {party.Id}] Master selected episode " +
-                                                            $"{startedEpisodeId}, but it is not in the queue");
+                                                            $"[Party {party.Id}] Episode selection " +
+                                                            $"{startedEpisodeId} could not be committed; " +
+                                                            "the queue or natural-advance authorization changed");
                                                         return;
                                                     }
 
@@ -4935,6 +5033,44 @@ namespace WatchPartyForEmby
             }
         }
 
+        private PlayRequest CreateEpisodePlayRequest(
+            WatchPartyEpisode episode,
+            BaseItem episodeItem,
+            long startPositionTicks)
+        {
+            IEnumerable<string> availableMediaSourceIds = null;
+            if (episodeItem != null)
+            {
+                try
+                {
+                    var libraryOptions = _libraryManager.GetLibraryOptions(episodeItem);
+                    availableMediaSourceIds = episodeItem.GetMediaSources(
+                                false,
+                                false,
+                                libraryOptions)
+                            .Select(source => source?.Id)
+                            .ToList();
+                }
+                catch (Exception)
+                {
+                    _logger.Debug(
+                        $"[Watch Party] Could not enumerate media sources for episode " +
+                        $"{episode?.ItemId}; omitting MediaSourceId so Emby resolves it");
+                }
+            }
+            var mediaSourceId = PlaybackMediaSourceSelector.Resolve(
+                episode?.MediaSourceId,
+                availableMediaSourceIds);
+
+            return new PlayRequest
+            {
+                ItemIds = new[] { episodeItem.InternalId },
+                MediaSourceId = mediaSourceId,
+                PlayCommand = PlayCommand.PlayNow,
+                StartPositionTicks = Math.Max(0, startPositionTicks)
+            };
+        }
+
         private async Task PlaySeriesEpisodeForSessions(
             WatchPartyItem party,
             WatchPartyEpisode episode,
@@ -5014,13 +5150,10 @@ namespace WatchPartyForEmby
                         continue;
                     }
 
-                    var playRequest = new PlayRequest
-                    {
-                        ItemIds = new[] { episodeItem.InternalId },
-                        MediaSourceId = episode.MediaSourceId,
-                        PlayCommand = PlayCommand.PlayNow,
-                        StartPositionTicks = Math.Max(0, startPositionTicks)
-                    };
+                    var playRequest = CreateEpisodePlayRequest(
+                        episode,
+                        episodeItem,
+                        startPositionTicks);
                     if (attempt == 1)
                     {
                         _ = RetrySeriesEpisodeUntilConfirmedAsync(
@@ -5255,7 +5388,230 @@ namespace WatchPartyForEmby
             return Task.CompletedTask;
         }
 
-        private void ResolveStoppedPlaybackGenerationCore(
+        private Task ResolveStoppedPlaybackGenerationOrAdvanceEpisode(
+            WatchPartyItem party,
+            PlaybackStopEventArgs e,
+            long stoppedPosition,
+            string completedEpisodeId,
+            long runtimeTicks,
+            WatchPartyEpisode nextEpisode)
+        {
+            var nowUtc = DateTime.UtcNow;
+            NaturalEpisodeAdvanceBeginResult advance = null;
+            _masterSessionLifecycles.Execute(
+                party.Id,
+                () => advance = _naturalEpisodeAdvances.TryBegin(
+                    new NaturalEpisodeCompletion
+                    {
+                        PartyId = party.Id,
+                        SessionId = e.Session.Id,
+                        PlaySessionId = e.PlaySessionId,
+                        CompletedEpisodeId = completedEpisodeId,
+                        CurrentEpisodeId = SeriesPartyQueue.GetCurrentEpisode(party)?.ItemId,
+                        NextEpisodeId = nextEpisode?.ItemId,
+                        PlayedToCompletion = e.PlayedToCompletion,
+                        PositionTicks = stoppedPosition,
+                        RuntimeTicks = runtimeTicks
+                    },
+                    nowUtc,
+                    NaturalEpisodeConfirmationWindow,
+                    () => ResolveStoppedPlaybackGenerationCore(
+                        party,
+                        e,
+                        stoppedPosition)));
+
+            if (!advance.StopResolutionAttempted)
+            {
+                return ResolveStoppedPlaybackGeneration(party, e, stoppedPosition);
+            }
+
+            if (advance.Authorization == null)
+            {
+                _logger.Debug(
+                    $"[Party {party.Id}] Natural completion did not authorize next " +
+                    $"episode playback because Stop resolved as {advance.StopResolution}");
+                return Task.CompletedTask;
+            }
+
+            return DispatchNaturalEpisodeAdvanceAsync(
+                party,
+                nextEpisode,
+                advance.Authorization);
+        }
+
+        private bool CanDispatchNaturalEpisodeAdvance(
+            WatchPartyItem party,
+            NaturalEpisodeAdvanceAuthorization authorization)
+        {
+            var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+            return party != null
+                && party.IsActive
+                && authorization != null
+                && currentEpisode != null
+                && string.Equals(
+                    currentEpisode.ItemId,
+                    authorization.CompletedEpisodeId,
+                    StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrEmpty(
+                    _plugin.PartyParticipants.GetMasterSession(party.Id))
+                && _naturalEpisodeAdvances.IsCurrent(
+                    authorization,
+                    DateTime.UtcNow);
+        }
+
+        private async Task DispatchNaturalEpisodeAdvanceAsync(
+            WatchPartyItem party,
+            WatchPartyEpisode nextEpisode,
+            NaturalEpisodeAdvanceAuthorization authorization)
+        {
+            if (!_naturalEpisodeAdvances.TryBeginCommandAttempt(
+                    authorization,
+                    DateTime.UtcNow,
+                    SeriesCommandConfirmationRetryInterval,
+                    SeriesCommandMaxAttempts,
+                    out var attempt))
+            {
+                return;
+            }
+
+            if (attempt == 1)
+            {
+                _ = RetryNaturalEpisodeAdvanceUntilConfirmedAsync(
+                    party.Id,
+                    nextEpisode,
+                    authorization);
+            }
+
+            await SendNaturalEpisodeAdvanceAttemptAsync(
+                    party,
+                    nextEpisode,
+                    authorization,
+                    attempt)
+                .ConfigureAwait(false);
+        }
+
+        private async Task SendNaturalEpisodeAdvanceAttemptAsync(
+            WatchPartyItem party,
+            WatchPartyEpisode nextEpisode,
+            NaturalEpisodeAdvanceAuthorization authorization,
+            int attempt)
+        {
+            var nextEpisodeItem = nextEpisode == null
+                ? null
+                : _libraryManager.GetItemById(nextEpisode.ItemId);
+            if (nextEpisodeItem == null)
+            {
+                _naturalEpisodeAdvances.CancelParty(party.Id);
+                _logger.Warn(
+                    $"[Party {party.Id}] Natural next episode item " +
+                    $"{nextEpisode?.ItemId} was not found");
+                return;
+            }
+
+            try
+            {
+                var commandSent = await SendPlayCommandSerialAsync(
+                        party.Id,
+                        authorization.SessionId,
+                        authorization.SessionId,
+                        CreateEpisodePlayRequest(nextEpisode, nextEpisodeItem, 0),
+                        _lifetimeCts.Token,
+                        allowDormant: true,
+                        dormantAuthorizationStillValid: () =>
+                            CanDispatchNaturalEpisodeAdvance(party, authorization))
+                    .ConfigureAwait(false);
+                if (!commandSent)
+                {
+                    _logger.Warn(
+                        $"[Party {party.Id}] Natural next-episode PlayNow attempt " +
+                        $"{attempt}/{SeriesCommandMaxAttempts} was not accepted by " +
+                        $"session {authorization.SessionId}");
+                    return;
+                }
+
+                _logger.Info(
+                    $"[Party {party.Id}] Natural next-episode PlayNow for " +
+                    $"{nextEpisode.ItemId} was accepted by the server for session " +
+                    $"{authorization.SessionId} (attempt {attempt}/{SeriesCommandMaxAttempts}); " +
+                    "waiting for that exact session's PlaybackStart confirmation");
+            }
+            catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+            {
+                // Plugin shutdown cancels pending natural-advance commands.
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorException(
+                    $"[Party {party.Id}] Natural next-episode PlayNow attempt " +
+                    $"{attempt}/{SeriesCommandMaxAttempts} failed for session " +
+                    $"{authorization.SessionId}",
+                    ex);
+            }
+        }
+
+        private async Task RetryNaturalEpisodeAdvanceUntilConfirmedAsync(
+            string partyId,
+            WatchPartyEpisode nextEpisode,
+            NaturalEpisodeAdvanceAuthorization authorization)
+        {
+            try
+            {
+                while (!_lifetimeCts.IsCancellationRequested)
+                {
+                    await Task.Delay(
+                            SeriesCommandConfirmationRetryInterval,
+                            _lifetimeCts.Token)
+                        .ConfigureAwait(false);
+
+                    WatchPartyItem party;
+                    lock (_plugin.ConfigurationSyncRoot)
+                    {
+                        party = _plugin.Configuration.WatchParties.FirstOrDefault(candidate =>
+                            candidate.IsActive
+                            && string.Equals(candidate.Id, partyId, StringComparison.Ordinal));
+                    }
+                    if (party == null
+                        || !CanDispatchNaturalEpisodeAdvance(party, authorization))
+                    {
+                        return;
+                    }
+
+                    if (!_naturalEpisodeAdvances.TryBeginCommandAttempt(
+                            authorization,
+                            DateTime.UtcNow,
+                            SeriesCommandConfirmationRetryInterval,
+                            SeriesCommandMaxAttempts,
+                            out var attempt))
+                    {
+                        if (attempt >= SeriesCommandMaxAttempts)
+                        {
+                            return;
+                        }
+                        continue;
+                    }
+
+                    await SendNaturalEpisodeAdvanceAttemptAsync(
+                            party,
+                            nextEpisode,
+                            authorization,
+                            attempt)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+            {
+                // Plugin shutdown cancels the bounded confirmation loop.
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorException(
+                    $"[Party {partyId}] Natural episode confirmation retry loop failed " +
+                    $"for session {authorization.SessionId}",
+                    ex);
+            }
+        }
+
+        private StoppedPlaybackLifecycleResolution ResolveStoppedPlaybackGenerationCore(
             WatchPartyItem party,
             PlaybackStopEventArgs e,
             long stoppedPosition)
@@ -5274,7 +5630,7 @@ namespace WatchPartyForEmby
                 _logger.Debug(
                     $"[Party {party.Id}] Stop for session {e.Session.Id} no longer " +
                     "matched current membership; ignoring teardown");
-                return;
+                return StoppedPlaybackLifecycleResolution.Ignored;
             }
 
             if (resolution == PlaybackStopRegistryResolution.RetainParticipant)
@@ -5285,7 +5641,7 @@ namespace WatchPartyForEmby
                     e.PlaySessionId,
                     participant.UserName ?? participant.UserId,
                     DateTime.UtcNow);
-                return;
+                return StoppedPlaybackLifecycleResolution.RetainedParticipant;
             }
 
             CompleteParticipantRemoval(party.Id, e.Session.Id, participant);
@@ -5298,7 +5654,7 @@ namespace WatchPartyForEmby
                     freezeAtFallbackPosition: true))
             {
                 _seriesPlaybackHandoffs.ClearParty(party.Id);
-                return;
+                return StoppedPlaybackLifecycleResolution.PromotedReplacementMaster;
             }
 
             if (party.IsSeriesParty)
@@ -5315,6 +5671,7 @@ namespace WatchPartyForEmby
             // active master exists. A later cross-episode PlaybackStart still uses the
             // bounded handoff above.
             _plugin.SaveConfigurationSafely();
+            return StoppedPlaybackLifecycleResolution.RemovedMaster;
         }
 
         private Task HandlePlaybackStopped(PlaybackStopEventArgs e)
@@ -5353,6 +5710,12 @@ namespace WatchPartyForEmby
                     var stoppedPosition = Math.Max(0, currentParticipant.CurrentPositionTicks);
                     var stoppedEpisodeId = FindSeriesEpisodeId(party, e.Item);
                     var currentEpisode = SeriesPartyQueue.GetCurrentEpisode(party);
+                    var nextEpisode = SeriesPartyQueue.GetNextEpisode(party);
+                    var runtimeTicks = e.Item?.RunTimeTicks
+                        ?? (currentEpisode == null
+                            ? null
+                            : _libraryManager.GetItemById(currentEpisode.ItemId)?.RunTimeTicks)
+                        ?? 0;
                     var retainsForEpisodeTransition = party.IsSeriesParty
                         && _seriesEpisodeTransitions.ShouldRetainSessionOnStop(
                             e.Session.Id,
@@ -5365,25 +5728,22 @@ namespace WatchPartyForEmby
                             IsSeriesParty = party.IsSeriesParty,
                             IsExpectedEpisodeTransition = retainsForEpisodeTransition
                         });
-                    switch (stopDisposition)
+                    if (stopDisposition == PlaybackStopDisposition.RetainForEpisodeTransition)
                     {
-                        case PlaybackStopDisposition.RetainForEpisodeTransition:
-                            _logger.Info(
-                                $"[Party {party.Id}] Keeping session " +
-                                $"{e.Session.Id} commandable while it switches from " +
-                                $"episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
-                            return Task.CompletedTask;
-                        case PlaybackStopDisposition.ResolveStoppedGeneration:
-                            return ResolveStoppedPlaybackGeneration(
-                                party,
-                                e,
-                                stoppedPosition);
-                        default:
-                            throw new ArgumentOutOfRangeException(
-                                nameof(stopDisposition),
-                                stopDisposition,
-                                "Unknown playback stop disposition");
+                        _logger.Info(
+                            $"[Party {party.Id}] Keeping session " +
+                            $"{e.Session.Id} commandable while it switches from " +
+                            $"episode {stoppedEpisodeId} to {currentEpisode?.ItemId}");
+                        return Task.CompletedTask;
                     }
+
+                    return ResolveStoppedPlaybackGenerationOrAdvanceEpisode(
+                        party,
+                        e,
+                        stoppedPosition,
+                        stoppedEpisodeId,
+                        runtimeTicks,
+                        nextEpisode);
                 }
             }
             catch (Exception ex)
