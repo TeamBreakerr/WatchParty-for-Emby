@@ -1251,29 +1251,40 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             return { text: '仅在线上报', className: 'is-warning' };
         }
 
-        setLaunchButtonBusy(button, busy) {
+        setActionButtonBusy(button, busy, idleLabel, pendingLabel, shouldDisable) {
             if (!button) {
                 return;
             }
 
             const label = button.querySelector?.('span');
             if (busy) {
-                button.dataset.idleLabel = label?.textContent || '一键开播';
+                button.dataset.idleLabel = label?.textContent || idleLabel;
                 button.disabled = true;
                 button.setAttribute?.('aria-busy', 'true');
                 if (label) {
-                    label.textContent = '正在开播…';
+                    label.textContent = pendingLabel;
                 }
                 return;
             }
 
             if (label) {
-                label.textContent = button.dataset.idleLabel || '一键开播';
+                label.textContent = button.dataset.idleLabel || idleLabel;
             }
             delete button.dataset.idleLabel;
             button.removeAttribute?.('aria-busy');
-            const partyId = decodeURIComponent(button.dataset.partyid || '');
-            button.disabled = this.selectedLaunchTargets(partyId).size === 0;
+            button.disabled = Boolean(shouldDisable?.());
+        }
+
+        setLaunchButtonBusy(button, busy) {
+            this.setActionButtonBusy(
+                button,
+                busy,
+                '一键开播',
+                '正在开播…',
+                () => {
+                    const partyId = decodeURIComponent(button.dataset.partyid || '');
+                    return this.selectedLaunchTargets(partyId).size === 0;
+                });
         }
 
         selectedLaunchTargets(partyId) {
@@ -1308,6 +1319,76 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             });
         }
 
+        renderSeriesPartyControls(displayParty, queue, encodedPartyId) {
+            if (!displayParty.IsSeriesParty || queue.length === 0) {
+                return {
+                    featureLabels: [],
+                    episodeSwitchDetails: '',
+                    queueDetails: ''
+                };
+            }
+
+            const resolvedCurrentIndex = displayParty.CurrentEpisodeId
+                ? queue.findIndex(episode => String(episode?.ItemId || '')
+                    === String(displayParty.CurrentEpisodeId))
+                : -1;
+            const configuredEpisodeIndex = Number(displayParty.CurrentEpisodeIndex);
+            const fallbackEpisodeIndex = Number.isInteger(configuredEpisodeIndex)
+                && configuredEpisodeIndex >= 0
+                ? configuredEpisodeIndex
+                : 0;
+            const selectedEpisodeIndex = resolvedCurrentIndex >= 0
+                ? resolvedCurrentIndex
+                : Math.min(fallbackEpisodeIndex, queue.length - 1);
+            const selectedEpisode = queue[selectedEpisodeIndex];
+            const selectedEpisodeId = selectedEpisode?.ItemId || '';
+            const currentEpisodeId = displayParty.CurrentEpisodeId || selectedEpisodeId;
+            const currentEpisodeName = selectedEpisode?.ItemName
+                || displayParty.CurrentEpisodeName;
+            const featureLabels = [
+                `剧集队列：${selectedEpisodeIndex + 1}/${queue.length}`
+            ];
+            if (currentEpisodeName) {
+                featureLabels.push(`当前集：${this.escapeHtml(currentEpisodeName)}`);
+            }
+
+            const episodeSwitchDetails = `<div class="watch-party-episode-switch">
+                   <div class="watch-party-episode-switch-heading">
+                       <strong>切换当前集</strong>
+                       <span>在线播放中的客户端会从 0:00 收到同一集的切集命令；等候室或暂停房间只更新选择。</span>
+                   </div>
+                   <div class="watch-party-episode-switch-controls">
+                       <label class="watch-party-visually-hidden" for="partyEpisodeSelect-${encodedPartyId}">选择当前集</label>
+                       <select id="partyEpisodeSelect-${encodedPartyId}" class="partyEpisodeSelect" data-partyid="${encodedPartyId}" data-currentepisodeid="${this.escapeHtml(currentEpisodeId)}"${displayParty.IsActive ? '' : ' disabled'}>
+                           ${queue.map((episode, index) => {
+                               const season = String(episode?.SeasonNumber ?? '').padStart(2, '0');
+                               const number = String(episode?.EpisodeNumber ?? '').padStart(2, '0');
+                               const label = `S${season}E${number} — ${episode?.ItemName || '未命名剧集'}`;
+                               return `<option value="${this.escapeHtml(episode?.ItemId || '')}"${index === selectedEpisodeIndex ? ' selected' : ''}>${this.escapeHtml(label)}</option>`;
+                           }).join('')}
+                       </select>
+                       ${displayParty.IsActive ? `<button is="emby-button" type="button" class="button-flat btnSwitchEpisode" data-partyid="${encodedPartyId}" data-currentepisodeid="${this.escapeHtml(currentEpisodeId)}" data-episodeid="${this.escapeHtml(selectedEpisodeId)}" disabled>
+                           <span>切换当前集</span>
+                       </button>` : ''}
+                   </div>
+               </div>`;
+            const queueDetails = `<details class="watch-party-queue">
+                   <summary>查看剧集队列</summary>
+                   <ol>
+                       ${queue.map((episode, index) => {
+                           const marker = index === selectedEpisodeIndex ? ' ← 当前集' : '';
+                           const label = `S${String(episode.SeasonNumber).padStart(2, '0')}E${String(episode.EpisodeNumber).padStart(2, '0')} — ${episode.ItemName || ''}${marker}`;
+                           const currentClass = index === selectedEpisodeIndex
+                               ? ' class="watch-party-queue-current"'
+                               : '';
+                           return `<li${currentClass}>${this.escapeHtml(label)}</li>`;
+                       }).join('')}
+                   </ol>
+               </details>`;
+
+            return { featureLabels, episodeSwitchDetails, queueDetails };
+        }
+
         renderPartyList(view, config) {
             const container = view.querySelector('#activePartiesList');
             const focusedButton = container.querySelector
@@ -1337,15 +1418,20 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             parties.forEach(party => {
                 const partyId = String(party.Id || '');
                 const runtime = this.partyRuntimeById?.get(String(party.Id || '')) || party;
-                const participants = runtime.Participants || [];
+                // The persisted configuration owns the queue and room metadata;
+                // the runtime endpoint owns mutable playback state.  Merge them so
+                // a waiting-room transition or automatic episode change is visible
+                // immediately without losing the queue needed by the selector.
+                const displayParty = Object.assign({}, party, runtime || {});
+                const participants = displayParty.Participants || [];
                 const launchTargetsLoaded = this.launchTargetsByParty?.has(partyId) === true;
                 const launchTargets = this.launchTargetsByParty?.get(partyId) || [];
                 const selectedLaunchTargetIds = this.selectedLaunchTargets(partyId);
                 const onlineCount = participants.filter(participant =>
                     participant.IsOnline && !participant.IsDormant).length;
-                const masterOnline = runtime.MasterOnline === true
+                const masterOnline = displayParty.MasterOnline === true
                     || participants.some(participant => participant.IsHost && participant.IsOnline);
-                const playbackState = runtime.IsPlaying ? '播放中' : '已暂停';
+                const playbackState = displayParty.IsPlaying ? '播放中' : '已暂停';
                 const participantRows = participants.map(participant => {
                     const controlState = this.participantControlState(participant);
                     const role = participant.IsHost ? 'Master' : '参与者';
@@ -1363,7 +1449,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 const runtimeDetails = `
                     <div class="watch-party-runtime">
                         <div class="watch-party-runtime-summary">
-                            <span>${playbackState} · ${this.formatPosition(runtime.CurrentPositionTicks)}</span>
+                            <span>${playbackState} · ${this.formatPosition(displayParty.CurrentPositionTicks)}</span>
                             <span>Master：${masterOnline ? '在线' : '离线'}</span>
                             <span>客户端：${onlineCount}/${participants.length} 在线</span>
                         </div>
@@ -1406,74 +1492,58 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                                 : '正在读取在线 Session……'}</div>`}
                         </div>
                     </div>`;
-                const statusText = party.IsActive ? '已启用' : '已停用';
-                const statusClass = party.IsActive ? 'is-active' : 'is-inactive';
-                const created = party.CreatedDate
-                    ? new Date(party.CreatedDate).toLocaleDateString()
+                const statusText = displayParty.IsActive ? '已启用' : '已停用';
+                const statusClass = displayParty.IsActive ? 'is-active' : 'is-inactive';
+                const created = displayParty.CreatedDate
+                    ? new Date(displayParty.CreatedDate).toLocaleDateString()
                     : '未知';
                 const encodedPartyId = encodeURIComponent(String(party.Id || ''));
-                const typeText = party.ItemType === 'Episode'
+                const typeText = displayParty.ItemType === 'Episode'
                     ? '剧集'
-                    : party.ItemType === 'Movie'
+                    : displayParty.ItemType === 'Movie'
                         ? '电影'
-                        : party.ItemType === 'Series' ? '电视剧' : '其他';
+                        : displayParty.ItemType === 'Series' ? '电视剧' : '其他';
+
+                const queue = party.EpisodeQueue || [];
+                const seriesControls = this.renderSeriesPartyControls(
+                    displayParty,
+                    queue,
+                    encodedPartyId);
 
                 const features = [];
-                if (party.IsWaitingRoom) features.push('等候室');
-                if (party.AutoKickInactiveMinutes) features.push('自动移除不活跃用户');
-                if (party.IsSeriesParty) {
-                    const episodeCount = (party.EpisodeQueue || []).length;
-                    const currentIndex = Math.max(0, party.CurrentEpisodeIndex || 0);
-                    const currentEpisode = episodeCount > currentIndex ? party.EpisodeQueue[currentIndex] : null;
-                    features.push(`剧集队列：${Math.min(currentIndex + 1, episodeCount)}/${episodeCount}`);
-                    if (currentEpisode && currentEpisode.ItemName) {
-                        features.push(`当前集：${this.escapeHtml(currentEpisode.ItemName)}`);
-                    }
-                }
+                if (displayParty.IsWaitingRoom) features.push('等候室');
+                if (displayParty.AutoKickInactiveMinutes) features.push('自动移除不活跃用户');
+                features.push(...seriesControls.featureLabels);
                 const featuresText = features.length > 0 ? `<br>功能：${features.join('，')}` : '';
-                const queueDetails = party.IsSeriesParty && (party.EpisodeQueue || []).length > 0
-                    ? `<details class="watch-party-queue">
-                           <summary>查看剧集队列</summary>
-                           <ol>
-                               ${party.EpisodeQueue.map((episode, index) => {
-                                   const marker = index === party.CurrentEpisodeIndex ? ' ← 当前集' : '';
-                                   const label = `S${String(episode.SeasonNumber).padStart(2, '0')}E${String(episode.EpisodeNumber).padStart(2, '0')} — ${episode.ItemName || ''}${marker}`;
-                                   const currentClass = index === party.CurrentEpisodeIndex
-                                       ? ' class="watch-party-queue-current"'
-                                       : '';
-                                   return `<li${currentClass}>${this.escapeHtml(label)}</li>`;
-                               }).join('')}
-                           </ol>
-                       </details>`
-                    : '';
 
                 html += `
                     <div class="watch-party-list-card">
                         <div>
                             <h3 class="watch-party-list-title">
-                                ${this.escapeHtml((party.IsSeriesParty && party.SeriesName) || party.ItemName || '未命名房间')}
+                                ${this.escapeHtml((displayParty.IsSeriesParty && displayParty.SeriesName) || displayParty.ItemName || '未命名房间')}
                                 <span class="watch-party-status ${statusClass}">${statusText}</span>
                             </h3>
                             <div class="watch-party-list-meta">
                                 类型：${typeText} ·
-                                上限：${party.MaxParticipants || 50} 人 ·
+                                上限：${displayParty.MaxParticipants || 50} 人 ·
                                 创建日期：${created}${featuresText}
                             </div>
-                            ${queueDetails}
+                            ${seriesControls.episodeSwitchDetails}
+                            ${seriesControls.queueDetails}
                             ${runtimeDetails}
-                            ${party.IsActive ? launchTargetDetails : ''}
+                            ${displayParty.IsActive ? launchTargetDetails : ''}
                         </div>
                         <div class="watch-party-list-actions">
-                            ${party.IsActive ? `
+                            ${displayParty.IsActive ? `
                             <button is="emby-button" type="button" class="button-flat btnSyncParty" data-partyid="${encodedPartyId}" title="向勾选的在线 Session 播放房间选定的具体版本"${selectedLaunchTargetIds.size > 0 ? '' : ' disabled'}>
                                 <span>一键开播</span>
                             </button>` : ''}
-                            ${party.IsActive && party.IsWaitingRoom ? `
+                            ${displayParty.IsActive && displayParty.IsWaitingRoom ? `
                             <button is="emby-button" type="button" class="button-flat btnStartParty" data-partyid="${encodedPartyId}">
                                 <span>结束等候室并开始</span>
                             </button>` : ''}
                             <button is="emby-button" type="button" class="button-flat btnToggleParty" data-partyid="${encodedPartyId}">
-                                <span>${party.IsActive ? '停用' : '启用'}</span>
+                                <span>${displayParty.IsActive ? '停用' : '启用'}</span>
                             </button>
                             <button is="emby-button" type="button" class="button-flat btnDeleteParty" data-partyid="${encodedPartyId}">
                                 <span>删除</span>
@@ -1504,6 +1574,29 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 btn.addEventListener('click', (e) => {
                     const partyId = decodeURIComponent(e.target.closest('button').dataset.partyid);
                     this.startParty(view, partyId);
+                });
+            });
+
+            container.querySelectorAll('.partyEpisodeSelect').forEach(select => {
+                select.addEventListener('change', (event) => {
+                    const input = event.currentTarget || event.target;
+                    const partyId = decodeURIComponent(input.dataset.partyid || '');
+                    const button = Array.from(container.querySelectorAll('.btnSwitchEpisode'))
+                        .find(candidate => decodeURIComponent(candidate.dataset.partyid || '') === partyId);
+                    if (button) {
+                        button.dataset.episodeid = input.value || '';
+                        const currentEpisodeId = button.dataset.currentepisodeid || '';
+                        button.disabled = !input.value || input.value === currentEpisodeId;
+                    }
+                });
+            });
+
+            container.querySelectorAll('.btnSwitchEpisode').forEach(btn => {
+                btn.addEventListener('click', (event) => {
+                    const button = event.currentTarget || event.target.closest('button');
+                    const partyId = decodeURIComponent(button.dataset.partyid || '');
+                    const episodeItemId = button.dataset.episodeid || '';
+                    this.switchPartyEpisode(view, partyId, episodeItemId, button);
                 });
             });
 
@@ -1575,8 +1668,13 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     this.reconcileLaunchTargetSelection(partyId, targets));
                 const fingerprint = JSON.stringify(parties.map(party => ({
                     Id: party.Id,
+                    IsActive: party.IsActive,
+                    IsWaitingRoom: party.IsWaitingRoom,
                     IsPlaying: party.IsPlaying,
                     CurrentPositionTicks: party.CurrentPositionTicks,
+                    CurrentEpisodeId: party.CurrentEpisodeId,
+                    CurrentEpisodeIndex: party.CurrentEpisodeIndex,
+                    CurrentEpisodeName: party.CurrentEpisodeName,
                     MasterOnline: party.MasterOnline,
                     Participants: (party.Participants || []).map(participant => ({
                         SessionId: participant.SessionId,
@@ -1653,6 +1751,69 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             });
         }
 
+        setEpisodeSwitchButtonBusy(button, busy) {
+            this.setActionButtonBusy(
+                button,
+                busy,
+                '切换当前集',
+                '正在切换…',
+                () => {
+                    const selectedEpisodeId = button.dataset.episodeid || '';
+                    const currentEpisodeId = button.dataset.currentepisodeid || '';
+                    return !selectedEpisodeId || selectedEpisodeId === currentEpisodeId;
+                });
+        }
+
+        switchPartyEpisode(view, partyId, episodeItemId, button = null) {
+            if (!episodeItemId) {
+                toast({ type: 'error', text: '请选择要切换的剧集。' });
+                return Promise.resolve({ Accepted: false, Message: '请选择要切换的剧集。' });
+            }
+            if (button
+                && button.dataset.currentepisodeid
+                && button.dataset.currentepisodeid === episodeItemId) {
+                toast({ type: 'info', text: '这已经是房间当前集。' });
+                return Promise.resolve({ Accepted: false, Message: '这已经是房间当前集。' });
+            }
+
+            this.setEpisodeSwitchButtonBusy(button, true);
+            return ApiClient.ajax({
+                type: 'POST',
+                url: ApiClient.getUrl(`WatchParty/${encodeURIComponent(partyId)}/Episode`),
+                dataType: 'json',
+                contentType: 'application/json',
+                data: JSON.stringify({ EpisodeItemId: episodeItemId })
+            }).then(result => {
+                this.setEpisodeSwitchButtonBusy(button, false);
+                const message = result?.Message || (result?.Accepted
+                    ? '已切换当前集。'
+                    : '当前集切换失败。');
+                toast({
+                    type: result?.Accepted ? 'success' : 'error',
+                    text: message
+                });
+                if (!result?.Accepted) {
+                    return result;
+                }
+
+                // Reload the persisted configuration so the selector and queue marker
+                // reflect the server's authoritative episode after the transition.
+                return getPluginConfiguration().then(config => {
+                    if (this.isViewPaused) {
+                        return result;
+                    }
+                    this.config = config;
+                    this.renderPartyList(view, config);
+                    this.refreshPartyRuntimeStatus(view);
+                    return result;
+                }).catch(() => result);
+            }).catch(error => {
+                this.setEpisodeSwitchButtonBusy(button, false);
+                toast({ type: 'error', text: `切换当前集失败：${error.message || error}` });
+                throw error;
+            });
+        }
+
         startParty(view, partyId) {
             loading.show();
             ApiClient.ajax({
@@ -1713,6 +1874,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
             loading.show();
             const requestId = (this.dataLoadRequestId || 0) + 1;
             this.dataLoadRequestId = requestId;
+            this.partyRuntimeRequestVersion = (this.partyRuntimeRequestVersion || 0) + 1;
 
             getPluginConfiguration().then(config => {
                 if (this.isViewPaused || this.dataLoadRequestId !== requestId) {
@@ -1720,6 +1882,12 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                     return;
                 }
                 this.config = config;
+                // Do not reuse snapshots from a previous page visit. The next
+                // runtime response will repopulate these maps and overlay mutable
+                // playback state onto the persisted room configuration.
+                this.partyRuntimeById = new Map();
+                this.launchTargetsByParty = new Map();
+                this.partyRuntimeFingerprint = null;
                 this.contentSourceMode = 'recent';
                 view.querySelector('#contentSourceMode').value = 'recent';
 

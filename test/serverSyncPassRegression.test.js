@@ -92,15 +92,42 @@ test('a retained follower Stop forces its next accepted Start through reconcilia
 test('cross-episode handoff still sends a bounded PlayNow command path', () => {
     const requestFactory = methodBody(
         'private PlayRequest CreateEpisodePlayRequest',
-        'private async Task PlaySeriesEpisodeForSessions');
+        'private async Task<int> PlaySeriesEpisodeForSessions');
     const episodeDispatcher = methodBody(
-        'private async Task PlaySeriesEpisodeForSessions',
+        'private async Task<int> PlaySeriesEpisodeForSessions',
         'private async Task RetrySeriesEpisodeUntilConfirmedAsync');
 
     assert.match(requestFactory, /PlayCommand = PlayCommand\.PlayNow/);
     assert.match(requestFactory, /PlaybackMediaSourceSelector\.Resolve/);
     assert.match(episodeDispatcher, /CreateEpisodePlayRequest/);
     assert.match(episodeDispatcher, /TryBeginCommandAttempt/);
+});
+
+test('configuration episode switching uses the generation-safe series PlayNow path', () => {
+    const episodeSwitch = methodBody(
+        'public async Task<PartyEpisodeSelectionResult> SelectPartyEpisodeNowAsync',
+        'private bool HasPlaybackControlConnection');
+
+    assert.match(episodeSwitch, /EnterSeriesTransitionAsync/);
+    assert.match(episodeSwitch, /PartyEpisodeSelectionCoordinator\.TryCommit/);
+    assert.match(episodeSwitch, /hasDispatchableMaster/);
+    assert.match(episodeSwitch, /MasterCanReceivePlayback\s*=\s*hasDispatchableMaster/);
+    assert.match(
+        episodeSwitch,
+        /if \(shouldDispatch\)[\s\S]*?ResetSeriesEpisodeSyncState/);
+    assert.match(episodeSwitch, /PlaySeriesEpisodeForSessions/);
+    assert.match(episodeSwitch, /CommandTargetCount = commandSentCount/);
+    assert.match(source, /private PlayRequest CreateEpisodePlayRequest/);
+});
+
+test('series transition targets require a live command transport', () => {
+    const targetSelection = methodBody(
+        'private List<SessionInfo> GetSeriesTransitionSessions',
+        'private IReadOnlyCollection<SeriesPlaybackHandoffSession>');
+
+    assert.match(targetSelection, /PartySessionLivenessPolicy\.IsOnline/);
+    assert.match(targetSelection, /SupportsRemoteControlledPlayback/);
+    assert.match(targetSelection, /HasPlaybackControlConnection/);
 });
 
 test('manual series launch validates the selected episode media source', () => {

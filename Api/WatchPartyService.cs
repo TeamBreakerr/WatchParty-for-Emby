@@ -118,6 +118,27 @@ namespace WatchPartyForEmby.Api
         public string UserId { get; set; }
     }
 
+    [Route("/WatchParty/{Id}/Episode", "POST", Summary = "Select and play a series episode")]
+    [Authenticated]
+    public class SelectPartyEpisodeRequest : IReturn<SelectPartyEpisodeResponse>
+    {
+        [ApiMember(Name = "Id", Description = "Party ID", IsRequired = true)]
+        public string Id { get; set; }
+
+        [ApiMember(Name = "EpisodeItemId", Description = "Queued episode item ID", IsRequired = true)]
+        public string EpisodeItemId { get; set; }
+    }
+
+    public class SelectPartyEpisodeResponse
+    {
+        public bool Accepted { get; set; }
+        public string Message { get; set; }
+        public string EpisodeItemId { get; set; }
+        public string EpisodeName { get; set; }
+        public int EpisodeIndex { get; set; }
+        public int CommandTargetCount { get; set; }
+    }
+
     [Route("/WatchParty/{Id}/Sync", "POST", Summary = "Synchronize online party clients")]
     [Authenticated]
     public class SynchronizePartyRequest : IReturn<SynchronizePartyResponse>
@@ -262,7 +283,7 @@ namespace WatchPartyForEmby.Api
                     IsPlaying = party.IsPlaying,
                     IsSeriesParty = party.IsSeriesParty,
                     SeriesName = party.SeriesName,
-                    CurrentEpisodeId = party.CurrentEpisodeId,
+                    CurrentEpisodeId = currentEpisode?.ItemId ?? party.CurrentEpisodeId,
                     CurrentEpisodeName = currentEpisode?.ItemName,
                     CurrentEpisodeIndex = party.CurrentEpisodeIndex,
                     EpisodeCount = party.EpisodeQueue?.Count ?? 0,
@@ -391,28 +412,43 @@ namespace WatchPartyForEmby.Api
             await plugin.WaitingRoomStarts.StartAsync(request.Id).ConfigureAwait(false);
         }
 
+        public async Task<object> Post(SelectPartyEpisodeRequest request)
+        {
+            if (request == null)
+            {
+                throw new ArgumentException("A target episode is required", nameof(request));
+            }
+
+            GetAuthorizedPartyForControl(
+                request.Id,
+                "Only the master can select a party episode");
+
+            var result = ServerEntryPoint.Current == null
+                ? new PartyEpisodeSelectionResult
+                {
+                    Accepted = false,
+                    Message = "播放同步服务尚未启动"
+                }
+                : await ServerEntryPoint.Current
+                    .SelectPartyEpisodeNowAsync(request.Id, request.EpisodeItemId)
+                    .ConfigureAwait(false);
+
+            return new SelectPartyEpisodeResponse
+            {
+                Accepted = result.Accepted,
+                Message = result.Message,
+                EpisodeItemId = result.EpisodeItemId,
+                EpisodeName = result.EpisodeName,
+                EpisodeIndex = result.EpisodeIndex,
+                CommandTargetCount = result.CommandTargetCount
+            };
+        }
+
         public async Task<object> Post(SynchronizePartyRequest request)
         {
-            var currentUser = GetAuthenticatedUser();
-            var plugin = Plugin.Instance;
-            WatchPartyItem party;
-            lock (plugin.ConfigurationSyncRoot)
-            {
-                party = plugin.Configuration.WatchParties.FirstOrDefault(p => p.Id == request.Id);
-            }
-
-            if (party == null)
-            {
-                throw new ArgumentException($"Party {request.Id} not found");
-            }
-
-            if (!WatchPartyAuthorizationPolicy.CanSynchronizeParty(
-                    party,
-                    currentUser.Id.ToString(),
-                    currentUser.Policy?.IsAdministrator == true))
-            {
-                throw new UnauthorizedAccessException("Only the master can synchronize a party");
-            }
+            GetAuthorizedPartyForControl(
+                request.Id,
+                "Only the master can synchronize a party");
 
             var result = ServerEntryPoint.Current == null
                 ? new PartyManualSynchronizationResult
@@ -512,6 +548,35 @@ namespace WatchPartyForEmby.Api
             }
 
             return authorization.User;
+        }
+
+        private WatchPartyItem GetAuthorizedPartyForControl(
+            string partyId,
+            string denialMessage)
+        {
+            var currentUser = GetAuthenticatedUser();
+            var plugin = Plugin.Instance;
+            WatchPartyItem party;
+            lock (plugin.ConfigurationSyncRoot)
+            {
+                party = plugin.Configuration.WatchParties.FirstOrDefault(candidate =>
+                    candidate.Id == partyId);
+            }
+
+            if (party == null)
+            {
+                throw new ArgumentException($"Party {partyId} not found");
+            }
+
+            if (!WatchPartyAuthorizationPolicy.CanSynchronizeParty(
+                    party,
+                    currentUser.Id.ToString(),
+                    currentUser.Policy?.IsAdministrator == true))
+            {
+                throw new UnauthorizedAccessException(denialMessage);
+            }
+
+            return party;
         }
 
         private List<ParticipantInfo> ProjectParticipants(string partyId)

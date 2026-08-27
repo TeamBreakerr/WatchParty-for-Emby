@@ -585,6 +585,98 @@ test('room overview count stays in sync with the rendered room list', () => {
     assert.match(view.querySelector('#activePartiesList').innerHTML, /1 个启用/);
 });
 
+test('series room overview lets the operator choose and switch the current episode', async () => {
+    const view = createView();
+    const controller = loadController([], []);
+    controller.escapeHtml = value => String(value ?? '');
+    controller.renderPartyList(view, {
+        WatchParties: [
+            {
+                Id: 'series-room',
+                ItemName: 'Example Series',
+                SeriesName: 'Example Series',
+                ItemType: 'Episode',
+                IsSeriesParty: true,
+                IsActive: true,
+                IsWaitingRoom: false,
+                CurrentEpisodeIndex: 0,
+                EpisodeQueue: [
+                    { ItemId: 's1e1', ItemName: 'Pilot', SeasonNumber: 1, EpisodeNumber: 1 },
+                    { ItemId: 's1e2', ItemName: 'Second', SeasonNumber: 1, EpisodeNumber: 2 }
+                ],
+                CreatedDate: '2026-08-22T00:00:00Z'
+            }
+        ]
+    });
+
+    const html = view.querySelector('#activePartiesList').innerHTML;
+    assert.match(html, /partyEpisodeSelect/);
+    assert.match(html, /value="s1e1"[^>]*selected/);
+    assert.match(html, /value="s1e2"/);
+    assert.match(html, /btnSwitchEpisode/);
+    assert.match(html, /<span>切换当前集<\/span>/);
+    assert.match(html, /btnSwitchEpisode[^>]* disabled/);
+
+    let request;
+    global.ApiClient.ajax = async options => {
+        request = options;
+        return { Accepted: true, Message: '已切换当前集' };
+    };
+    await controller.switchPartyEpisode(
+        view,
+        'series-room',
+        's1e2',
+        element({ dataset: { partyid: 'series-room' } }));
+
+    assert.equal(request.type, 'POST');
+    assert.match(request.url, /WatchParty\/series-room\/Episode/);
+    assert.deepEqual(JSON.parse(request.data), { EpisodeItemId: 's1e2' });
+});
+
+test('room overview overlays runtime waiting-room and episode state over saved configuration', () => {
+    const view = createView();
+    const controller = loadController([], []);
+    controller.escapeHtml = value => String(value ?? '');
+    controller.partyRuntimeById = new Map([
+        ['series-room', {
+            Id: 'series-room',
+            IsActive: true,
+            IsWaitingRoom: false,
+            IsPlaying: true,
+            CurrentEpisodeId: 's1e2',
+            CurrentEpisodeIndex: 1,
+            CurrentEpisodeName: 'Second',
+            CurrentPositionTicks: 420000000,
+            Participants: []
+        }]
+    ]);
+
+    controller.renderPartyList(view, {
+        WatchParties: [{
+            Id: 'series-room',
+            ItemName: 'Example Series',
+            SeriesName: 'Example Series',
+            ItemType: 'Episode',
+            IsSeriesParty: true,
+            IsActive: true,
+            IsWaitingRoom: true,
+            CurrentEpisodeId: 's1e1',
+            CurrentEpisodeIndex: 0,
+            EpisodeQueue: [
+                { ItemId: 's1e1', ItemName: 'Pilot', SeasonNumber: 1, EpisodeNumber: 1 },
+                { ItemId: 's1e2', ItemName: 'Second', SeasonNumber: 1, EpisodeNumber: 2 }
+            ],
+            CreatedDate: '2026-08-22T00:00:00Z'
+        }]
+    });
+
+    const html = view.querySelector('#activePartiesList').innerHTML;
+    assert.match(html, /播放中 · 0:42/);
+    assert.match(html, /当前集：Second/);
+    assert.doesNotMatch(html, /结束等候室并开始/);
+    assert.match(html, /value="s1e2"[^>]*selected/);
+});
+
 test('room overview separates room clients from selectable online sessions on every client type', () => {
     const view = createView();
     const controller = loadController([], []);

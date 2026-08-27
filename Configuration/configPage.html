@@ -691,6 +691,49 @@
             font-weight: 650;
         }
 
+        .watch-party-episode-switch {
+            display: grid;
+            gap: 0.65rem;
+            margin-top: 0.8rem;
+            padding: 0.8rem;
+            border: 1px solid #c9dae8;
+            border-radius: 11px;
+            background: #f4f8fb;
+        }
+
+        .watch-party-episode-switch-heading {
+            display: grid;
+            gap: 0.15rem;
+        }
+
+        .watch-party-episode-switch-heading strong {
+            color: var(--wp-text-strong);
+            font-size: 0.84rem;
+        }
+
+        .watch-party-episode-switch-heading span {
+            color: var(--wp-text-muted);
+            font-size: 0.74rem;
+            line-height: 1.45;
+        }
+
+        .watch-party-episode-switch-controls {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 0.6rem;
+        }
+
+        .watch-party-episode-switch-controls select {
+            min-width: 0;
+        }
+
+        .watch-party-episode-switch-controls .btnSwitchEpisode {
+            min-width: 7.5rem;
+            color: var(--wp-blue);
+            font-weight: 650;
+        }
+
         .watch-party-step-list {
             display: flex;
             flex-direction: column;
@@ -1216,6 +1259,14 @@
 
             .watch-party-list-actions .emby-button {
                 min-height: 3rem;
+            }
+
+            .watch-party-episode-switch-controls {
+                grid-template-columns: 1fr;
+            }
+
+            .watch-party-episode-switch-controls .btnSwitchEpisode {
+                width: 100%;
             }
 
             .autocomplete-dropdown {

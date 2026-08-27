@@ -373,6 +373,223 @@ namespace WatchPartyForEmby
             return result;
         }
 
+        /// <summary>
+        /// Selects a queued episode from the embedded configuration page. When the
+        /// room is actively playing, the selection is committed as one transition and
+        /// the same exact episode/media source is sent to every online room session.
+        /// A waiting or paused room keeps that state and only changes its stored current
+        /// queue item; this operation does not send a playback command in that state.
+        /// </summary>
+        public async Task<PartyEpisodeSelectionResult> SelectPartyEpisodeNowAsync(
+            string partyId,
+            string episodeItemId)
+        {
+            if (string.IsNullOrWhiteSpace(partyId)
+                || string.IsNullOrWhiteSpace(episodeItemId))
+            {
+                return new PartyEpisodeSelectionResult
+                {
+                    Accepted = false,
+                    Message = "请选择要切换的剧集"
+                };
+            }
+
+            WatchPartyItem party;
+            lock (_plugin.ConfigurationSyncRoot)
+            {
+                party = _plugin.Configuration.WatchParties.FirstOrDefault(candidate =>
+                    candidate.IsActive
+                    && string.Equals(candidate.Id, partyId, StringComparison.Ordinal));
+            }
+
+            if (party == null)
+            {
+                return new PartyEpisodeSelectionResult
+                {
+                    Accepted = false,
+                    Message = "房间不存在或尚未启用"
+                };
+            }
+
+            var selectedItem = _libraryManager.GetItemById(episodeItemId);
+
+            // Serialize this operation with master-driven and natural episode
+            // transitions. The transition itself is committed under the per-party
+            // lifecycle gate; no await is performed while that gate is held.
+            await EnterSeriesTransitionAsync(party.Id, _lifetimeCts.Token)
+                .ConfigureAwait(false);
+            try
+            {
+                MasterEpisodeSelectionCommit selectionCommit = null;
+                PartyEpisodeSelectionCommit episodeAttempt = null;
+                string rejectionMessage = null;
+                var nowUtc = DateTime.UtcNow;
+                _masterSessionLifecycles.Execute(
+                    party.Id,
+                    () =>
+                    {
+                        var wasWaitingRoom = party.IsWaitingRoom;
+                        var wasPlaying = party.IsPlaying;
+                        var masterSession = GetActiveMasterSession(party);
+                        var transitionSessions = wasPlaying && !wasWaitingRoom
+                            ? GetSeriesTransitionSessions(party, masterSession)
+                            : new List<SessionInfo>();
+                        var hasDispatchableMaster = masterSession != null
+                            && transitionSessions.Any(session => string.Equals(
+                                session.Id,
+                                masterSession.Id,
+                                StringComparison.Ordinal));
+                        episodeAttempt = PartyEpisodeSelectionCoordinator.TryCommit(
+                            party,
+                            episodeItemId,
+                            new PartyEpisodeSelectionContext
+                            {
+                                IsWaitingRoom = wasWaitingRoom,
+                                IsPlaying = wasPlaying,
+                                IsEpisodeAvailable = selectedItem != null,
+                                HasActiveMaster = masterSession != null,
+                                MasterCanReceivePlayback =
+                                    hasDispatchableMaster
+                            });
+                        if (!episodeAttempt.Accepted)
+                        {
+                            rejectionMessage = EpisodeSelectionRejectionMessage(
+                                episodeAttempt.Disposition);
+                            return;
+                        }
+                        var shouldDispatch = episodeAttempt.ShouldDispatch;
+
+                        // A configuration-page selection supersedes a pending natural
+                        // advance or a playback-start selection from the old episode.
+                        _seriesSelections.ClearParty(party.Id);
+                        _naturalEpisodeAdvances.CancelParty(party.Id);
+
+                        if (shouldDispatch)
+                        {
+                            // These clients are about to replace their players, so old
+                            // episode markers must not influence the new generation.
+                            ResetSeriesEpisodeSyncState(party);
+                        }
+                        party.CurrentPositionTicks = 0;
+                        party.IsPlaying = shouldDispatch;
+                        _playbackSyncCoordinator.UpdateMasterPosition(
+                            party.Id,
+                            0,
+                            shouldDispatch,
+                            nowUtc,
+                            TimeSpan.FromSeconds(party.SyncToleranceSeconds).Ticks);
+                        _plugin.SaveConfigurationSafely();
+                        _lastProgressCheckpoint[party.Id] = nowUtc;
+
+                        selectionCommit = new MasterEpisodeSelectionCommit
+                        {
+                            Episode = episodeAttempt.Episode,
+                            Sessions = transitionSessions,
+                            HandoffAuthorizations = null,
+                            Transition = shouldDispatch
+                                ? _partyPlaybackTransitions.Begin(party.Id)
+                                : null
+                        };
+                    });
+
+                if (selectionCommit == null)
+                {
+                    return new PartyEpisodeSelectionResult
+                    {
+                        Accepted = false,
+                        Message = rejectionMessage ?? "当前集切换未提交",
+                        EpisodeItemId = episodeAttempt?.Episode?.ItemId ?? episodeItemId,
+                        EpisodeName = episodeAttempt?.Episode?.ItemName,
+                        EpisodeIndex = party.CurrentEpisodeIndex
+                    };
+                }
+
+                if (selectionCommit.Transition == null)
+                {
+                    var message = party.IsWaitingRoom
+                        ? "已切换当前集；房间仍在等候室，尚未向客户端发送播放命令"
+                        : "已切换当前集；房间当前未播放，尚未向客户端发送播放命令";
+                    return new PartyEpisodeSelectionResult
+                    {
+                        Accepted = true,
+                        Message = message,
+                        EpisodeItemId = selectionCommit.Episode.ItemId,
+                        EpisodeName = selectionCommit.Episode.ItemName,
+                        EpisodeIndex = party.CurrentEpisodeIndex,
+                        CommandTargetCount = 0
+                    };
+                }
+
+                if (selectionCommit.Sessions.Count == 0)
+                {
+                    _partyPlaybackTransitions.Complete(selectionCommit.Transition);
+                    return new PartyEpisodeSelectionResult
+                    {
+                        Accepted = true,
+                        Message = "已切换当前集；当前没有在线可控客户端，等待客户端上线后再开播",
+                        EpisodeItemId = selectionCommit.Episode.ItemId,
+                        EpisodeName = selectionCommit.Episode.ItemName,
+                        EpisodeIndex = party.CurrentEpisodeIndex,
+                        CommandTargetCount = 0
+                    };
+                }
+
+                try
+                {
+                    var commandSentCount = await PlaySeriesEpisodeForSessions(
+                            party,
+                            selectionCommit.Episode,
+                            selectionCommit.Sessions,
+                            0,
+                            selectionCommit.Transition.Token)
+                        .ConfigureAwait(false);
+
+                    return new PartyEpisodeSelectionResult
+                    {
+                        Accepted = true,
+                        Message = commandSentCount > 0
+                            ? $"已切换到 {selectionCommit.Episode.ItemName}，" +
+                                $"已向 {commandSentCount} 台在线客户端发起切集命令；等待客户端确认"
+                            : $"已切换到 {selectionCommit.Episode.ItemName}；" +
+                                "本次没有客户端接受切集命令",
+                        EpisodeItemId = selectionCommit.Episode.ItemId,
+                        EpisodeName = selectionCommit.Episode.ItemName,
+                        EpisodeIndex = party.CurrentEpisodeIndex,
+                        CommandTargetCount = commandSentCount
+                    };
+                }
+                finally
+                {
+                    _partyPlaybackTransitions.Complete(selectionCommit.Transition);
+                }
+            }
+            finally
+            {
+                ExitSeriesTransition(party.Id);
+            }
+        }
+
+        private static string EpisodeSelectionRejectionMessage(
+            PartyEpisodeSelectionDisposition disposition)
+        {
+            return disposition switch
+            {
+                PartyEpisodeSelectionDisposition.AlreadyCurrent =>
+                    "这已经是房间当前集",
+                PartyEpisodeSelectionDisposition.RejectNotSeriesParty =>
+                    "只有电视剧房间可以切换当前集",
+                PartyEpisodeSelectionDisposition.RejectEpisodeNotQueued =>
+                    "目标剧集不在当前房间队列中",
+                PartyEpisodeSelectionDisposition.RejectEpisodeUnavailable =>
+                    "目标剧集已不在 Emby 媒体库中",
+                PartyEpisodeSelectionDisposition.RejectNoActiveMaster =>
+                    "当前没有在线 Master，无法安全切换当前集",
+                PartyEpisodeSelectionDisposition.RejectMasterNotControllable =>
+                    "当前 Master 没有可用控制连接，无法安全切换当前集",
+                _ => "当前集切换未提交"
+            };
+        }
+
         private bool HasPlaybackControlConnection(string sessionId)
         {
             var session = _sessionManager.Sessions.FirstOrDefault(candidate =>
@@ -4847,7 +5064,9 @@ namespace WatchPartyForEmby
             return _sessionManager.Sessions
                 .Where(session => session != null
                     && sessionIds.Contains(session.Id)
-                    && PartySessionLivenessPolicy.IsOnline(session, nowUtc))
+                    && PartySessionLivenessPolicy.IsOnline(session, nowUtc)
+                    && SupportsRemoteControlledPlayback(session)
+                    && HasPlaybackControlConnection(session.Id))
                 .GroupBy(session => session.Id, StringComparer.Ordinal)
                 .Select(group => group.First())
                 .ToList();
@@ -5071,7 +5290,7 @@ namespace WatchPartyForEmby
             };
         }
 
-        private async Task PlaySeriesEpisodeForSessions(
+        private async Task<int> PlaySeriesEpisodeForSessions(
             WatchPartyItem party,
             WatchPartyEpisode episode,
             IReadOnlyCollection<SessionInfo> sessions,
@@ -5080,6 +5299,7 @@ namespace WatchPartyForEmby
             IReadOnlyDictionary<string, SeriesPlaybackHandoffSession>
                 handoffAuthorizations = null)
         {
+            var commandSentCount = 0;
             var commandCancellationToken = cancellationToken.CanBeCanceled
                 ? cancellationToken
                 : _lifetimeCts.Token;
@@ -5087,7 +5307,7 @@ namespace WatchPartyForEmby
             if (episodeItem == null)
             {
                 _logger.Warn($"[Party {party.Id}] Cannot play next episode because item {episode?.ItemId} was not found");
-                return;
+                return commandSentCount;
             }
 
             foreach (var session in sessions)
@@ -5181,6 +5401,7 @@ namespace WatchPartyForEmby
                             episode.ItemId);
                         continue;
                     }
+                    commandSentCount++;
                     _logger.Info(
                         $"[Party {party.Id}] Episode command sent to {session.UserName} " +
                         $"for {episode.ItemName} (attempt {attempt}/{SeriesCommandMaxAttempts}); " +
@@ -5193,7 +5414,7 @@ namespace WatchPartyForEmby
                         episode.ItemId);
                     if (_lifetimeCts.IsCancellationRequested)
                     {
-                        return;
+                        return commandSentCount;
                     }
 
                     throw;
@@ -5206,6 +5427,7 @@ namespace WatchPartyForEmby
                         ex);
                 }
             }
+            return commandSentCount;
         }
 
         private async Task RetrySeriesEpisodeUntilConfirmedAsync(
