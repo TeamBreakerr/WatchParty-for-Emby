@@ -6,11 +6,13 @@ keeps the native player behavior intact while sending one authenticated request
 to the plugin's dedicated seek endpoint with the requested target.  The server
 can therefore distinguish a user drag from ordinary progress heartbeats.
 
-The patch leaves Emby's media-source and codec decision alone.  It only corrects
-the direct-stream URL when the dashboard tries to reuse the virtual ``strm``
-input container as an FFmpeg output extension.  ``.strm`` is an input
-indirection, not an output format, so video uses the browser-compatible MP4
-direct-stream container.  Real MP4, MKV, and other local media are untouched.
+The patch leaves Emby's media-source and codec decision alone.  A virtual
+``strm`` container is an input indirection rather than a playable output
+format.  When Emby has not supplied an explicit ``DirectStreamUrl``, the patch
+therefore prevents the dashboard from inventing ``stream.strm`` and lets the
+existing transcoding branch consume Emby's ``TranscodingUrl`` instead.  An
+explicit direct-stream URL and real MP4, MKV, or other media containers keep
+their native Emby behavior.
 """
 
 import argparse
@@ -84,16 +86,26 @@ SEEK_PATCHED_LEGACY = (
     ':changeStream(player,ticks),markWatchPartySeek(self,player,ticks),result}'
 )
 
-# Emby Web derives the direct-stream URL extension from mediaSourceContainer.
-# A virtual STRM source can reach this fallback even when the library item's
-# probed container is MP4; asking FFmpeg to write stream.strm then fails before
-# it reads any media.  This changes only that invalid video output extension.
+# Legacy versions of this patch replaced a virtual STRM container with MP4.
+# Keep both strings solely so an already-patched dashboard can be migrated back
+# to Emby's original normalization before installing the URL-selection guard.
 DIRECT_STREAM_CONTAINER_ORIGINAL = (
     'mediaSourceContainer=mediaSourceContainer.toLowerCase().replace("m4v","mp4"),'
 )
-DIRECT_STREAM_CONTAINER_PATCHED = (
+LEGACY_STRM_MP4_MAPPING = (
     'mediaSourceContainer=mediaSourceContainer.toLowerCase().replace("m4v","mp4"),'
     '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4"),'
+)
+
+# Emby Web otherwise constructs /Videos/{id}/stream.{Container} whenever
+# SupportsDirectStream is true but DirectStreamUrl is empty.  That is valid for
+# real media containers, but not for the virtual STRM indirection.  Skipping
+# only that unsupported combination falls through to Emby's existing
+# SupportsTranscoding/TranscodingUrl branch without guessing an output format.
+DIRECT_STREAM_SELECTION_ORIGINAL = 'mediaSource.SupportsDirectStream?('
+DIRECT_STREAM_SELECTION_PATCHED = (
+    'mediaSource.SupportsDirectStream&&'
+    '("strm"!==mediaSourceContainer||mediaSource.DirectStreamUrl)?('
 )
 
 
@@ -188,19 +200,32 @@ def patch_dashboard(dashboard_root: Path) -> bool:
             playbackmanager,
         )
 
-    if DIRECT_STREAM_CONTAINER_PATCHED in text:
-        container_changed = False
-    else:
-        text, container_changed = patch_text(
-            text,
-            DIRECT_STREAM_CONTAINER_ORIGINAL,
-            DIRECT_STREAM_CONTAINER_PATCHED,
-            playbackmanager,
+    legacy_container_count = text.count(LEGACY_STRM_MP4_MAPPING)
+    if legacy_container_count > 1:
+        raise RuntimeError(
+            f"expected at most one legacy STRM-to-MP4 patch in {playbackmanager} "
+            f"(legacy={legacy_container_count})"
         )
+    if legacy_container_count:
+        text = text.replace(
+            LEGACY_STRM_MP4_MAPPING,
+            DIRECT_STREAM_CONTAINER_ORIGINAL,
+            1,
+        )
+        container_changed = True
+    else:
+        container_changed = False
 
-    if helper_changed or seek_changed or container_changed:
+    text, selection_changed = patch_text(
+        text,
+        DIRECT_STREAM_SELECTION_ORIGINAL,
+        DIRECT_STREAM_SELECTION_PATCHED,
+        playbackmanager,
+    )
+
+    if helper_changed or seek_changed or container_changed or selection_changed:
         replace_files_transactionally([(playbackmanager, text)])
-    return helper_changed or seek_changed or container_changed
+    return helper_changed or seek_changed or container_changed or selection_changed
 
 
 def main() -> int:
