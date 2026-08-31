@@ -22,6 +22,10 @@ PLAYBACKMANAGER_FIXTURE = (
     "function sendProgressUpdate(instance,player,progressEventName,reportPlaylist,additionalData,isAutomated){"
     "return reportProgress(instance,player,progressEventName,additionalData)}"
     "function changeStream(player,ticks,params,progressEventName){return player.currentTime(ticks)}"
+    "function createStreamInfo(type){var mediaSourceContainer,prefix;"
+    "prefix=\"Video\"===type?\"Videos\":\"Audio\","
+    "mediaSourceContainer=mediaSourceContainer.toLowerCase().replace(\"m4v\",\"mp4\"),"
+    "apiClient.getUrl(prefix+\"/stream.\"+mediaSourceContainer)}"
     "function PlaybackManager(){}"
     "var self={_currentPlayer:null};"
     "self.seek=function(ticks,player){return ticks=Math.max(0,ticks),(player=player||self._currentPlayer)&&!enableLocalPlaylistManagement(player)?player.isLocalPlayer?player.seek((ticks||0)/1e4):player.seek(ticks):changeStream(player,ticks)};"
@@ -66,6 +70,31 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
             self.assertLess(
                 patched.index('markWatchPartySeek(self,player,ticks)'),
                 patched.index('result=player&&!enableLocalPlaylistManagement(player)'),
+            )
+
+    def test_strm_video_container_uses_mp4_for_direct_stream_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            playbackmanager = self._write_fixture(root)
+
+            result = subprocess.run(
+                [sys.executable, str(PATCHER), "--dashboard-root", str(root)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            patched = playbackmanager.read_text(encoding="utf-8")
+            self.assertIn(
+                '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4")',
+                patched,
+            )
+            self.assertIn(
+                'mediaSourceContainer=mediaSourceContainer.toLowerCase().replace("m4v","mp4"),'
+                '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4"),'
+                'apiClient.getUrl',
+                patched,
             )
 
     def test_patch_is_idempotent_and_rejects_unknown_dashboard_shape(self):

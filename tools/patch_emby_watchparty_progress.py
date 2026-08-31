@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Make Emby Web seeks explicit WatchParty commands.
+"""Make Emby Web playback compatible with WatchParty media sources.
 
 Emby Web normally reports a seek only as a later ``timeupdate``.  This patch
 keeps the native player behavior intact while sending one authenticated request
 to the plugin's dedicated seek endpoint with the requested target.  The server
 can therefore distinguish a user drag from ordinary progress heartbeats.
+
+Emby represents a remote ``.strm`` item as a virtual media source whose
+``Container`` is ``strm``.  In the direct-stream fallback, the dashboard uses
+that value as the output extension for ``/Videos/{id}/stream.*``.  ``.strm`` is
+an input indirection, not an FFmpeg output container, so the resulting request
+fails before any media can be delivered.  The direct-stream endpoint needs a
+browser-compatible container; for video we use MP4, leaving the source codecs
+and Emby's normal direct-stream/transcoding decision unchanged.
 """
 
 import argparse
@@ -76,6 +84,17 @@ SEEK_PATCHED_LEGACY = (
     'player=player||self._currentPlayer,result=player&&!enableLocalPlaylistManagement(player)'
     '?player.isLocalPlayer?player.seek((ticks||0)/1e4):player.seek(ticks)'
     ':changeStream(player,ticks),markWatchPartySeek(self,player,ticks),result}'
+)
+
+# The value is used only when Emby has selected its DirectStream fallback and
+# has no pre-computed DirectStreamUrl.  Keep the replacement narrow so a future
+# dashboard change is rejected instead of silently patching an unrelated URL.
+DIRECT_STREAM_CONTAINER_ORIGINAL = (
+    'mediaSourceContainer=mediaSourceContainer.toLowerCase().replace("m4v","mp4"),'
+)
+DIRECT_STREAM_CONTAINER_PATCHED = (
+    'mediaSourceContainer=mediaSourceContainer.toLowerCase().replace("m4v","mp4"),'
+    '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4"),'
 )
 
 
@@ -169,9 +188,20 @@ def patch_dashboard(dashboard_root: Path) -> bool:
             SEEK_PATCHED,
             playbackmanager,
         )
-    if helper_changed or seek_changed:
+
+    if DIRECT_STREAM_CONTAINER_PATCHED in text:
+        container_changed = False
+    else:
+        text, container_changed = patch_text(
+            text,
+            DIRECT_STREAM_CONTAINER_ORIGINAL,
+            DIRECT_STREAM_CONTAINER_PATCHED,
+            playbackmanager,
+        )
+
+    if helper_changed or seek_changed or container_changed:
         replace_files_transactionally([(playbackmanager, text)])
-    return helper_changed or seek_changed
+    return helper_changed or seek_changed or container_changed
 
 
 def main() -> int:
