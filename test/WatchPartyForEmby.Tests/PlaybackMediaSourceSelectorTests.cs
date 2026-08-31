@@ -15,23 +15,19 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
-        public void StaleConfiguredVersionFallsBackToTheEpisodeOwnDefault()
+        public void StaleConfiguredVersionLetsEmbyResolveTheCurrentDefault()
         {
-            Assert.Equal(
-                "local-episode-source",
-                PlaybackMediaSourceSelector.Resolve(
-                    "old-strm-source",
-                    new[] { "local-episode-source" }));
+            Assert.Null(PlaybackMediaSourceSelector.Resolve(
+                "old-strm-source",
+                new[] { "local-episode-source" }));
         }
 
         [Fact]
-        public void AnUnconfiguredEpisodeUsesItsOwnConcreteDefaultSource()
+        public void AnUnconfiguredEpisodeLetsEmbyResolveItsDefaultSource()
         {
-            Assert.Equal(
-                "mediasource_local_episode",
-                PlaybackMediaSourceSelector.Resolve(
-                    null,
-                    new[] { null, " ", "mediasource_local_episode" }));
+            Assert.Null(PlaybackMediaSourceSelector.Resolve(
+                null,
+                new[] { null, " ", "mediasource_local_episode" }));
         }
 
         [Fact]

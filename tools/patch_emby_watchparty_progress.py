@@ -6,13 +6,12 @@ keeps the native player behavior intact while sending one authenticated request
 to the plugin's dedicated seek endpoint with the requested target.  The server
 can therefore distinguish a user drag from ordinary progress heartbeats.
 
-Emby represents a remote ``.strm`` item as a virtual media source whose
-``Container`` is ``strm``.  In the direct-stream fallback, the dashboard uses
-that value as the output extension for ``/Videos/{id}/stream.*``.  ``.strm`` is
-an input indirection, not an FFmpeg output container, so the resulting request
-fails before any media can be delivered.  The direct-stream endpoint needs a
-browser-compatible container; for video we use MP4, leaving the source codecs
-and Emby's normal direct-stream/transcoding decision unchanged.
+The patch deliberately leaves Emby's media-source and container decision alone.
+``.strm`` is an input indirection, not an output container; the server owns the
+resolution to the actual remote media and the client owns the Direct Play,
+Direct Stream, or transcoding choice.  Older versions of this installer added a
+global ``strm`` to ``mp4`` rewrite.  That rewrite was never room-scoped and is
+removed during migration below.
 """
 
 import argparse
@@ -86,13 +85,12 @@ SEEK_PATCHED_LEGACY = (
     ':changeStream(player,ticks),markWatchPartySeek(self,player,ticks),result}'
 )
 
-# The value is used only when Emby has selected its DirectStream fallback and
-# has no pre-computed DirectStreamUrl.  Keep the replacement narrow so a future
-# dashboard change is rejected instead of silently patching an unrelated URL.
+# This is retained solely to migrate dashboards installed by the old, global
+# STRM-to-MP4 workaround.  It must not be added to a clean dashboard again.
 DIRECT_STREAM_CONTAINER_ORIGINAL = (
     'mediaSourceContainer=mediaSourceContainer.toLowerCase().replace("m4v","mp4"),'
 )
-DIRECT_STREAM_CONTAINER_PATCHED = (
+LEGACY_DIRECT_STREAM_CONTAINER_PATCHED = (
     'mediaSourceContainer=mediaSourceContainer.toLowerCase().replace("m4v","mp4"),'
     '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4"),'
 )
@@ -143,6 +141,23 @@ def replace_files_transactionally(replacements):
             temporary_path.unlink(missing_ok=True)
 
 
+def remove_legacy_container_override(text: str, source: Path) -> tuple[str, bool]:
+    """Remove the historical global STRM-to-MP4 override, if present."""
+    legacy_count = text.count(LEGACY_DIRECT_STREAM_CONTAINER_PATCHED)
+    if legacy_count > 1:
+        raise RuntimeError(
+            f"expected at most one legacy STRM container override in {source} "
+            f"(found={legacy_count})"
+        )
+    if legacy_count == 0:
+        return text, False
+    return text.replace(
+        LEGACY_DIRECT_STREAM_CONTAINER_PATCHED,
+        DIRECT_STREAM_CONTAINER_ORIGINAL,
+        1,
+    ), True
+
+
 def patch_dashboard(dashboard_root: Path) -> bool:
     playbackmanager = dashboard_root / PLAYBACK_MANAGER_MODULE
     text = playbackmanager.read_text(encoding="utf-8")
@@ -189,15 +204,7 @@ def patch_dashboard(dashboard_root: Path) -> bool:
             playbackmanager,
         )
 
-    if DIRECT_STREAM_CONTAINER_PATCHED in text:
-        container_changed = False
-    else:
-        text, container_changed = patch_text(
-            text,
-            DIRECT_STREAM_CONTAINER_ORIGINAL,
-            DIRECT_STREAM_CONTAINER_PATCHED,
-            playbackmanager,
-        )
+    text, container_changed = remove_legacy_container_override(text, playbackmanager)
 
     if helper_changed or seek_changed or container_changed:
         replace_files_transactionally([(playbackmanager, text)])

@@ -5,8 +5,9 @@ namespace WatchPartyForEmby
 {
     /// <summary>
     /// Selects the concrete media-source identifier carried by PlayNow. Series queue
-    /// entries may omit it so each later episode can resolve its own default source;
-    /// they must never inherit the first episode's source or a prior STRM source.
+    /// entries may omit it so Emby can resolve each later episode through its native
+    /// playback-info path; they must never inherit the first episode's source or a
+    /// stale STRM source.
     /// </summary>
     public static class PlaybackMediaSourceSelector
     {
@@ -30,7 +31,11 @@ namespace WatchPartyForEmby
                 }
             }
 
-            return available.FirstOrDefault();
+            // Absence or staleness is not a request to choose the first raw media
+            // source. In particular, pinning a virtual STRM source here can change the
+            // downstream Web URL from Xiaoya's resolved container to stream.strm.
+            // Omitting the identifier preserves vanilla Emby/Xiaoya resolution.
+            return null;
         }
     }
 }

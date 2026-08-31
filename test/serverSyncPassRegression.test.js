@@ -142,6 +142,23 @@ test('manual series launch validates the selected episode media source', () => {
         /MediaSourceId = targetEpisode\?\.MediaSourceId \?\? party\.MediaSourceId/);
 });
 
+test('manual single-item launch validates the selected media source', () => {
+    const manualLaunch = methodBody(
+        'public async Task<PartyManualSynchronizationResult> SynchronizePartyNowAsync',
+        'private bool HasPlaybackControlConnection');
+    const requestFactory = methodBody(
+        'private PlayRequest CreateSingleItemPlayRequest',
+        'private PlayRequest CreateEpisodePlayRequest');
+    const sourceResolver = methodBody(
+        'private PlayRequest CreateValidatedPlayRequest',
+        'private async Task<int> PlaySeriesEpisodeForSessions');
+
+    assert.match(manualLaunch, /CreateSingleItemPlayRequest\(/);
+    assert.match(sourceResolver, /PlaybackMediaSourceSelector\.Resolve/);
+    assert.match(requestFactory, /party\?\.MediaSourceId/);
+    assert.match(sourceResolver, /MediaSourceId = mediaSourceId/);
+});
+
 test('configuration maintenance releases its lock before entering a party lifecycle boundary', () => {
     assert.doesNotMatch(
         source,

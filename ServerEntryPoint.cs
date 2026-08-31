@@ -300,13 +300,10 @@ namespace WatchPartyForEmby
             }
             var masterSession = GetMasterSessionForCommand(party);
             var request = targetEpisode == null
-                ? new PlayRequest
-                {
-                    ItemIds = new[] { targetItem.InternalId },
-                    MediaSourceId = party.MediaSourceId,
-                    PlayCommand = PlayCommand.PlayNow,
-                    StartPositionTicks = Math.Max(0, positionTicks)
-                }
+                ? CreateSingleItemPlayRequest(
+                    party,
+                    targetItem,
+                    positionTicks)
                 : CreateEpisodePlayRequest(
                     targetEpisode,
                     targetItem,
@@ -5252,42 +5249,79 @@ namespace WatchPartyForEmby
             }
         }
 
+        private PlayRequest CreateSingleItemPlayRequest(
+            WatchPartyItem party,
+            BaseItem item,
+            long startPositionTicks)
+        {
+            return CreateValidatedPlayRequest(
+                item,
+                party?.MediaSourceId,
+                startPositionTicks,
+                $"item {party?.ItemId}");
+        }
+
         private PlayRequest CreateEpisodePlayRequest(
             WatchPartyEpisode episode,
             BaseItem episodeItem,
             long startPositionTicks)
         {
-            IEnumerable<string> availableMediaSourceIds = null;
-            if (episodeItem != null)
-            {
-                try
-                {
-                    var libraryOptions = _libraryManager.GetLibraryOptions(episodeItem);
-                    availableMediaSourceIds = episodeItem.GetMediaSources(
-                                false,
-                                false,
-                                libraryOptions)
-                            .Select(source => source?.Id)
-                            .ToList();
-                }
-                catch (Exception)
-                {
-                    _logger.Debug(
-                        $"[Watch Party] Could not enumerate media sources for episode " +
-                        $"{episode?.ItemId}; omitting MediaSourceId so Emby resolves it");
-                }
-            }
-            var mediaSourceId = PlaybackMediaSourceSelector.Resolve(
+            return CreateValidatedPlayRequest(
+                episodeItem,
                 episode?.MediaSourceId,
-                availableMediaSourceIds);
+                startPositionTicks,
+                $"episode {episode?.ItemId}");
+        }
+
+        private PlayRequest CreateValidatedPlayRequest(
+            BaseItem item,
+            string configuredMediaSourceId,
+            long startPositionTicks,
+            string itemDescription)
+        {
+            var mediaSourceId = ResolveMediaSourceId(
+                item,
+                configuredMediaSourceId,
+                itemDescription);
 
             return new PlayRequest
             {
-                ItemIds = new[] { episodeItem.InternalId },
+                ItemIds = new[] { item.InternalId },
                 MediaSourceId = mediaSourceId,
                 PlayCommand = PlayCommand.PlayNow,
                 StartPositionTicks = Math.Max(0, startPositionTicks)
             };
+        }
+
+        private string ResolveMediaSourceId(
+            BaseItem item,
+            string configuredMediaSourceId,
+            string itemDescription)
+        {
+            IEnumerable<string> availableMediaSourceIds = null;
+            if (item != null)
+            {
+                try
+                {
+                    var libraryOptions = _libraryManager.GetLibraryOptions(item);
+                    availableMediaSourceIds = item.GetMediaSources(
+                            false,
+                            false,
+                            libraryOptions)
+                        .Select(source => source?.Id)
+                        .ToList();
+                }
+                catch (Exception)
+                {
+                    _logger.Debug(
+                        $"[Watch Party] Could not enumerate media sources for " +
+                        $"{itemDescription}; omitting MediaSourceId so Emby resolves it");
+                }
+            }
+
+            return PlaybackMediaSourceSelector.Resolve(
+                configuredMediaSourceId,
+                availableMediaSourceIds);
         }
 
         private async Task<int> PlaySeriesEpisodeForSessions(

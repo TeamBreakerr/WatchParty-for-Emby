@@ -72,7 +72,7 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
                 patched.index('result=player&&!enableLocalPlaylistManagement(player)'),
             )
 
-    def test_strm_video_container_uses_mp4_for_direct_stream_output(self):
+    def test_strm_video_container_is_left_for_emby_to_resolve(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             playbackmanager = self._write_fixture(root)
@@ -87,15 +87,40 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             patched = playbackmanager.read_text(encoding="utf-8")
             self.assertIn(
-                '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4")',
-                patched,
-            )
-            self.assertIn(
                 'mediaSourceContainer=mediaSourceContainer.toLowerCase().replace("m4v","mp4"),'
-                '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4"),'
                 'apiClient.getUrl',
                 patched,
             )
+            self.assertNotIn(
+                '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4")',
+                patched,
+            )
+
+    def test_patch_migrates_the_legacy_global_strm_to_mp4_override(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            playbackmanager = self._write_fixture(root)
+            patcher = load_patcher()
+            playbackmanager.write_text(
+                PLAYBACKMANAGER_FIXTURE.replace(
+                    patcher.DIRECT_STREAM_CONTAINER_ORIGINAL,
+                    patcher.LEGACY_DIRECT_STREAM_CONTAINER_PATCHED,
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(PATCHER), "--dashboard-root", str(root)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            migrated = playbackmanager.read_text(encoding="utf-8")
+            self.assertIn(patcher.DIRECT_STREAM_CONTAINER_ORIGINAL, migrated)
+            self.assertNotIn(patcher.LEGACY_DIRECT_STREAM_CONTAINER_PATCHED, migrated)
 
     def test_patch_is_idempotent_and_rejects_unknown_dashboard_shape(self):
         with tempfile.TemporaryDirectory() as temp_dir:

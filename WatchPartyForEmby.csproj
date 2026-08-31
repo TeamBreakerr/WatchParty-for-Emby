@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
-    <AssemblyVersion>1.7.12</AssemblyVersion>
-    <FileVersion>1.7.12</FileVersion>
+    <AssemblyVersion>1.7.13</AssemblyVersion>
+    <FileVersion>1.7.13</FileVersion>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <NoWarn>CS1591</NoWarn>
