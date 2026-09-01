@@ -71,6 +71,7 @@ emby-websocket-timeout.conf
 ensure-emby-websocket-timeout.sh
 emby-web-cache-buster.conf
 ensure-emby-web-cache-buster.sh
+ensure-emby-direct-link-fallback.sh
 updateall-emby-115-wrapper.sh'
 for required_file in $required_files; do
     if [ ! -s "/data/$required_file" ]; then
@@ -82,7 +83,8 @@ done
 if [ ! -x /data/emby-115-guard ] \
     || [ ! -x /data/ensure-emby-115-guard.sh ] \
     || [ ! -x /data/ensure-emby-websocket-timeout.sh ] \
-    || [ ! -x /data/ensure-emby-web-cache-buster.sh ]; then
+    || [ ! -x /data/ensure-emby-web-cache-buster.sh ] \
+    || [ ! -x /data/ensure-emby-direct-link-fallback.sh ]; then
     echo "115 guard executables are not executable" >&2
     exit 1
 fi
@@ -131,6 +133,7 @@ fi
 /data/ensure-emby-115-guard.sh
 /data/ensure-emby-websocket-timeout.sh
 /data/ensure-emby-web-cache-buster.sh
+/data/ensure-emby-direct-link-fallback.sh
 
 nginx -t
 

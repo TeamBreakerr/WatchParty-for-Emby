@@ -1,6 +1,7 @@
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -10,6 +11,135 @@ DEPLOY_ROOT = REPO_ROOT / "deploy" / "xiaoya-115-proxy"
 
 
 class Xiaoya115ProxyTests(unittest.TestCase):
+    def test_emby_njs_patch_falls_back_for_media_bodies_and_removes_strm_preload(self):
+        patcher = (
+            DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
+        ).read_text()
+
+        self.assertIn("fetchXYApi", patcher)
+        self.assertIn("media_body", patcher)
+        self.assertIn("r.internalRedirect(\"@backend\")", patcher)
+        self.assertIn("getPlaybackPath", patcher)
+        self.assertIn("drop_strm_preload", patcher)
+        self.assertIn("PlaybackInfo?api_key=", patcher)
+        self.assertIn("Nginx rejected the Emby direct-link fallback patch", patcher)
+
+    def test_emby_njs_patch_is_idempotent_and_restores_on_nginx_failure(self):
+        patcher = DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
+        fixture = """async function fetchXYApi(xyurl, ua, cookie) {
+    try {
+        var res = await ngx.fetch(xyurl, {
+            headers: {
+                \"Content-Type\": 'application/json;charset=utf-8',
+                \"User-Agent\": ua,
+                \"X-Alist-OriUA\": ua
+            },
+            max_response_body_size: 65535
+        });
+        if (res.status >= 301 && res.status <= 307) {
+            var loc = res.headers[\"Location\"] || res.headers[\"location\"];
+            return loc || \"error: no location\";
+        }
+        var text = await res.text();
+        try {
+            var json = JSON.parse(text);
+            if (json.url) return json.url;
+            return text;
+        } catch (e) {
+            return text;
+        }
+    } catch (error) {
+        return 'error: xy_api fetch failed';
+    }
+}
+
+async function getPlaybackPath(itemId, userId, apiKey, r) {
+    try {
+        var strmUri = EMBY_HOST + '/emby/Videos/' + itemId + '/stream.strm?api_key=' + apiKey;
+        var res = await ngx.fetch(strmUri, {
+            max_response_body_size: 65535,
+            headers: { 'X-Emby-Token': apiKey }
+        });
+        if (res.ok) {
+            var content = await res.text();
+            var url = content.trim();
+            if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+                return url;
+            }
+            if (url && url.includes('DOCKER_ADDRESS')) {
+                return url;
+            }
+        }
+    } catch (e) {}
+
+    try {
+        var playInfoUri = EMBY_HOST + '/emby/Items/' + itemId + '/PlaybackInfo?api_key=' + apiKey;
+        var res = await ngx.fetch(playInfoUri, { max_response_body_size: 65535 });
+        if (res.ok) {
+            var data = await res.json();
+            if (data && data.MediaSources && data.MediaSources.length > 0) {
+                var mediaPath = data.MediaSources[0].Path;
+                if (mediaPath) {
+                    return mediaPath;
+                }
+            }
+        }
+    } catch (e) {}
+    return null;
+}
+
+async function redirect2Pan(r) {
+    var alistRes = await getCachedXYUrl(alistFilePath, ua, itemId, cookie, r);
+
+    if (!alistRes.startsWith('error')) {
+        if (alistRes.indexOf(\"http\") !== -1) {
+            r.return(302, alistRes);
+            return;
+        }
+    }
+
+    r.return(500, alistRes);
+}
+"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            fake_nginx = root / "nginx"
+            script.write_text(fixture)
+            original = script.read_bytes()
+            fake_nginx.write_text("#!/bin/sh\nexit 0\n")
+            fake_nginx.chmod(0o755)
+            env = {
+                "PATH": "/usr/bin:/bin",
+                "EMBY_NJS_SCRIPT": str(script),
+                "NGINX_BIN": str(fake_nginx),
+            }
+
+            first = subprocess.run(
+                [str(patcher)], capture_output=True, text=True, env=env
+            )
+            first_contents = script.read_bytes()
+            second = subprocess.run(
+                [str(patcher)], capture_output=True, text=True, env=env
+            )
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertNotEqual(original, first_contents)
+            self.assertEqual(first_contents, script.read_bytes())
+            updated = script.read_text()
+            self.assertIn("media_body", updated)
+            self.assertNotIn("/stream.strm", updated)
+
+            script.write_text(fixture)
+            fake_nginx.write_text("#!/bin/sh\nexit 1\n")
+            failed = subprocess.run(
+                [str(patcher)], capture_output=True, text=True, env=env
+            )
+            self.assertNotEqual(0, failed.returncode)
+            self.assertEqual(original, script.read_bytes())
+
     def test_proxy_is_selected_by_resolved_115_host_instead_of_folder_name(self):
         locations = (DEPLOY_ROOT / "emby-115-locations.conf").read_text()
         access = (DEPLOY_ROOT / "emby-115-access.lua").read_text()
@@ -97,6 +227,9 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         web_cache_ensurer = (
             DEPLOY_ROOT / "ensure-emby-web-cache-buster.sh"
         ).read_text()
+        direct_link_ensurer = (
+            DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
+        ).read_text()
         retired_periodic_overlays = (
             "ensure-xiaoya-overlays.sh",
             "install-host-overlay-watchdog.sh",
@@ -116,6 +249,9 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         self.assertIn("emby-web-cache-buster.conf", installer)
         self.assertIn("ensure-emby-web-cache-buster.sh", installer)
         self.assertIn("/data/ensure-emby-web-cache-buster.sh", installer)
+        self.assertIn("ensure-emby-direct-link-fallback.sh", installer)
+        self.assertIn("/data/ensure-emby-direct-link-fallback.sh", installer)
+        self.assertIn("fetchXYApi", direct_link_ensurer)
         self.assertIn("data-appversion=\"4.9.0.42\"", web_cache_buster)
         self.assertIn("data-appversion=\"4.9.0.42-wp3\"", web_cache_buster)
         self.assertIn("/web/index.html", web_cache_ensurer)

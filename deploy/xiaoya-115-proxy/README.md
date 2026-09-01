@@ -44,6 +44,17 @@ as an Nginx idle timeout even though upgraded tunnels retain HTTP status 101.
 The log deliberately excludes addresses, request paths, query strings,
 headers, cookies, user agents and tokens.
 
+The installer also applies a narrow compatibility patch to Xiaoya's generated
+`emby.js`. Xiaoya normally expects its `/d/` request to return a 302 direct
+link, while the dynamic 115 guard intentionally turns that redirect into a
+proxied 200/206 media response. The patched resolver requests one byte, sends
+media responses back through Emby's native `@backend` path, and falls back to
+that backend for an unexpected resolver error instead of returning an njs 500.
+This retains valid 302 direct links, does not guess MP4 or any other container,
+and prevents njs from buffering a video body. The same patch removes Xiaoya's
+redundant next-episode `stream.strm` request and uses the existing
+`PlaybackInfo` lookup, avoiding an invalid `.strm` FFmpeg output job.
+
 The log's `termination_hint` is evidence about the boundary Nginx observed. A
 downstream close can mean the iOS app/device or the network path, and a normal
 WebSocket close handshake can end cleanly at both peers; the log does not claim
