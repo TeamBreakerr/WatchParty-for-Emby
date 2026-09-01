@@ -11,13 +11,14 @@ DEPLOY_ROOT = REPO_ROOT / "deploy" / "xiaoya-115-proxy"
 
 
 class Xiaoya115ProxyTests(unittest.TestCase):
-    def test_emby_njs_patch_falls_back_for_media_bodies_and_removes_strm_preload(self):
+    def test_emby_njs_patch_routes_guarded_media_without_a_range_probe(self):
         patcher = (
             DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
         ).read_text()
 
-        self.assertIn("fetchXYApi", patcher)
-        self.assertIn("media_body", patcher)
+        self.assertIn("isXiaoyaMediaPath", patcher)
+        self.assertIn('r.return(302, embyRes)', patcher)
+        self.assertNotIn('print "                \\"Range\\": \\"bytes=0-0\\""', patcher)
         self.assertIn("r.internalRedirect(\"@backend\")", patcher)
         self.assertIn("getPlaybackPath", patcher)
         self.assertIn("drop_strm_preload", patcher)
@@ -88,7 +89,38 @@ async function getPlaybackPath(itemId, userId, apiKey, r) {
     return null;
 }
 
+async function getCachedXYUrl(url, ua, itemId, cookie, r) {
+    var cacheKey = getCacheKey(url, ua, itemId);
+    var cached = getFromCache(cacheKey, r);
+    if (cached) {
+        return cached;
+    }
+    var result = await fetchXYApi(url, ua, cookie);
+    if (!result.startsWith('error')) {
+        setToCache(cacheKey, result, r);
+    }
+    return result;
+}
+
 async function redirect2Pan(r) {
+    (async function() {
+        var alistNextPath = nextPath.replace('DOCKER_ADDRESS', 'http://127.0.0.1:80') + '?sign=';
+        await getCachedXYUrl(alistNextPath, ua, nextItemId, cookie, r);
+    })();
+
+    var contain115helper = embyRes.includes("P115StrmHelper");
+    if (contain115helper) {
+        var futureDiagnostic = "}";
+        var helperRedirectUrl = await fetchXYApi(embyRes, ua, cookie);
+        if (helperRedirectUrl.startsWith('error')) {
+            r.internalRedirect("@backend");
+            return;
+        }
+        r.return(302, helperRedirectUrl);
+        return;
+    }
+
+    var alistFilePath = embyRes.replace('DOCKER_ADDRESS', 'http://127.0.0.1:80') + '?sign=';
     var alistRes = await getCachedXYUrl(alistFilePath, ua, itemId, cookie, r);
 
     if (!alistRes.startsWith('error')) {
@@ -129,8 +161,91 @@ async function redirect2Pan(r) {
             self.assertNotEqual(original, first_contents)
             self.assertEqual(first_contents, script.read_bytes())
             updated = script.read_text()
-            self.assertIn("media_body", updated)
+            self.assertNotIn('"Range": "bytes=0-0"', updated)
+            self.assertIn("var isXiaoyaMediaPath =", updated)
+            self.assertIn('r.return(302, embyRes);', updated)
+            self.assertNotIn(
+                "var helperRedirectUrl = await fetchXYApi",
+                updated,
+            )
+            self.assertNotIn("futureDiagnostic", updated)
+            self.assertNotIn(
+                "getCachedXYUrl(alistFilePath",
+                updated,
+            )
+            self.assertNotIn(
+                "getCachedXYUrl(alistNextPath",
+                updated,
+            )
             self.assertNotIn("/stream.strm", updated)
+
+            legacy = fixture.replace(
+                "async function fetchXYApi(xyurl, ua, cookie) {",
+                "async function fetchXYApi(xyurl, ua, cookie) {\n"
+                "    // codex-emby-direct-link-fallback-v1",
+                1,
+            ).replace(
+                '                "X-Alist-OriUA": ua',
+                '                "X-Alist-OriUA": ua,\n'
+                '                "Range": "bytes=0-0"',
+                1,
+            ).replace(
+                "        var text = await res.text();",
+                "        if (res.status === 206 || "
+                'res.headers["X-Emby-115-Proxy"] || '
+                'res.headers["x-emby-115-proxy"]) {\n'
+                '            return "error: media_body";\n'
+                "        }\n"
+                "        var text = await res.text();",
+                1,
+            ).replace(
+                "    r.return(500, alistRes);",
+                '    r.internalRedirect("@backend");',
+                1,
+            )
+            script.write_text(legacy)
+            migrated = subprocess.run(
+                [str(patcher)], capture_output=True, text=True, env=env
+            )
+            migrated_contents = script.read_text()
+
+            self.assertEqual(0, migrated.returncode, migrated.stderr)
+            self.assertIn("codex-emby-guarded-path-routing-v2", migrated_contents)
+            self.assertNotIn("codex-emby-direct-link-fallback-v1", migrated_contents)
+            self.assertNotIn('"Range": "bytes=0-0"', migrated_contents)
+            self.assertNotIn("error: media_body", migrated_contents)
+
+            unrelated_probe = fixture.replace(
+                "async function getPlaybackPath(itemId, userId, apiKey, r) {",
+                "async function unrelatedMetadataProbe() {\n"
+                '    return { "Range": "bytes=0-0" };\n'
+                "}\n\n"
+                "async function getPlaybackPath(itemId, userId, apiKey, r) {",
+                1,
+            )
+            script.write_text(unrelated_probe)
+            unrelated_result = subprocess.run(
+                [str(patcher)], capture_output=True, text=True, env=env
+            )
+
+            self.assertEqual(0, unrelated_result.returncode, unrelated_result.stderr)
+            self.assertIn(
+                'return { "Range": "bytes=0-0" };',
+                script.read_text(),
+            )
+
+            changed_fallback = fixture.replace(
+                "r.return(500, alistRes);",
+                "r.return(502, alistRes);",
+                1,
+            )
+            script.write_text(changed_fallback)
+            changed_result = subprocess.run(
+                [str(patcher)], capture_output=True, text=True, env=env
+            )
+
+            self.assertEqual(0, changed_result.returncode, changed_result.stderr)
+            self.assertNotIn("r.return(502, alistRes);", script.read_text())
 
             script.write_text(fixture)
             fake_nginx.write_text("#!/bin/sh\nexit 1\n")
