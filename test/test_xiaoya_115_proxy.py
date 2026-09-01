@@ -91,6 +91,12 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         websocket_diagnostic = (
             DEPLOY_ROOT / "emby-websocket-diagnostic.conf"
         ).read_text()
+        web_cache_buster = (
+            DEPLOY_ROOT / "emby-web-cache-buster.conf"
+        ).read_text()
+        web_cache_ensurer = (
+            DEPLOY_ROOT / "ensure-emby-web-cache-buster.sh"
+        ).read_text()
         retired_periodic_overlays = (
             "ensure-xiaoya-overlays.sh",
             "install-host-overlay-watchdog.sh",
@@ -107,6 +113,14 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         self.assertIn("emby-websocket-diagnostic.conf", installer)
         self.assertIn("ensure-emby-websocket-timeout.sh", installer)
         self.assertIn("/data/ensure-emby-websocket-timeout.sh --reload", installer)
+        self.assertIn("emby-web-cache-buster.conf", installer)
+        self.assertIn("ensure-emby-web-cache-buster.sh", installer)
+        self.assertIn("/data/ensure-emby-web-cache-buster.sh", installer)
+        self.assertIn("data-appversion=\"4.9.0.42\"", web_cache_buster)
+        self.assertIn("data-appversion=\"4.9.0.42-wp3\"", web_cache_buster)
+        self.assertIn("/web/index.html", web_cache_ensurer)
+        self.assertIn("validate_config", web_cache_ensurer)
+        self.assertIn("Nginx rejected the Web cache-buster patch", web_cache_ensurer)
         self.assertIn("validate_config", websocket_timeout)
         self.assertIn("Nginx rejected the WebSocket patch", websocket_timeout)
         self.assertIn("proxy_read_timeout 86400s;", websocket_include)

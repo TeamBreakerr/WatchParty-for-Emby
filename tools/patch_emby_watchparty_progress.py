@@ -6,14 +6,14 @@ keeps the native player behavior intact while sending one authenticated request
 to the plugin's dedicated seek endpoint with the requested target.  The server
 can therefore distinguish a user drag from ordinary progress heartbeats.
 
-The patch leaves Emby's media-source and codec decision alone.  A virtual
-``strm`` container is an input indirection rather than a playable output
-format.  Some Emby responses expose the invalid ``stream.strm`` request as
-``StreamUrl``; others make the dashboard construct it from
-``SupportsDirectStream``.  The patch rejects both forms only for a virtual
-STRM source, then lets the existing transcoding branch consume Emby's
-``TranscodingUrl``.  Explicit playable URLs and real MP4, MKV, or other media
-containers keep their native Emby behavior.
+The patch leaves Emby's media-source and codec decision alone.  A ``.strm``
+path is an input indirection rather than a playable output format.  After Emby
+probes the target, ``MediaSource.Container`` normally contains the real remote
+container (for example ``mp4``), while an invalid supplied ``StreamUrl`` can
+still end in ``stream.strm``.  The patch therefore rejects the URL by its own
+extension instead of assuming that ``Container`` remains ``strm``.  Emby Web
+then uses the probed container for Direct Stream or consumes the server's
+``TranscodingUrl``; no remote STRM is globally forced to MP4.
 """
 
 import argparse
@@ -98,17 +98,21 @@ LEGACY_STRM_MP4_MAPPING = (
     '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4"),'
 )
 
-# Emby Web can either receive /Videos/{id}/stream.strm through StreamUrl or
-# construct it from SupportsDirectStream when DirectStreamUrl is empty.  Both
-# are invalid for the virtual STRM indirection, while the same paths are valid
-# for real media containers.  Skipping only those unsupported combinations
-# falls through to Emby's existing SupportsTranscoding/TranscodingUrl branch
-# without guessing an output format.
+# Emby Web can receive /Videos/{id}/stream.strm through StreamUrl even after
+# the server has probed the indirection and reported the actual remote
+# container as MP4 or MKV.  ``stream.strm`` is never a valid media output URL,
+# so reject it independently of Container.  The following Direct Stream branch
+# can then construct stream.{probed-container}; if Container itself is still
+# strm, its existing guard falls through to TranscodingUrl instead.
 STREAM_URL_SELECTION_ORIGINAL = ':mediaSource.StreamUrl?('
-STREAM_URL_SELECTION_PATCHED = (
+STREAM_URL_SELECTION_PATCHED_LEGACY = (
     ':mediaSource.StreamUrl&&'
     '!("strm"===mediaSourceContainer&&'
     '/\\.strm(?:[?#]|$)/i.test(mediaSource.StreamUrl))?('
+)
+STREAM_URL_SELECTION_PATCHED = (
+    ':mediaSource.StreamUrl&&'
+    '!/\\.strm(?:[?#]|$)/i.test(mediaSource.StreamUrl)?('
 )
 DIRECT_STREAM_SELECTION_ORIGINAL = 'mediaSource.SupportsDirectStream?('
 DIRECT_STREAM_SELECTION_PATCHED = (
@@ -230,12 +234,26 @@ def patch_dashboard(dashboard_root: Path) -> bool:
         DIRECT_STREAM_SELECTION_PATCHED,
         playbackmanager,
     )
-    text, stream_url_changed = patch_text(
-        text,
-        STREAM_URL_SELECTION_ORIGINAL,
-        STREAM_URL_SELECTION_PATCHED,
-        playbackmanager,
-    )
+    legacy_stream_url_count = text.count(STREAM_URL_SELECTION_PATCHED_LEGACY)
+    if legacy_stream_url_count > 1:
+        raise RuntimeError(
+            f"expected at most one legacy container-gated StreamUrl patch in "
+            f"{playbackmanager} (legacy={legacy_stream_url_count})"
+        )
+    if legacy_stream_url_count:
+        text = text.replace(
+            STREAM_URL_SELECTION_PATCHED_LEGACY,
+            STREAM_URL_SELECTION_PATCHED,
+            1,
+        )
+        stream_url_changed = True
+    else:
+        text, stream_url_changed = patch_text(
+            text,
+            STREAM_URL_SELECTION_ORIGINAL,
+            STREAM_URL_SELECTION_PATCHED,
+            playbackmanager,
+        )
 
     if (
         helper_changed
