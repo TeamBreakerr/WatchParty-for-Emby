@@ -267,14 +267,18 @@ async function redirect2Pan(r) {
         self.assertNotIn("合集（115）", locations + access + policy)
         self.assertNotIn("我的115分享", locations + access + policy)
 
-    def test_seek_guard_cancels_oldest_upstream_before_connecting(self):
+    def test_seek_guard_waits_for_natural_release_before_connecting(self):
         guard = (DEPLOY_ROOT / "guard" / "main.go").read_text()
         locations = (DEPLOY_ROOT / "emby-115-locations.conf").read_text()
 
         self.assertIn("newLeaseManager(2", guard)
-        self.assertIn("evicted.cancel()", guard)
-        self.assertIn("<-evicted.upstreamClosed", guard)
-        self.assertIn("errUpstreamClosureTimeout", guard)
+        self.assertIn("waitForSlot", guard)
+        self.assertIn("slotChanged", guard)
+        self.assertNotIn("evicted.cancel()", guard)
+        self.assertNotIn("replaced oldest upstream stream", guard)
+        self.assertIn("errSlotWaitTimeout", guard)
+        self.assertIn("emby_115_guard_slot_waits_total", guard)
+        self.assertIn("emby_115_guard_slot_wait_timeouts_total", guard)
         self.assertIn("http.StatusServiceUnavailable", guard)
         self.assertIn("X-Emby-115-Target", locations)
         self.assertIn("rewrite ^ /stream break;", locations)
@@ -417,9 +421,10 @@ async function redirect2Pan(r) {
 
         self.assertEqual(2, integration.count("--limit-rate 128k"))
         self.assertIn("third range did not return 206", integration)
+        self.assertIn("third range completed before a natural slot release", integration)
         self.assertIn("third seek exceeded", integration)
         self.assertIn("connection limit breach counter increased", integration)
-        self.assertIn("replacement counter did not increase", integration)
+        self.assertIn("replacement counter increased", integration)
         self.assertIn("X-Emby-115-Proxy: dynamic", integration)
         self.assertIn("X-Emby-115-Guard: active", integration)
 

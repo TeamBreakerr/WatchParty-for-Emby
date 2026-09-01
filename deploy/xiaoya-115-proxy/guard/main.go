@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,24 +28,15 @@ const (
 
 var keyPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
-var errUpstreamClosureTimeout = errors.New("evicted upstream did not close before the replacement deadline")
+var errSlotWaitTimeout = errors.New("no upstream lease became available before the wait deadline")
 
 var allowed115Suffixes = []string{"115cdn.net", "115cdn.com", "115.com"}
 
 type targetParser func(string) (*url.URL, error)
 
 type streamLease struct {
-	id             uint64
-	createdAt      time.Time
-	cancel         context.CancelFunc
-	upstreamClosed chan struct{}
-	closeOnce      sync.Once
-}
-
-func (l *streamLease) markUpstreamClosed() {
-	l.closeOnce.Do(func() {
-		close(l.upstreamClosed)
-	})
+	id     uint64
+	cancel context.CancelFunc
 }
 
 type leaseManager struct {
@@ -60,7 +50,7 @@ type leaseManager struct {
 
 type leaseGroup struct {
 	leases      []*streamLease
-	replacement chan struct{}
+	slotChanged chan struct{}
 }
 
 func newLeaseManager(maxPerKey int, waitTime, closeGrace time.Duration) *leaseManager {
@@ -74,95 +64,83 @@ func newLeaseManager(maxPerKey int, waitTime, closeGrace time.Duration) *leaseMa
 
 func (m *leaseManager) acquire(parent context.Context, key string) (context.Context, *streamLease, bool, error) {
 	ctx, cancel := context.WithCancel(parent)
+	waited := false
+	var waitDeadline time.Time
 	lease := &streamLease{
-		id:             atomic.AddUint64(&m.nextID, 1),
-		createdAt:      time.Now(),
-		cancel:         cancel,
-		upstreamClosed: make(chan struct{}),
+		id:     atomic.AddUint64(&m.nextID, 1),
+		cancel: cancel,
 	}
 
 	for {
 		m.mu.Lock()
 		group := m.byKey[key]
 		if group == nil {
-			group = &leaseGroup{}
+			group = &leaseGroup{slotChanged: make(chan struct{})}
 			m.byKey[key] = group
-		}
-		if group.replacement != nil {
-			replacementDone := group.replacement
-			m.mu.Unlock()
-			select {
-			case <-replacementDone:
-				continue
-			case <-parent.Done():
-				cancel()
-				return nil, nil, false, parent.Err()
-			}
 		}
 		if len(group.leases) < m.maxPerKey {
 			group.leases = append(group.leases, lease)
 			m.mu.Unlock()
-			return ctx, lease, false, nil
+			if waited {
+				if err := m.waitForCloseGrace(parent); err != nil {
+					m.release(key, lease)
+					return nil, nil, true, err
+				}
+			}
+			return ctx, lease, waited, nil
 		}
-
-		sort.SliceStable(group.leases, func(i, j int) bool {
-			return group.leases[i].createdAt.Before(group.leases[j].createdAt)
-		})
-		evicted := group.leases[0]
-		replacementDone := make(chan struct{})
-		group.replacement = replacementDone
-		evicted.cancel()
+		slotChanged := group.slotChanged
 		m.mu.Unlock()
 
-		waitErr := m.waitForUpstreamClosure(parent, evicted)
-
-		m.mu.Lock()
-		group = m.byKey[key]
-		if group == nil {
-			group = &leaseGroup{}
-			m.byKey[key] = group
+		if !waited {
+			waited = true
+			waitDeadline = time.Now().Add(m.waitTime)
 		}
-		group.replacement = nil
-		if waitErr == nil {
-			group.leases = removeLease(group.leases, evicted.id)
-			group.leases = append(group.leases, lease)
-		}
-		close(replacementDone)
-		if len(group.leases) == 0 {
-			delete(m.byKey, key)
-		}
-		m.mu.Unlock()
-
-		if waitErr != nil {
+		if err := waitForSlot(parent, slotChanged, time.Until(waitDeadline)); err != nil {
 			cancel()
-			return nil, nil, true, waitErr
+			return nil, nil, true, err
 		}
-		return ctx, lease, true, nil
 	}
 }
 
-func (m *leaseManager) waitForUpstreamClosure(parent context.Context, evicted *streamLease) error {
-	timer := time.NewTimer(m.waitTime)
+func waitForSlot(parent context.Context, slotChanged <-chan struct{}, waitTime time.Duration) error {
+	if waitTime <= 0 {
+		select {
+		case <-slotChanged:
+			return nil
+		case <-parent.Done():
+			return parent.Err()
+		default:
+			return errSlotWaitTimeout
+		}
+	}
+	timer := time.NewTimer(waitTime)
 	defer timer.Stop()
 	select {
-	case <-evicted.upstreamClosed:
+	case <-slotChanged:
+		return nil
 	case <-timer.C:
+		// Prefer a release that raced the timer. This avoids returning 503 when
+		// the upstream finished at the end of the bounded wait window.
 		select {
-		case <-evicted.upstreamClosed:
+		case <-slotChanged:
+			return nil
 		default:
-			return errUpstreamClosureTimeout
+			return errSlotWaitTimeout
 		}
 	case <-parent.Done():
 		return parent.Err()
 	}
+}
 
+func (m *leaseManager) waitForCloseGrace(parent context.Context) error {
 	if m.closeGrace <= 0 {
 		return nil
 	}
-	graceTimer := time.NewTimer(m.closeGrace)
-	defer graceTimer.Stop()
+	timer := time.NewTimer(m.closeGrace)
+	defer timer.Stop()
 	select {
-	case <-graceTimer.C:
+	case <-timer.C:
 		return nil
 	case <-parent.Done():
 		return parent.Err()
@@ -180,7 +158,6 @@ func removeLease(leases []*streamLease, id uint64) []*streamLease {
 
 func (m *leaseManager) release(key string, lease *streamLease) {
 	lease.cancel()
-	lease.markUpstreamClosed()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -188,8 +165,14 @@ func (m *leaseManager) release(key string, lease *streamLease) {
 	if group == nil {
 		return
 	}
-	group.leases = removeLease(group.leases, lease.id)
-	if len(group.leases) == 0 && group.replacement == nil {
+	remaining := removeLease(group.leases, lease.id)
+	if len(remaining) == len(group.leases) {
+		return
+	}
+	group.leases = remaining
+	close(group.slotChanged)
+	group.slotChanged = make(chan struct{})
+	if len(group.leases) == 0 {
 		delete(m.byKey, key)
 	}
 }
@@ -200,6 +183,7 @@ type streamGuard struct {
 	leases    *leaseManager
 	logger    *log.Logger
 	evictions atomic.Uint64
+	slotWaits atomic.Uint64
 	timeouts  atomic.Uint64
 	breaches  atomic.Uint64
 	activeMu  sync.Mutex
@@ -238,22 +222,24 @@ func (g *streamGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	leaseContext, lease, evicted, acquireErr := g.leases.acquire(r.Context(), key)
+	leaseContext, lease, waited, acquireErr := g.leases.acquire(r.Context(), key)
+	if waited {
+		g.slotWaits.Add(1)
+	}
 	if acquireErr != nil {
 		if errors.Is(acquireErr, context.Canceled) || errors.Is(acquireErr, context.DeadlineExceeded) {
 			return
 		}
 		g.timeouts.Add(1)
-		g.logger.Printf("replacement timed out for key %.8s", key)
+		g.logger.Printf("slot wait timed out for key %.8s", key)
 		w.Header().Set("Retry-After", "1")
-		http.Error(w, "115 upstream replacement unavailable", http.StatusServiceUnavailable)
+		http.Error(w, "115 upstream slot unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	defer g.leases.release(key, lease)
-	if evicted {
-		g.evictions.Add(1)
-		g.logger.Printf("replaced oldest upstream stream for key %.8s", key)
-	}
+	// A full key waits for a natural release. It never cancels an existing
+	// stream, because doing so truncates a healthy HLS/Range response and causes
+	// the media server to restart the whole playback pipeline.
 	if err := leaseContext.Err(); err != nil {
 		return
 	}
@@ -288,14 +274,12 @@ func (g *streamGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-leaseContext.Done():
 			_ = response.Body.Close()
-			lease.markUpstreamClosed()
 		case <-copyDone:
 		}
 	}()
 	defer close(copyDone)
 	defer func() {
 		_ = response.Body.Close()
-		lease.markUpstreamClosed()
 	}()
 
 	copyResponseHeaders(w.Header(), response.Header)
@@ -337,9 +321,11 @@ func (g *streamGuard) writeMetrics(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = fmt.Fprintf(w,
 		"emby_115_guard_replacements_total %d\n"+
+			"emby_115_guard_slot_waits_total %d\n"+
 			"emby_115_guard_replacement_timeouts_total %d\n"+
+			"emby_115_guard_slot_wait_timeouts_total %d\n"+
 			"emby_115_guard_connection_limit_breaches_total %d\n",
-		g.evictions.Load(), g.timeouts.Load(), g.breaches.Load())
+		g.evictions.Load(), g.slotWaits.Load(), g.timeouts.Load(), g.timeouts.Load(), g.breaches.Load())
 }
 
 func errorCategory(err error) string {

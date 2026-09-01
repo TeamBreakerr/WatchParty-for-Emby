@@ -22,13 +22,13 @@ if [ -z "$before_replacements" ] || [ -z "$before_breaches" ]; then
     exit 1
 fi
 
-timeout 8 curl -g -sS --limit-rate 128k \
+curl -g -sS --limit-rate 128k --max-time 8 \
     -D "$test_dir/first.headers" \
     -r 0-5242879 -o /dev/null -w '%{http_code}' \
     "$media_url" >"$test_dir/first.status" &
 first_pid=$!
 
-timeout 8 curl -g -sS --limit-rate 128k \
+curl -g -sS --limit-rate 128k --max-time 8 \
     -D "$test_dir/second.headers" \
     -r 5242880-10485759 -o /dev/null -w '%{http_code}' \
     "$media_url" >"$test_dir/second.status" &
@@ -52,11 +52,24 @@ fi
 curl -g -sS --max-time 4 -D "$test_dir/third.headers" \
     -r 10485760-11534335 -o /dev/null \
     -w '%{http_code} %{size_download} %{time_total}\n' \
-    "$media_url" >"$test_dir/third.result"
+    "$media_url" >"$test_dir/third.result" &
+third_pid=$!
+
+# The third Range must remain queued while both healthy upstreams are active.
+# Then release one stream as a client would after a completed segment/seek and
+# verify the queued request takes the naturally available slot.
+sleep 0.05
+if ! kill -0 "$third_pid" 2>/dev/null; then
+    wait "$third_pid" 2>/dev/null || true
+    echo "third range completed before a natural slot release" >&2
+    exit 1
+fi
+kill "$first_pid" 2>/dev/null || true
+wait "$first_pid" 2>/dev/null
+first_exit=$?
+wait "$third_pid"
 third_exit=$?
 
-wait "$first_pid"
-first_exit=$?
 wait "$second_pid"
 second_exit=$?
 
@@ -70,6 +83,11 @@ tr -d '\r' <"$test_dir/third.headers" \
 
 if [ "$third_exit" -ne 0 ]; then
     exit "$third_exit"
+fi
+
+if [ "$(cat "$test_dir/second.status" 2>/dev/null || true)" != "206" ]; then
+    echo "the surviving baseline range did not remain healthy" >&2
+    exit 1
 fi
 
 if [ "$third_status" != "206" ]; then
@@ -98,7 +116,7 @@ if [ "$after_breaches" -ne "$before_breaches" ]; then
     echo "connection limit breach counter increased: $before_breaches -> $after_breaches" >&2
     exit 1
 fi
-if [ "$after_replacements" -le "$before_replacements" ]; then
-    echo "replacement counter did not increase: $before_replacements -> $after_replacements" >&2
+if [ "$after_replacements" -ne "$before_replacements" ]; then
+    echo "replacement counter increased: $before_replacements -> $after_replacements" >&2
     exit 1
 fi

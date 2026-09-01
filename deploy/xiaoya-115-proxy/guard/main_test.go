@@ -78,7 +78,7 @@ func TestParse115Target(t *testing.T) {
 	}
 }
 
-func TestThirdStreamCancelsOldestUpstreamBeforeConnecting(t *testing.T) {
+func TestThirdStreamWaitsForNaturalReleaseWithoutEviction(t *testing.T) {
 	var active atomic.Int32
 	var maximum atomic.Int32
 
@@ -160,7 +160,46 @@ func TestThirdStreamCancelsOldestUpstreamBeforeConnecting(t *testing.T) {
 		t.Fatalf("expected two active upstreams, got %d", active.Load())
 	}
 
-	third := openGuardStream(t, guardServer.URL, upstream.URL+"/video", key, "bytes=200-299")
+	thirdResult := make(chan *http.Response, 1)
+	thirdErrors := make(chan error, 1)
+	go func() {
+		request, requestErr := http.NewRequest(
+			http.MethodGet, guardServer.URL+"/stream", nil)
+		if requestErr != nil {
+			thirdErrors <- requestErr
+			return
+		}
+		request.Header.Set(targetHeader, upstream.URL+"/video")
+		request.Header.Set(keyHeader, key)
+		request.Header.Set("Range", "bytes=200-299")
+		response, responseErr := http.DefaultClient.Do(request)
+		if responseErr != nil {
+			thirdErrors <- responseErr
+			return
+		}
+		thirdResult <- response
+	}()
+
+	select {
+	case <-thirdResult:
+		t.Fatal("third stream connected before a natural lease release")
+	case err := <-thirdErrors:
+		t.Fatal(err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if guard.evictions.Load() != 0 {
+		t.Fatalf("third stream caused an eviction while waiting: %d", guard.evictions.Load())
+	}
+
+	first.Body.Close()
+	var third *http.Response
+	select {
+	case err := <-thirdErrors:
+		t.Fatal(err)
+	case third = <-thirdResult:
+	case <-time.After(time.Second):
+		t.Fatal("third stream did not proceed after the first lease released")
+	}
 	thirdBody, err := io.ReadAll(third.Body)
 	third.Body.Close()
 	if err != nil {
@@ -169,8 +208,8 @@ func TestThirdStreamCancelsOldestUpstreamBeforeConnecting(t *testing.T) {
 	if third.StatusCode != http.StatusPartialContent || len(thirdBody) != 100 {
 		t.Fatalf("unexpected third response: status=%d bytes=%d", third.StatusCode, len(thirdBody))
 	}
-	if guard.evictions.Load() != 1 {
-		t.Fatalf("expected one eviction, got %d", guard.evictions.Load())
+	if guard.evictions.Load() != 0 {
+		t.Fatalf("expected no forced evictions, got %d", guard.evictions.Load())
 	}
 	if maximum.Load() > 2 {
 		t.Fatalf("opened %d concurrent upstreams", maximum.Load())
@@ -180,14 +219,73 @@ func TestThirdStreamCancelsOldestUpstreamBeforeConnecting(t *testing.T) {
 	second.Body.Close()
 }
 
-func TestThirdStreamFailsWithoutOpeningUpstreamWhenEvictionDoesNotClose(t *testing.T) {
+func TestConcurrentWaitersShareOneBoundedAcquisitionDeadline(t *testing.T) {
+	manager := newLeaseManager(2, 200*time.Millisecond, 0)
+	key := "0123456789abcdef0123456789abcdef"
+
+	_, first, _, err := manager.acquire(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, second, _, err := manager.acquire(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type acquisition struct {
+		lease *streamLease
+		err   error
+	}
+	results := make(chan acquisition, 3)
+	startedAt := time.Now()
+	for range 3 {
+		go func() {
+			_, lease, _, acquireErr := manager.acquire(t.Context(), key)
+			results <- acquisition{lease: lease, err: acquireErr}
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	manager.release(key, first)
+	firstWinner := <-results
+	if firstWinner.err != nil || firstWinner.lease == nil {
+		t.Fatalf("first released slot was not acquired: %v", firstWinner.err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	manager.release(key, second)
+	secondWinner := <-results
+	if secondWinner.err != nil || secondWinner.lease == nil {
+		t.Fatalf("second released slot was not acquired: %v", secondWinner.err)
+	}
+
+	select {
+	case final := <-results:
+		if !errors.Is(final.err, errSlotWaitTimeout) || final.lease != nil {
+			t.Fatalf("expected the remaining waiter to time out, got lease=%v err=%v",
+				final.lease, final.err)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("remaining waiter exceeded the original acquisition deadline")
+	}
+	if elapsed := time.Since(startedAt); elapsed > 250*time.Millisecond {
+		t.Fatalf("bounded acquisition took %s", elapsed)
+	}
+
+	manager.release(key, firstWinner.lease)
+	manager.release(key, secondWinner.lease)
+}
+
+func TestThirdStreamTimesOutWithoutOpeningUpstreamWhenNoSlotIsReleased(t *testing.T) {
 	var calls atomic.Int32
 	var active atomic.Int32
 	releaseClose := make(chan struct{})
 	var releaseOnce sync.Once
+	firstCloseStarted := make(chan struct{})
+	secondCloseStarted := make(chan struct{})
 
 	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		calls.Add(1)
+		callNumber := calls.Add(1)
 		current := active.Add(1)
 		if current > 2 {
 			active.Add(-1)
@@ -206,8 +304,13 @@ func TestThirdStreamFailsWithoutOpeningUpstreamWhenEvictionDoesNotClose(t *testi
 				"Content-Range": []string{"bytes 0-1023/4096"},
 			},
 			Body: &delayedCloseBody{
-				active:       &active,
-				closeStarted: make(chan struct{}),
+				active: &active,
+				closeStarted: func() chan struct{} {
+					if callNumber == 1 {
+						return firstCloseStarted
+					}
+					return secondCloseStarted
+				}(),
 				releaseClose: releaseClose,
 			},
 			Request: request,
@@ -253,15 +356,36 @@ func TestThirdStreamFailsWithoutOpeningUpstreamWhenEvictionDoesNotClose(t *testi
 	}
 
 	if third.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 while the evicted upstream is still open, got %d: %s",
+		t.Fatalf("expected 503 while both upstream slots are still open, got %d: %s",
 			third.StatusCode, bytes.TrimSpace(thirdBody))
+	}
+	if third.Header.Get("Retry-After") != "1" {
+		t.Fatalf("expected a bounded retry hint, got %q", third.Header.Get("Retry-After"))
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("expected no third upstream attempt, got %d attempts", calls.Load())
 	}
+	select {
+	case <-firstCloseStarted:
+		t.Fatal("third stream forcibly closed the first healthy upstream")
+	default:
+	}
+	select {
+	case <-secondCloseStarted:
+		t.Fatal("third stream forcibly closed the second healthy upstream")
+	default:
+	}
 	if guard.timeouts.Load() != 1 || guard.breaches.Load() != 0 {
 		t.Fatalf("unexpected guard counters: timeouts=%d breaches=%d",
 			guard.timeouts.Load(), guard.breaches.Load())
+	}
+	if guard.slotWaits.Load() != 1 {
+		t.Fatalf("expected one slot wait, got %d", guard.slotWaits.Load())
+	}
+	metrics := httptest.NewRecorder()
+	guard.writeMetrics(metrics)
+	if !strings.Contains(metrics.Body.String(), "emby_115_guard_slot_wait_timeouts_total 1\n") {
+		t.Fatalf("slot wait timeout metric is missing: %s", metrics.Body.String())
 	}
 
 	releaseOnce.Do(func() { close(releaseClose) })

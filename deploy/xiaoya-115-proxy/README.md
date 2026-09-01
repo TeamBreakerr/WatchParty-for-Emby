@@ -9,18 +9,23 @@ download domain are proxied directly. Other providers continue through the
 official Xiaoya `/d/` location.
 
 The loopback `emby-115-guard` process keeps two upstream requests per media
-path. A third Range request, which normally follows a seek, cancels the oldest
-upstream HTTP context, waits for its CDN socket to close, and allows a short
-teardown grace period before opening the new request. If the old connection
-does not close by the deadline, the guard returns 503 without opening a third
+path. A third Range request, which normally follows a seek or an HLS segment
+rotation, waits for one of the existing requests to finish naturally. The
+guard never cancels a healthy stream: doing that truncates its response and can
+make Emby restart FFmpeg, creating a retry storm. If no slot is released within
+the bounded wait window, the guard returns 503 without opening a third
 upstream; Nginx performs one delayed, refreshed retry for either that condition
 or a transient 115 403. Nginx never needs to interrupt a response that is
 blocked on a slow downstream client.
 
 The guard exposes loopback-only Prometheus counters at
-`http://127.0.0.1:15678/metrics`. The integration test asserts that a seek
-increments the replacement counter, completes within three seconds, and does
-not increment the per-media connection-limit breach counter.
+`http://127.0.0.1:15678/metrics`. The integration test releases one of the two
+initial streams, then asserts that the waiting third Range returns 206 without
+incrementing the replacement or per-media connection-limit breach counters.
+`emby_115_guard_slot_waits_total` counts requests that had to wait, and
+`emby_115_guard_slot_wait_timeouts_total` counts bounded waits that could not
+obtain a slot. The older replacement and replacement-timeout metrics are
+retained as deprecated compatibility aliases; replacements remain zero.
 
 Files are copied to Xiaoya's persistent `/data` mount. The installer wraps
 `/updateall`, and `install-xiaoyakeeper-hook.sh` adds a post-update reinstall
