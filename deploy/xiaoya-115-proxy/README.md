@@ -30,8 +30,12 @@ retained as deprecated compatibility aliases; replacements remain zero.
 Files are copied to Xiaoya's persistent `/data` mount. The installer wraps
 `/updateall`, and `install-xiaoyakeeper-hook.sh` adds a post-update reinstall
 command to `mycmd.txt`, so both data refreshes and container recreation restore
-the includes. A root cron health check restarts the loopback guard after an
-ordinary restart of the existing container.
+the includes. The installer waits for a newly recreated Nginx master and
+retries reload instead of rolling back a valid overlay during the startup
+window. A lightweight in-container cron check verifies both the loopback guard
+and the effective `nginx -T` route set; if the guard is healthy but the `/d/`
+access hook or named stream/retry locations are missing, it reruns the complete
+installer. No host systemd timer is required.
 
 The same installer also repairs Xiaoya's inner `/etc/nginx/http.d/emby.conf`.
 Its stock `listen 2345` server sets `proxy_read_timeout 20s`, and the stock
@@ -81,8 +85,9 @@ recreated. Persistence is therefore provided at two levels:
    immediately after `update_xiaoya`.
 
 The installer also retains the existing in-container lightweight checks for the
-115 guard and WebSocket include. None of these mechanisms changes Emby's client
-protocol or injects an application-level KeepAlive message.
+115 guard, effective proxy routes, and WebSocket include. None of these
+mechanisms changes Emby's client protocol or injects an application-level
+KeepAlive message.
 
 Build the guard for this ARM64 Xiaoya host before installation:
 

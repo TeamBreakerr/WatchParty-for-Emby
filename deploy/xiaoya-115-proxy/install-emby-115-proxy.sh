@@ -1,9 +1,15 @@
 #!/bin/sh
 set -eu
 
-default_config=/etc/nginx/http.d/default.conf
-emby_config=/etc/nginx/http.d/emby.conf
-runtime_config=/etc/nginx/http.d/emby-115-throttle.conf
+data_dir=${EMBY_115_DATA_DIR:-/data}
+default_config=${EMBY_115_DEFAULT_CONFIG:-/etc/nginx/http.d/default.conf}
+emby_config=${EMBY_115_EMBY_CONFIG:-/etc/nginx/http.d/emby.conf}
+runtime_config=${EMBY_115_RUNTIME_CONFIG:-/etc/nginx/http.d/emby-115-throttle.conf}
+nginx_bin=${EMBY_115_NGINX_BIN:-nginx}
+nginx_pid_file=${EMBY_115_NGINX_PID_FILE:-/run/nginx/nginx.pid}
+reload_attempts=${EMBY_115_RELOAD_ATTEMPTS:-60}
+reload_delay_seconds=${EMBY_115_RELOAD_DELAY_SECONDS:-1}
+updateall_path=${EMBY_115_UPDATEALL:-/updateall}
 server_include='        include /data/emby-115-locations.conf;'
 access_include='            include /data/emby-115-access.conf;'
 wrapper_marker='codex-dynamic-emby-115-updateall-wrapper'
@@ -13,12 +19,49 @@ runtime_backup=
 runtime_existed=0
 updateall_backup=
 install_committed=0
-cron_file=/etc/crontabs/root
+cron_file=${EMBY_115_CRON_FILE:-/etc/crontabs/root}
 cron_backup=
 cron_existed=0
-guard_cron='* * * * * /data/ensure-emby-115-guard.sh'
+proxy_health_cron='* * * * * /data/ensure-emby-115-proxy.sh'
 websocket_timeout_cron='* * * * * /data/ensure-emby-websocket-timeout.sh --reload'
-legacy_overlay_script=/data/ensure-xiaoya-overlays.sh
+legacy_overlay_script=${EMBY_115_LEGACY_OVERLAY:-/data/ensure-xiaoya-overlays.sh}
+
+proxy_routes_present() {
+    rendered_config=$("$nginx_bin" -T 2>&1) || return 1
+    for marker in \
+        '/data/emby-115-locations.conf' \
+        'location @emby_115_stream' \
+        'location @emby_115_retry' \
+        '/data/emby-115-access.conf' \
+        'access_by_lua_file /data/emby-115-access.lua;'; do
+        printf '%s\n' "$rendered_config" | grep -Fq "$marker" || return 1
+    done
+}
+
+reload_nginx_when_ready() {
+    attempt=1
+    while [ "$attempt" -le "$reload_attempts" ]; do
+        if [ -s "$nginx_pid_file" ]; then
+            nginx_pid=$(cat "$nginx_pid_file" 2>/dev/null || true)
+            case "$nginx_pid" in
+                ''|*[!0-9]*) ;;
+                *)
+                    if kill -0 "$nginx_pid" 2>/dev/null \
+                        && "$nginx_bin" -s reload; then
+                        return 0
+                    fi
+                    ;;
+            esac
+        fi
+        if [ "$attempt" -lt "$reload_attempts" ]; then
+            sleep "$reload_delay_seconds"
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    echo "Nginx was not ready for reload after $reload_attempts attempt(s)" >&2
+    return 1
+}
 
 cleanup() {
     status=$?
@@ -37,7 +80,7 @@ cleanup() {
             rm -f "$runtime_config"
         fi
         if [ -n "$updateall_backup" ]; then
-            cp -p "$updateall_backup" /updateall
+            cp -p "$updateall_backup" "$updateall_path"
         fi
         if [ "$cron_existed" -eq 1 ] && [ -n "$cron_backup" ]; then
             cp -p "$cron_backup" "$cron_file"
@@ -46,7 +89,7 @@ cleanup() {
         fi
         echo "restored Nginx configuration after failed 115 proxy installation" >&2
     elif [ "$status" -ne 0 ]; then
-        echo "installation remains active; retry to finish legacy overlay cleanup" >&2
+        echo "installation remains active; retry to finish reload or cleanup" >&2
     fi
     [ -z "$default_backup" ] || rm -f "$default_backup"
     [ -z "$emby_config_backup" ] || rm -f "$emby_config_backup"
@@ -66,6 +109,7 @@ emby-115-throttle.conf
 emby-115-guard
 emby_115_policy.lua
 ensure-emby-115-guard.sh
+ensure-emby-115-proxy.sh
 emby-websocket-diagnostic.conf
 emby-websocket-timeout.conf
 ensure-emby-websocket-timeout.sh
@@ -74,22 +118,23 @@ ensure-emby-web-cache-buster.sh
 ensure-emby-direct-link-fallback.sh
 updateall-emby-115-wrapper.sh'
 for required_file in $required_files; do
-    if [ ! -s "/data/$required_file" ]; then
-        echo "missing /data/$required_file" >&2
+    if [ ! -s "$data_dir/$required_file" ]; then
+        echo "missing $data_dir/$required_file" >&2
         exit 1
     fi
 done
 
-if [ ! -x /data/emby-115-guard ] \
-    || [ ! -x /data/ensure-emby-115-guard.sh ] \
-    || [ ! -x /data/ensure-emby-websocket-timeout.sh ] \
-    || [ ! -x /data/ensure-emby-web-cache-buster.sh ] \
-    || [ ! -x /data/ensure-emby-direct-link-fallback.sh ]; then
+if [ ! -x "$data_dir/emby-115-guard" ] \
+    || [ ! -x "$data_dir/ensure-emby-115-guard.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-115-proxy.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-websocket-timeout.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-web-cache-buster.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-direct-link-fallback.sh" ]; then
     echo "115 guard executables are not executable" >&2
     exit 1
 fi
 
-mkdir -p /data/logs
+mkdir -p "$data_dir/logs"
 
 if ! grep -Fq 'location /d/ {' "$default_config"; then
     echo "could not find the official /d/ location in $default_config" >&2
@@ -114,7 +159,7 @@ if ! grep -Fq '/data/emby-115-access.conf' "$default_config"; then
     sed -i "/^[[:space:]]*location \/d\/ {/a\\$access_include" "$default_config"
 fi
 
-cp -p /data/emby-115-throttle.conf "$runtime_config"
+cp -p "$data_dir/emby-115-throttle.conf" "$runtime_config"
 
 cron_backup=$(mktemp)
 if [ -e "$cron_file" ]; then
@@ -124,37 +169,45 @@ else
     : >"$cron_backup"
     : >"$cron_file"
 fi
-if ! grep -Fq '/data/ensure-emby-115-guard.sh' "$cron_file"; then
-    printf '%s\n' "$guard_cron" >>"$cron_file"
+if grep -Fq '/data/ensure-emby-115-guard.sh' "$cron_file"; then
+    sed -i '\|/data/ensure-emby-115-guard.sh|d' "$cron_file"
+fi
+if ! grep -Fq '/data/ensure-emby-115-proxy.sh' "$cron_file"; then
+    printf '%s\n' "$proxy_health_cron" >>"$cron_file"
 fi
 if ! grep -Fq '/data/ensure-emby-websocket-timeout.sh' "$cron_file"; then
     printf '%s\n' "$websocket_timeout_cron" >>"$cron_file"
 fi
-/data/ensure-emby-115-guard.sh
-/data/ensure-emby-websocket-timeout.sh
-/data/ensure-emby-web-cache-buster.sh
-/data/ensure-emby-direct-link-fallback.sh
+"$data_dir/ensure-emby-115-guard.sh"
+"$data_dir/ensure-emby-websocket-timeout.sh"
+"$data_dir/ensure-emby-web-cache-buster.sh"
+"$data_dir/ensure-emby-direct-link-fallback.sh"
 
-nginx -t
-
-if ! grep -Fq "$wrapper_marker" /updateall; then
-    updateall_backup=$(mktemp)
-    cp -p /updateall "$updateall_backup"
-    cp -p /data/updateall-emby-115-wrapper.sh /updateall.codex-new
-    chmod 755 /updateall.codex-new
-    if [ ! -e /updateall.xiaoya-original ]; then
-        mv /updateall /updateall.xiaoya-original
-    fi
-    mv /updateall.codex-new /updateall
+"$nginx_bin" -t
+if ! proxy_routes_present; then
+    echo "Nginx configuration is missing one or more 115 proxy routes" >&2
+    exit 1
 fi
+
+if ! grep -Fq "$wrapper_marker" "$updateall_path"; then
+    updateall_backup=$(mktemp)
+    cp -p "$updateall_path" "$updateall_backup"
+    cp -p "$data_dir/updateall-emby-115-wrapper.sh" "$updateall_path.codex-new"
+    chmod 755 "$updateall_path.codex-new"
+    if [ ! -e "$updateall_path.xiaoya-original" ]; then
+        mv "$updateall_path" "$updateall_path.xiaoya-original"
+    fi
+    mv "$updateall_path.codex-new" "$updateall_path"
+fi
+
+# At this point all on-disk changes have passed nginx -t and nginx -T. Keep
+# them installed if the freshly recreated container is not ready to reload
+# yet; the minute health check can safely retry the reload later.
+install_committed=1
 
 if [ "${1:-}" = "--reload" ]; then
-    nginx -s reload
+    reload_nginx_when_ready
 fi
-
-# The installed Nginx state is now committed. A later retirement failure must
-# be retried without restoring files that the running worker already loaded.
-install_committed=1
 
 # Retire the previous full-overlay minute cron only after this installation has
 # validated and, when requested, reloaded successfully.

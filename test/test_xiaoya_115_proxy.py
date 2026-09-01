@@ -1,3 +1,4 @@
+import os
 import re
 import shutil
 import subprocess
@@ -259,13 +260,16 @@ async function redirect2Pan(r) {
         locations = (DEPLOY_ROOT / "emby-115-locations.conf").read_text()
         access = (DEPLOY_ROOT / "emby-115-access.lua").read_text()
         policy = (DEPLOY_ROOT / "emby_115_policy.lua").read_text()
+        routing = locations + access + policy
 
         self.assertIn("/__emby_115_resolve/", locations)
         self.assertIn("resolve_115_target", access)
         self.assertIn("get_115_target_host", policy)
         self.assertIn("115cdn.net", policy)
-        self.assertNotIn("合集（115）", locations + access + policy)
-        self.assertNotIn("我的115分享", locations + access + policy)
+        self.assertNotIn("合集（115）", routing)
+        self.assertNotIn("我的115分享", routing)
+        self.assertNotIn("Bangumi", routing)
+        self.assertNotRegex(routing.lower(), r"[.]mkv|[.]mp4")
 
     def test_seek_guard_waits_for_natural_release_before_connecting(self):
         guard = (DEPLOY_ROOT / "guard" / "main.go").read_text()
@@ -358,8 +362,9 @@ async function redirect2Pan(r) {
 
         self.assertIn("include /data/emby-115-locations.conf;", installer)
         self.assertIn("include /data/emby-115-access.conf;", installer)
-        self.assertIn("nginx -t", installer)
+        self.assertIn('"$nginx_bin" -t', installer)
         self.assertIn("ensure-emby-115-guard.sh", installer)
+        self.assertIn("ensure-emby-115-proxy.sh", installer)
         self.assertIn("/etc/crontabs/root", installer)
         self.assertIn("emby-websocket-timeout.conf", installer)
         self.assertIn("emby-websocket-diagnostic.conf", installer)
@@ -367,9 +372,9 @@ async function redirect2Pan(r) {
         self.assertIn("/data/ensure-emby-websocket-timeout.sh --reload", installer)
         self.assertIn("emby-web-cache-buster.conf", installer)
         self.assertIn("ensure-emby-web-cache-buster.sh", installer)
-        self.assertIn("/data/ensure-emby-web-cache-buster.sh", installer)
+        self.assertIn('"$data_dir/ensure-emby-web-cache-buster.sh"', installer)
         self.assertIn("ensure-emby-direct-link-fallback.sh", installer)
-        self.assertIn("/data/ensure-emby-direct-link-fallback.sh", installer)
+        self.assertIn('"$data_dir/ensure-emby-direct-link-fallback.sh"', installer)
         self.assertIn("fetchXYApi", direct_link_ensurer)
         self.assertIn("data-appversion=\"4.9.0.42\"", web_cache_buster)
         self.assertIn("data-appversion=\"4.9.0.42-wp3\"", web_cache_buster)
@@ -387,12 +392,204 @@ async function redirect2Pan(r) {
         self.assertIn("install-emby-115-proxy.sh --reload", keeper)
         self.assertIn("xiaoyakeeper-xiaoya-begin", keeper)
 
+    def test_installer_retries_reload_after_container_recreation(self):
+        installer = DEPLOY_ROOT / "install-emby-115-proxy.sh"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "data"
+            nginx_dir = root / "nginx"
+            bin_dir = root / "bin"
+            data_dir.mkdir()
+            nginx_dir.mkdir()
+            bin_dir.mkdir()
+
+            default_config = nginx_dir / "default.conf"
+            emby_config = nginx_dir / "emby.conf"
+            runtime_config = nginx_dir / "emby-115-throttle.conf"
+            cron_file = root / "root.cron"
+            updateall = root / "updateall"
+            pid_file = root / "nginx.pid"
+            reload_count = root / "reload-count"
+
+            default_config.write_text(
+                "server {\n"
+                "    include /data/emby-115-locations.conf;\n"
+                "    location /d/ {\n"
+                "        include /data/emby-115-access.conf;\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            emby_config.write_text("server { listen 2345; }\n", encoding="utf-8")
+            cron_file.write_text("", encoding="utf-8")
+            updateall.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            updateall.chmod(0o755)
+            pid_file.write_text(str(os.getpid()), encoding="utf-8")
+
+            required_files = (
+                "emby-115-access.conf",
+                "emby-115-access.lua",
+                "emby-115-locations.conf",
+                "emby-115-retry.lua",
+                "emby-115-throttle.conf",
+                "emby-115-guard",
+                "emby_115_policy.lua",
+                "ensure-emby-115-guard.sh",
+                "ensure-emby-115-proxy.sh",
+                "emby-websocket-diagnostic.conf",
+                "emby-websocket-timeout.conf",
+                "ensure-emby-websocket-timeout.sh",
+                "emby-web-cache-buster.conf",
+                "ensure-emby-web-cache-buster.sh",
+                "ensure-emby-direct-link-fallback.sh",
+                "updateall-emby-115-wrapper.sh",
+            )
+            executable_files = {
+                "emby-115-guard",
+                "ensure-emby-115-guard.sh",
+                "ensure-emby-115-proxy.sh",
+                "ensure-emby-websocket-timeout.sh",
+                "ensure-emby-web-cache-buster.sh",
+                "ensure-emby-direct-link-fallback.sh",
+            }
+            for name in required_files:
+                path = data_dir / name
+                if name == "updateall-emby-115-wrapper.sh":
+                    contents = "#!/bin/sh\n# codex-dynamic-emby-115-updateall-wrapper\n"
+                elif name in executable_files:
+                    contents = "#!/bin/sh\nexit 0\n"
+                else:
+                    contents = "fixture\n"
+                path.write_text(contents, encoding="utf-8")
+                if name in executable_files:
+                    path.chmod(0o755)
+
+            fake_nginx = bin_dir / "nginx"
+            fake_nginx.write_text(
+                "#!/bin/sh\n"
+                "case \"${1:-}\" in\n"
+                "  -t) exit 0 ;;\n"
+                "  -T)\n"
+                "    echo '# configuration file /data/emby-115-locations.conf:'\n"
+                "    echo 'location @emby_115_stream {'\n"
+                "    echo 'location @emby_115_retry {'\n"
+                "    echo '# configuration file /data/emby-115-access.conf:'\n"
+                "    echo 'access_by_lua_file /data/emby-115-access.lua;'\n"
+                "    exit 0 ;;\n"
+                "  -s)\n"
+                f"    count=$(cat '{reload_count}' 2>/dev/null || echo 0)\n"
+                "    count=$((count + 1))\n"
+                f"    echo \"$count\" >'{reload_count}'\n"
+                "    [ \"$count\" -ge 3 ] ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_nginx.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "EMBY_115_DATA_DIR": str(data_dir),
+                    "EMBY_115_DEFAULT_CONFIG": str(default_config),
+                    "EMBY_115_EMBY_CONFIG": str(emby_config),
+                    "EMBY_115_RUNTIME_CONFIG": str(runtime_config),
+                    "EMBY_115_CRON_FILE": str(cron_file),
+                    "EMBY_115_UPDATEALL": str(updateall),
+                    "EMBY_115_LEGACY_OVERLAY": str(data_dir / "legacy-overlay.sh"),
+                    "EMBY_115_NGINX_BIN": str(fake_nginx),
+                    "EMBY_115_NGINX_PID_FILE": str(pid_file),
+                    "EMBY_115_RELOAD_ATTEMPTS": "3",
+                    "EMBY_115_RELOAD_DELAY_SECONDS": "0",
+                }
+            )
+            result = subprocess.run(
+                [str(installer), "--reload"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("3", reload_count.read_text(encoding="utf-8").strip())
+            installed = default_config.read_text(encoding="utf-8")
+            self.assertIn("include /data/emby-115-locations.conf;", installed)
+            self.assertIn("include /data/emby-115-access.conf;", installed)
+            self.assertNotIn("restored Nginx configuration", result.stderr)
+
+            reload_count.write_text("0\n", encoding="utf-8")
+            env["EMBY_115_RELOAD_ATTEMPTS"] = "1"
+            unavailable = subprocess.run(
+                [str(installer), "--reload"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertNotEqual(0, unavailable.returncode)
+            self.assertEqual(installed, default_config.read_text(encoding="utf-8"))
+            self.assertIn("installation remains active", unavailable.stderr)
+            self.assertNotIn("restored Nginx configuration", unavailable.stderr)
+
+    def test_health_check_repairs_missing_live_proxy_routes(self):
+        ensure = DEPLOY_ROOT / "ensure-emby-115-proxy.sh"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            route_ready = root / "route-ready"
+            install_calls = root / "install-calls"
+            fake_nginx = root / "nginx"
+            fake_guard_ensure = root / "ensure-guard"
+            fake_installer = root / "install-proxy"
+
+            fake_guard_ensure.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_guard_ensure.chmod(0o755)
+            fake_installer.write_text(
+                "#!/bin/sh\n"
+                f"echo called >'{install_calls}'\n"
+                f"touch '{route_ready}'\n",
+                encoding="utf-8",
+            )
+            fake_installer.chmod(0o755)
+            fake_nginx.write_text(
+                "#!/bin/sh\n"
+                "[ \"${1:-}\" = '-T' ] || exit 2\n"
+                "echo '# configuration file /etc/nginx/http.d/emby-115-throttle.conf:'\n"
+                f"if [ -e '{route_ready}' ]; then\n"
+                "  echo '# configuration file /data/emby-115-locations.conf:'\n"
+                "  echo 'location @emby_115_stream {'\n"
+                "  echo 'location @emby_115_retry {'\n"
+                "  echo '# configuration file /data/emby-115-access.conf:'\n"
+                "  echo 'access_by_lua_file /data/emby-115-access.lua;'\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            fake_nginx.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "EMBY_115_NGINX_BIN": str(fake_nginx),
+                    "EMBY_115_GUARD_ENSURE": str(fake_guard_ensure),
+                    "EMBY_115_INSTALLER": str(fake_installer),
+                    "EMBY_115_HEALTH_LOCK_DIR": str(root / "lock"),
+                }
+            )
+            result = subprocess.run(
+                [str(ensure)], capture_output=True, text=True, env=env
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertTrue(install_calls.exists())
+
     def test_installer_retires_the_previous_periodic_overlay(self):
         installer = (DEPLOY_ROOT / "install-emby-115-proxy.sh").read_text()
         readme = (DEPLOY_ROOT / "README.md").read_text()
 
         self.assertIn(
-            "legacy_overlay_script=/data/ensure-xiaoya-overlays.sh", installer
+            "legacy_overlay_script=${EMBY_115_LEGACY_OVERLAY:-/data/ensure-xiaoya-overlays.sh}",
+            installer,
         )
         self.assertIn(
             'sed -i "\\|$legacy_overlay_script|d" "$cron_file"', installer
@@ -403,11 +600,11 @@ async function redirect2Pan(r) {
             '[ "$status" -ne 0 ] && [ "$install_committed" -eq 0 ]', installer
         )
         self.assertLess(
-            installer.index('nginx -s reload'),
-            installer.index("install_committed=1"),
+            installer.rindex("install_committed=1"),
+            installer.rindex("reload_nginx_when_ready"),
         )
         self.assertLess(
-            installer.index("install_committed=1"),
+            installer.rindex("reload_nginx_when_ready"),
             installer.index('sed -i "\\|$legacy_overlay_script|d" "$cron_file"'),
         )
         self.assertNotIn("overlay_cron='* * * * *", installer)
