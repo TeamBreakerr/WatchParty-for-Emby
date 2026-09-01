@@ -5,29 +5,32 @@ namespace WatchPartyForEmby.Tests
 {
     public sealed class ParticipantResumeLatencyEstimatorTests
     {
-        private static readonly PlaybackSyncCoordinator ExpectationSource =
-            new PlaybackSyncCoordinator();
-
         [Fact]
         public void SlowSessionSampleDoesNotChangeFastSessionEstimate()
         {
             var estimator = CreateEstimator(smoothingFactor: 0.5);
             var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
-            var expectation = NewExpectation("slow-ios");
+            var target = TimeSpan.FromMinutes(10).Ticks;
 
-            estimator.RecordResumeCommand("slow-ios", expectation, sentAt);
+            estimator.RecordResumeSeek("slow-ios", target, sentAt);
 
-            Assert.True(estimator.TryRecordResumeAcknowledgement(
+            Assert.False(estimator.TryRecordPlaybackProgress(
                 "slow-ios",
-                expectation,
+                target,
+                isPaused: false,
                 sentAt + TimeSpan.FromSeconds(4),
+                out _,
+                out _));
+            Assert.True(estimator.TryRecordPlaybackProgress(
+                "slow-ios",
+                target + TimeSpan.FromSeconds(1).Ticks,
+                isPaused: false,
+                sentAt + TimeSpan.FromSeconds(5),
                 out var observedLatency,
                 out var updatedEstimate));
             Assert.Equal(TimeSpan.FromSeconds(4), observedLatency);
-            Assert.Equal(TimeSpan.FromMilliseconds(2125), updatedEstimate);
-            Assert.Equal(
-                TimeSpan.FromMilliseconds(250),
-                estimator.GetEstimatedLatency("fast-ios"));
+            Assert.Equal(TimeSpan.FromSeconds(2), updatedEstimate);
+            Assert.Equal(TimeSpan.Zero, estimator.GetEstimatedLatency("fast-ios"));
         }
 
         [Fact]
@@ -35,31 +38,46 @@ namespace WatchPartyForEmby.Tests
         {
             var estimator = CreateEstimator(smoothingFactor: 0.5);
             var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
-            var firstExpectation = NewExpectation("ios");
+            var target = TimeSpan.FromMinutes(10).Ticks;
 
-            estimator.RecordResumeCommand("ios", firstExpectation, sentAt);
-            Assert.True(estimator.TryRecordResumeAcknowledgement(
+            estimator.RecordResumeSeek("ios", target, sentAt);
+            Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                firstExpectation,
+                target,
+                isPaused: false,
                 sentAt + TimeSpan.FromSeconds(4),
+                out _,
+                out _));
+            Assert.True(estimator.TryRecordPlaybackProgress(
+                "ios",
+                target + TimeSpan.FromSeconds(1).Ticks,
+                isPaused: false,
+                sentAt + TimeSpan.FromSeconds(5),
                 out _,
                 out var firstEstimate));
 
-            var secondExpectation = NewExpectation("ios");
-            estimator.RecordResumeCommand(
+            estimator.RecordResumeSeek(
                 "ios",
-                secondExpectation,
+                target,
                 sentAt + TimeSpan.FromMinutes(1));
-            Assert.True(estimator.TryRecordResumeAcknowledgement(
+            Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                secondExpectation,
-                sentAt + TimeSpan.FromMinutes(1) + TimeSpan.FromMilliseconds(10),
+                target,
+                isPaused: false,
+                sentAt + TimeSpan.FromMinutes(1) + TimeSpan.FromMilliseconds(100),
+                out _,
+                out _));
+            Assert.True(estimator.TryRecordPlaybackProgress(
+                "ios",
+                target + TimeSpan.FromSeconds(1).Ticks,
+                isPaused: false,
+                sentAt + TimeSpan.FromMinutes(1) + TimeSpan.FromSeconds(1),
                 out var clampedObservation,
                 out var secondEstimate));
 
-            Assert.Equal(TimeSpan.FromMilliseconds(2125), firstEstimate);
-            Assert.Equal(TimeSpan.FromMilliseconds(100), clampedObservation);
-            Assert.Equal(TimeSpan.FromMilliseconds(1112.5), secondEstimate);
+            Assert.Equal(TimeSpan.FromSeconds(2), firstEstimate);
+            Assert.Equal(TimeSpan.Zero, clampedObservation);
+            Assert.Equal(TimeSpan.FromSeconds(1), secondEstimate);
         }
 
         [Fact]
@@ -68,24 +86,23 @@ namespace WatchPartyForEmby.Tests
             var estimator = CreateEstimator(smoothingFactor: 0.5);
             var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
 
-            Assert.False(estimator.TryRecordResumeAcknowledgement(
+            Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                NewExpectation("ios"),
+                100L,
+                isPaused: false,
                 sentAt,
                 out _,
                 out _));
 
-            var expectation = NewExpectation("ios");
-            estimator.RecordResumeCommand("ios", expectation, sentAt);
-            Assert.False(estimator.TryRecordResumeAcknowledgement(
+            estimator.RecordResumeSeek("ios", 100L, sentAt);
+            Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                expectation,
+                100L,
+                isPaused: false,
                 sentAt + TimeSpan.FromSeconds(31),
                 out _,
                 out _));
-            Assert.Equal(
-                TimeSpan.FromMilliseconds(250),
-                estimator.GetEstimatedLatency("ios"));
+            Assert.Equal(TimeSpan.Zero, estimator.GetEstimatedLatency("ios"));
         }
 
         [Fact]
@@ -93,119 +110,116 @@ namespace WatchPartyForEmby.Tests
         {
             var estimator = CreateEstimator(smoothingFactor: 1);
             var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
-            var expectation = NewExpectation("ios");
+            var target = TimeSpan.FromSeconds(10).Ticks;
 
-            estimator.RecordResumeCommand("ios", expectation, sentAt);
-            Assert.True(estimator.TryRecordResumeAcknowledgement(
+            estimator.RecordResumeSeek("ios", target, sentAt);
+            Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                expectation,
+                target,
+                isPaused: false,
                 sentAt + TimeSpan.FromSeconds(3),
+                out _,
+                out _));
+            Assert.True(estimator.TryRecordPlaybackProgress(
+                "ios",
+                target + TimeSpan.FromSeconds(1).Ticks,
+                isPaused: false,
+                sentAt + TimeSpan.FromSeconds(4),
                 out _,
                 out _));
 
             estimator.ClearSession("ios");
 
-            Assert.Equal(
-                TimeSpan.FromMilliseconds(250),
-                estimator.GetEstimatedLatency("ios"));
-            Assert.False(estimator.TryRecordResumeAcknowledgement(
+            Assert.Equal(TimeSpan.Zero, estimator.GetEstimatedLatency("ios"));
+            Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                expectation,
+                target + TimeSpan.FromSeconds(2).Ticks,
+                isPaused: false,
                 sentAt + TimeSpan.FromSeconds(4),
                 out _,
                 out _));
         }
 
         [Fact]
-        public void StaleAcknowledgementCannotCompleteANewerObservation()
+        public void PausedAndStationaryReportsCannotBecomeResumeLatencySamples()
         {
             var estimator = CreateEstimator(smoothingFactor: 1);
             var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
-            var staleExpectation = NewExpectation("ios");
-            var currentExpectation = NewExpectation("ios");
+            var target = TimeSpan.FromMinutes(10).Ticks;
+            estimator.RecordResumeSeek("ios", target, sentAt);
 
-            estimator.RecordResumeCommand("ios", staleExpectation, sentAt);
-            estimator.RecordResumeCommand(
+            Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                currentExpectation,
-                sentAt + TimeSpan.FromSeconds(1));
-            estimator.CancelPendingResume("ios", staleExpectation);
-
-            Assert.False(estimator.TryRecordResumeAcknowledgement(
-                "ios",
-                staleExpectation,
+                target,
+                isPaused: true,
                 sentAt + TimeSpan.FromSeconds(2),
                 out _,
                 out _));
-            Assert.Equal(
-                TimeSpan.FromMilliseconds(250),
-                estimator.GetEstimatedLatency("ios"));
-
-            Assert.True(estimator.TryRecordResumeAcknowledgement(
+            Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                currentExpectation,
+                target,
+                isPaused: false,
+                sentAt + TimeSpan.FromSeconds(3),
+                out _,
+                out _));
+            Assert.False(estimator.TryRecordPlaybackProgress(
+                "ios",
+                target,
+                isPaused: false,
                 sentAt + TimeSpan.FromSeconds(4),
-                out var observedLatency,
-                out var updatedEstimate));
-            Assert.Equal(TimeSpan.FromSeconds(3), observedLatency);
-            Assert.Equal(TimeSpan.FromSeconds(3), updatedEstimate);
+                out _,
+                out _));
+            Assert.Equal(TimeSpan.Zero, estimator.GetEstimatedLatency("ios"));
         }
 
         [Fact]
-        public void CoalescedUnpauseEchoMatchesTheCurrentlyObservedExpectation()
+        public void PositionBehindTheCommandedTargetIsIgnoredAsAStalePlayerReport()
         {
-            var syncCoordinator = new PlaybackSyncCoordinator();
             var estimator = CreateEstimator(smoothingFactor: 1);
             var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
-            var firstExpectation = syncCoordinator.ExpectPauseState(
-                "ios",
-                isPaused: false,
-                sentAt);
-            var secondExpectation = syncCoordinator.ExpectPauseState(
-                "ios",
-                isPaused: false,
-                sentAt + TimeSpan.FromMilliseconds(10));
-            estimator.RecordResumeCommand(
-                "ios",
-                secondExpectation,
-                sentAt + TimeSpan.FromMilliseconds(20));
+            var target = TimeSpan.FromMinutes(10).Ticks;
+            estimator.RecordResumeSeek("ios", target, sentAt);
 
-            var classification = syncCoordinator.ClassifyInboundPauseState(
+            Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                previousIsPaused: true,
-                reportedIsPaused: false,
-                sentAt + TimeSpan.FromSeconds(3));
-
-            Assert.True(classification.IsExpectedCommandEcho);
-            Assert.Equal(2, classification.MatchedExpectations.Count);
-            Assert.True(estimator.TryRecordResumeAcknowledgement(
-                "ios",
-                classification.MatchedExpectations,
+                TimeSpan.FromMinutes(2).Ticks,
+                isPaused: false,
                 sentAt + TimeSpan.FromSeconds(3),
+                out _,
+                out _));
+            Assert.False(estimator.TryRecordPlaybackProgress(
+                "ios",
+                TimeSpan.FromMinutes(20).Ticks,
+                isPaused: false,
+                sentAt + TimeSpan.FromSeconds(3),
+                out _,
+                out _));
+            Assert.False(estimator.TryRecordPlaybackProgress(
+                "ios",
+                target,
+                isPaused: false,
+                sentAt + TimeSpan.FromSeconds(4),
+                out _,
+                out _));
+            Assert.True(estimator.TryRecordPlaybackProgress(
+                "ios",
+                target + TimeSpan.FromSeconds(1).Ticks,
+                isPaused: false,
+                sentAt + TimeSpan.FromSeconds(5),
                 out var observedLatency,
-                out var updatedEstimate));
-            Assert.Equal(TimeSpan.FromMilliseconds(2980), observedLatency);
-            Assert.Equal(TimeSpan.FromMilliseconds(2980), updatedEstimate);
-            Assert.NotEqual(firstExpectation, secondExpectation);
+                out _));
+            Assert.Equal(TimeSpan.FromSeconds(4), observedLatency);
         }
 
         private static ParticipantResumeLatencyEstimator CreateEstimator(
             double smoothingFactor)
         {
             return new ParticipantResumeLatencyEstimator(
-                initialEstimate: TimeSpan.FromMilliseconds(250),
-                minimumEstimate: TimeSpan.FromMilliseconds(100),
+                initialEstimate: TimeSpan.Zero,
+                minimumEstimate: TimeSpan.Zero,
                 maximumEstimate: TimeSpan.FromSeconds(6),
                 sampleTimeout: TimeSpan.FromSeconds(30),
                 smoothingFactor: smoothingFactor);
-        }
-
-        private static PauseStateExpectationToken NewExpectation(string sessionId)
-        {
-            return ExpectationSource.ExpectPauseState(
-                sessionId,
-                isPaused: false,
-                DateTime.UtcNow);
         }
     }
 }

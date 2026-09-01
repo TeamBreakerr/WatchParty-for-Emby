@@ -1097,8 +1097,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
         validateGlobalSettings(view) {
             const numericFields = [
-                ['syncIntervalSeconds', '同步检查间隔'],
-                ['syncOffsetMilliseconds', '恢复播放偏移']
+                ['syncIntervalSeconds', '同步检查间隔']
             ];
 
             for (const [id, label] of numericFields) {
@@ -1894,7 +1893,6 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
                 view.querySelector('#isPartyActive').checked = true;
                 view.querySelector('#maxParticipants').value = 50;
                 view.querySelector('#syncIntervalSeconds').value = finiteInteger(config.SyncIntervalSeconds, 5);
-                view.querySelector('#syncOffsetMilliseconds').value = finiteInteger(config.SyncOffsetMilliseconds, 1000);
 
                 view.querySelector('#isWaitingRoom').checked = true;
                 view.querySelector('#autoStartWhenReady').checked = true;
@@ -2181,7 +2179,7 @@ define(['baseView', 'loading', 'toast', 'emby-input', 'emby-button', 'emby-check
 
             getPluginConfiguration().then(async config => {
                 config.SyncIntervalSeconds = finiteInteger(view.querySelector('#syncIntervalSeconds').value, 5);
-                config.SyncOffsetMilliseconds = finiteInteger(view.querySelector('#syncOffsetMilliseconds').value, 1000);
+                config.SyncOffsetMilliseconds = 0;
                 config.DefaultMasterUserId = view.querySelector('#defaultMasterUser').value || '';
 
                 updatePluginConfiguration(config).then(result => {

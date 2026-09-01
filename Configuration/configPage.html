@@ -1330,7 +1330,7 @@
                             <a href="#usageHelp"><span class="watch-party-nav-index">04</span>使用帮助</a>
                         </nav>
                         <div class="watch-party-sidebar-tip">
-                            常用操作都在前两项；同步偏移与检查间隔通常保持默认即可。
+                            常用操作都在前两项；同步检查间隔通常保持默认即可。
                         </div>
                     </aside>
 
@@ -1588,10 +1588,9 @@
                                     <div class="fieldDescription">检查并校准观众进度的频率，范围 1–60 秒，默认 5 秒。</div>
                                 </div>
 
-                                <div class="inputContainer">
-                                    <label class="inputLabel inputLabelUnfocused" for="syncOffsetMilliseconds">恢复播放偏移（毫秒）</label>
-                                    <input is="emby-input" type="number" id="syncOffsetMilliseconds" min="-10000" max="10000" step="100" />
-                                    <div class="fieldDescription">补偿远端链路恢复播放延迟；正值使参与者略微超前，默认 1000 毫秒。</div>
+                                <div class="watch-party-help-card">
+                                    <h3>恢复延迟自动学习</h3>
+                                    <p>服务端按每个客户端的实际上报学习恢复耗时，不再使用固定毫秒偏移。</p>
                                 </div>
                             </div>
                         </section>

@@ -252,6 +252,43 @@ namespace WatchPartyForEmby
         }
 
         /// <summary>
+        /// Returns whether a raw client report is at the currently commanded target.
+        /// Unlike ConfirmSeekTarget this remains true for later reports in the same
+        /// settle window, allowing pause synchronization to require both position and
+        /// paused state even when those arrive in separate progress callbacks.
+        /// </summary>
+        public bool IsAtPendingSeekTarget(
+            string sessionId,
+            long positionTicks,
+            DateTime nowUtc,
+            long toleranceTicks)
+        {
+            if (string.IsNullOrEmpty(sessionId)
+                || positionTicks < 0
+                || toleranceTicks < 0)
+            {
+                return false;
+            }
+
+            lock (_syncRoot)
+            {
+                if (!_pendingSeeks.TryGetValue(sessionId, out var pending))
+                {
+                    return false;
+                }
+
+                if (nowUtc >= pending.ExpiresAt)
+                {
+                    _pendingSeeks.Remove(sessionId);
+                    return false;
+                }
+
+                return Math.Abs(positionTicks - pending.TargetPositionTicks)
+                    <= toleranceTicks;
+            }
+        }
+
+        /// <summary>
         /// Returns true when a participant report is still an old player position
         /// rather than an acknowledgement of the latest server seek. A controlled
         /// client may report its old timeline for several seconds while buffering;

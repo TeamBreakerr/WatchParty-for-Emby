@@ -4,12 +4,17 @@ using System.Collections.Generic;
 namespace WatchPartyForEmby
 {
     /// <summary>
-    /// Learns the end-to-end Unpause acknowledgement latency independently for each
-    /// Emby SessionId. Samples are bounded before entering an EWMA so one pathological
-    /// callback cannot permanently over-correct later resume seeks.
+    /// Learns end-to-end resume latency independently for each Emby SessionId. A sample
+    /// is accepted only after an unpaused client reports real forward media progress;
+    /// a synthetic Unpause or Seek echo by itself is never treated as playback.
     /// </summary>
     public sealed class ParticipantResumeLatencyEstimator
     {
+        private static readonly long MinimumForwardProgressTicks =
+            TimeSpan.FromMilliseconds(100).Ticks;
+        private static readonly long TargetEligibilityToleranceTicks =
+            TimeSpan.FromSeconds(1.5).Ticks;
+
         private readonly object _syncRoot = new object();
         private readonly Dictionary<string, SessionLatencyState> _sessions =
             new Dictionary<string, SessionLatencyState>(StringComparer.Ordinal);
@@ -65,12 +70,12 @@ namespace WatchPartyForEmby
             }
         }
 
-        public void RecordResumeCommand(
+        public void RecordResumeSeek(
             string sessionId,
-            PauseStateExpectationToken expectation,
+            long targetPositionTicks,
             DateTime sentAtUtc)
         {
-            if (string.IsNullOrEmpty(sessionId) || expectation.IsEmpty)
+            if (string.IsNullOrEmpty(sessionId) || targetPositionTicks < 0)
             {
                 return;
             }
@@ -78,38 +83,23 @@ namespace WatchPartyForEmby
             lock (_syncRoot)
             {
                 var state = GetOrCreateState(sessionId);
-                state.PendingExpectation = expectation;
-                state.PendingCommandSentAtUtc = sentAtUtc;
+                state.PendingTargetPositionTicks = targetPositionTicks;
+                state.PendingSeekSentAtUtc = sentAtUtc;
+                state.BaselinePositionTicks = null;
             }
         }
 
-        public bool TryRecordResumeAcknowledgement(
+        public bool TryRecordPlaybackProgress(
             string sessionId,
-            PauseStateExpectationToken expectation,
-            DateTime acknowledgedAtUtc,
-            out TimeSpan observedLatency,
-            out TimeSpan updatedEstimate)
-        {
-            return TryRecordResumeAcknowledgement(
-                sessionId,
-                new[] { expectation },
-                acknowledgedAtUtc,
-                out observedLatency,
-                out updatedEstimate);
-        }
-
-        public bool TryRecordResumeAcknowledgement(
-            string sessionId,
-            IReadOnlyList<PauseStateExpectationToken> expectations,
-            DateTime acknowledgedAtUtc,
+            long positionTicks,
+            bool isPaused,
+            DateTime reportedAtUtc,
             out TimeSpan observedLatency,
             out TimeSpan updatedEstimate)
         {
             observedLatency = default;
             updatedEstimate = _initialEstimate;
-            if (string.IsNullOrEmpty(sessionId)
-                || expectations == null
-                || expectations.Count == 0)
+            if (string.IsNullOrEmpty(sessionId) || positionTicks < 0 || isPaused)
             {
                 return false;
             }
@@ -117,39 +107,72 @@ namespace WatchPartyForEmby
             lock (_syncRoot)
             {
                 if (!_sessions.TryGetValue(sessionId, out var state)
-                    || !state.PendingCommandSentAtUtc.HasValue
-                    || !ContainsExpectation(
-                        expectations,
-                        state.PendingExpectation))
+                    || !state.PendingSeekSentAtUtc.HasValue
+                    || !state.PendingTargetPositionTicks.HasValue)
                 {
                     updatedEstimate = state?.EstimatedLatency ?? _initialEstimate;
                     return false;
                 }
 
-                var elapsed = acknowledgedAtUtc - state.PendingCommandSentAtUtc.Value;
+                var elapsed = reportedAtUtc - state.PendingSeekSentAtUtc.Value;
                 if (elapsed < TimeSpan.Zero)
                 {
                     updatedEstimate = state.EstimatedLatency;
                     return false;
                 }
-
-                ClearPendingObservation(state);
                 if (elapsed > _sampleTimeout)
+                {
+                    ClearPendingObservation(state);
+                    updatedEstimate = state.EstimatedLatency;
+                    return false;
+                }
+
+                var targetPositionTicks = state.PendingTargetPositionTicks.Value;
+                if (positionTicks
+                    < targetPositionTicks - TargetEligibilityToleranceTicks)
+                {
+                    updatedEstimate = state.EstimatedLatency;
+                    return false;
+                }
+                var maximumPlausiblePositionTicks = targetPositionTicks
+                    + elapsed.Ticks
+                    + TargetEligibilityToleranceTicks;
+                if (positionTicks > maximumPlausiblePositionTicks)
                 {
                     updatedEstimate = state.EstimatedLatency;
                     return false;
                 }
 
+                if (!state.BaselinePositionTicks.HasValue)
+                {
+                    state.BaselinePositionTicks = positionTicks;
+                    updatedEstimate = state.EstimatedLatency;
+                    return false;
+                }
+
+                if (positionTicks - state.BaselinePositionTicks.Value
+                    < MinimumForwardProgressTicks)
+                {
+                    updatedEstimate = state.EstimatedLatency;
+                    return false;
+                }
+
+                var mediaAdvanceTicks = Math.Max(
+                    0,
+                    positionTicks - targetPositionTicks);
                 observedLatency = Clamp(
-                    elapsed,
+                    elapsed - TimeSpan.FromTicks(mediaAdvanceTicks),
                     _minimumEstimate,
                     _maximumEstimate);
                 var estimatedTicks = state.EstimatedLatency.Ticks
                     + ((observedLatency.Ticks - state.EstimatedLatency.Ticks)
                         * _smoothingFactor);
                 state.EstimatedLatency = TimeSpan.FromTicks(
-                    (long)Math.Round(estimatedTicks, MidpointRounding.AwayFromZero));
+                    (long)Math.Round(
+                        estimatedTicks,
+                        MidpointRounding.AwayFromZero));
                 updatedEstimate = state.EstimatedLatency;
+                ClearPendingObservation(state);
                 return true;
             }
         }
@@ -164,25 +187,6 @@ namespace WatchPartyForEmby
             lock (_syncRoot)
             {
                 if (_sessions.TryGetValue(sessionId, out var state))
-                {
-                    ClearPendingObservation(state);
-                }
-            }
-        }
-
-        public void CancelPendingResume(
-            string sessionId,
-            PauseStateExpectationToken expectation)
-        {
-            if (string.IsNullOrEmpty(sessionId) || expectation.IsEmpty)
-            {
-                return;
-            }
-
-            lock (_syncRoot)
-            {
-                if (_sessions.TryGetValue(sessionId, out var state)
-                    && state.PendingExpectation.Value == expectation.Value)
                 {
                     ClearPendingObservation(state);
                 }
@@ -240,37 +244,19 @@ namespace WatchPartyForEmby
             return value;
         }
 
-        private static bool ContainsExpectation(
-            IReadOnlyList<PauseStateExpectationToken> expectations,
-            PauseStateExpectationToken expected)
-        {
-            if (expected.IsEmpty)
-            {
-                return false;
-            }
-
-            for (var index = 0; index < expectations.Count; index++)
-            {
-                if (expectations[index].Value == expected.Value)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
         private static void ClearPendingObservation(SessionLatencyState state)
         {
-            state.PendingExpectation = default;
-            state.PendingCommandSentAtUtc = null;
+            state.PendingTargetPositionTicks = null;
+            state.PendingSeekSentAtUtc = null;
+            state.BaselinePositionTicks = null;
         }
 
         private sealed class SessionLatencyState
         {
             public TimeSpan EstimatedLatency { get; set; }
-            public PauseStateExpectationToken PendingExpectation { get; set; }
-            public DateTime? PendingCommandSentAtUtc { get; set; }
+            public long? PendingTargetPositionTicks { get; set; }
+            public DateTime? PendingSeekSentAtUtc { get; set; }
+            public long? BaselinePositionTicks { get; set; }
         }
     }
 }

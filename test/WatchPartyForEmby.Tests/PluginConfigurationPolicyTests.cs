@@ -5,14 +5,14 @@ namespace WatchPartyForEmby.Tests
     public sealed class PluginConfigurationPolicyTests
     {
         [Fact]
-        public void LegitimateZeroValuesArePreserved()
+        public void LegacyFixedResumeOffsetIsDisabled()
         {
             var configuration = new PluginConfiguration
             {
-                SyncOffsetMilliseconds = 0
+                SyncOffsetMilliseconds = 1000
             };
 
-            PluginConfigurationPolicy.Normalize(configuration);
+            Assert.True(PluginConfigurationPolicy.Normalize(configuration));
 
             Assert.Equal(0, configuration.SyncOffsetMilliseconds);
         }
@@ -28,7 +28,7 @@ namespace WatchPartyForEmby.Tests
 
             Assert.True(PluginConfigurationPolicy.Normalize(configuration));
             Assert.Equal(5, configuration.SyncIntervalSeconds);
-            Assert.Equal(10000, configuration.SyncOffsetMilliseconds);
+            Assert.Equal(0, configuration.SyncOffsetMilliseconds);
         }
 
         [Fact]

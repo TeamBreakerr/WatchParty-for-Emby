@@ -26,6 +26,31 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void PausedAlignmentCanBeConfirmedAfterAnEarlierUnpausedTargetEcho()
+        {
+            var coordinator = new PlaybackSyncCoordinator();
+            var now = new DateTime(2026, 8, 21, 12, 0, 0, DateTimeKind.Utc);
+            var target = TimeSpan.FromMinutes(10).Ticks;
+
+            Assert.True(coordinator.TryBeginSeek("ios-session", target, now));
+            Assert.True(coordinator.ConfirmSeekTarget(
+                "ios-session",
+                target,
+                now.AddSeconds(1)));
+
+            Assert.True(coordinator.IsAtPendingSeekTarget(
+                "ios-session",
+                target + TimeSpan.FromMilliseconds(100).Ticks,
+                now.AddSeconds(2),
+                TimeSpan.FromMilliseconds(250).Ticks));
+            Assert.False(coordinator.IsAtPendingSeekTarget(
+                "ios-session",
+                target + TimeSpan.FromMilliseconds(300).Ticks,
+                now.AddSeconds(2),
+                TimeSpan.FromMilliseconds(250).Ticks));
+        }
+
+        [Fact]
         public void ContinuousDragReplacesThePendingSeekTarget()
         {
             var coordinator = new PlaybackSyncCoordinator();

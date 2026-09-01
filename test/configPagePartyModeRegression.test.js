@@ -151,7 +151,6 @@ function createView() {
     add('#autoKickInactive', { checked: false });
     add('#inactiveTimeoutMinutes', { value: '15' });
     add('#syncIntervalSeconds', { value: '5', min: '1', max: '60' });
-    add('#syncOffsetMilliseconds', { value: '1000', min: '-10000', max: '10000' });
     add('#seriesContainer');
     add('#episodeContainer');
     add('#seriesPartyContainer');
@@ -467,9 +466,8 @@ test('successful creation completely clears content, identity, and whitelist sel
     assert.equal(view.querySelector('#selectedItemId').innerHTML, '');
 });
 
-test('global settings preserve legitimate zero values', async () => {
+test('global settings disable the legacy fixed resume offset', async () => {
     const view = createView();
-    view.querySelector('#syncOffsetMilliseconds').value = '0';
 
     const toasts = [];
     const updatedConfigurations = [];
@@ -481,18 +479,13 @@ test('global settings preserve legitimate zero values', async () => {
     assert.equal(updatedConfigurations[0].SyncOffsetMilliseconds, 0);
 });
 
-test('loading global settings preserves legitimate zero values', async () => {
-    const configuration = {
-        WatchParties: [],
-        SyncOffsetMilliseconds: 0
-    };
-    const view = createView();
-    const controller = loadController([], [], configuration);
+test('configuration page exposes automatic learning instead of a fixed offset field', () => {
+    const html = fs.readFileSync(
+        path.resolve(__dirname, '../Configuration/configPage.html'),
+        'utf8');
 
-    controller.loadData(view);
-    await new Promise(resolve => setTimeout(resolve, 20));
-
-    assert.equal(view.querySelector('#syncOffsetMilliseconds').value, 0);
+    assert.doesNotMatch(html, /id="syncOffsetMilliseconds"/);
+    assert.match(html, /恢复延迟自动学习/);
 });
 
 test('autocomplete supports ARIA state and Arrow, Enter, and Escape keyboard control', () => {

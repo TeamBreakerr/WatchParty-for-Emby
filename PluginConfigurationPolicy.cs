@@ -30,7 +30,7 @@ namespace WatchPartyForEmby
                 value => configuration.SyncIntervalSeconds = value);
             changed |= SetIfDifferent(
                 configuration.SyncOffsetMilliseconds,
-                Clamp(configuration.SyncOffsetMilliseconds, -10000, 10000),
+                0,
                 value => configuration.SyncOffsetMilliseconds = value);
             return changed;
         }

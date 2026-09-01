@@ -99,7 +99,10 @@ namespace WatchPartyForEmby
         public List<WatchPartyItem> WatchParties { get; set; }
 
         public int SyncIntervalSeconds { get; set; } = 5;
-        public int SyncOffsetMilliseconds { get; set; } = 1000;
+        // Retained only so older XML configurations deserialize cleanly. Runtime sync
+        // uses per-session measured resume latency and always normalizes this legacy
+        // fixed offset to zero.
+        public int SyncOffsetMilliseconds { get; set; } = 0;
         public string DefaultMasterUserId { get; set; } = "";
 
         public PluginConfiguration()
@@ -107,7 +110,7 @@ namespace WatchPartyForEmby
             ConfigurationVersion = 0;
             WatchParties = new List<WatchPartyItem>();
             SyncIntervalSeconds = 5;
-            SyncOffsetMilliseconds = 1000;
+            SyncOffsetMilliseconds = 0;
             DefaultMasterUserId = string.Empty;
         }
     }
