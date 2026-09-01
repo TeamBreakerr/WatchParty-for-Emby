@@ -8,11 +8,12 @@ can therefore distinguish a user drag from ordinary progress heartbeats.
 
 The patch leaves Emby's media-source and codec decision alone.  A virtual
 ``strm`` container is an input indirection rather than a playable output
-format.  When Emby has not supplied an explicit ``DirectStreamUrl``, the patch
-therefore prevents the dashboard from inventing ``stream.strm`` and lets the
-existing transcoding branch consume Emby's ``TranscodingUrl`` instead.  An
-explicit direct-stream URL and real MP4, MKV, or other media containers keep
-their native Emby behavior.
+format.  Some Emby responses expose the invalid ``stream.strm`` request as
+``StreamUrl``; others make the dashboard construct it from
+``SupportsDirectStream``.  The patch rejects both forms only for a virtual
+STRM source, then lets the existing transcoding branch consume Emby's
+``TranscodingUrl``.  Explicit playable URLs and real MP4, MKV, or other media
+containers keep their native Emby behavior.
 """
 
 import argparse
@@ -97,11 +98,18 @@ LEGACY_STRM_MP4_MAPPING = (
     '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4"),'
 )
 
-# Emby Web otherwise constructs /Videos/{id}/stream.{Container} whenever
-# SupportsDirectStream is true but DirectStreamUrl is empty.  That is valid for
-# real media containers, but not for the virtual STRM indirection.  Skipping
-# only that unsupported combination falls through to Emby's existing
-# SupportsTranscoding/TranscodingUrl branch without guessing an output format.
+# Emby Web can either receive /Videos/{id}/stream.strm through StreamUrl or
+# construct it from SupportsDirectStream when DirectStreamUrl is empty.  Both
+# are invalid for the virtual STRM indirection, while the same paths are valid
+# for real media containers.  Skipping only those unsupported combinations
+# falls through to Emby's existing SupportsTranscoding/TranscodingUrl branch
+# without guessing an output format.
+STREAM_URL_SELECTION_ORIGINAL = ':mediaSource.StreamUrl?('
+STREAM_URL_SELECTION_PATCHED = (
+    ':mediaSource.StreamUrl&&'
+    '!("strm"===mediaSourceContainer&&'
+    '/\\.strm(?:[?#]|$)/i.test(mediaSource.StreamUrl))?('
+)
 DIRECT_STREAM_SELECTION_ORIGINAL = 'mediaSource.SupportsDirectStream?('
 DIRECT_STREAM_SELECTION_PATCHED = (
     'mediaSource.SupportsDirectStream&&'
@@ -222,10 +230,28 @@ def patch_dashboard(dashboard_root: Path) -> bool:
         DIRECT_STREAM_SELECTION_PATCHED,
         playbackmanager,
     )
+    text, stream_url_changed = patch_text(
+        text,
+        STREAM_URL_SELECTION_ORIGINAL,
+        STREAM_URL_SELECTION_PATCHED,
+        playbackmanager,
+    )
 
-    if helper_changed or seek_changed or container_changed or selection_changed:
+    if (
+        helper_changed
+        or seek_changed
+        or container_changed
+        or selection_changed
+        or stream_url_changed
+    ):
         replace_files_transactionally([(playbackmanager, text)])
-    return helper_changed or seek_changed or container_changed or selection_changed
+    return (
+        helper_changed
+        or seek_changed
+        or container_changed
+        or selection_changed
+        or stream_url_changed
+    )
 
 
 def main() -> int:

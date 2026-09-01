@@ -145,6 +145,54 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
             )
             self.assertEqual("application/x-mpegURL", stream_info["mimeType"])
 
+    def test_virtual_strm_stream_url_that_targets_strm_uses_server_transcoding_url(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            playbackmanager = self._patch_fixture(root)
+            stream_info = self._evaluate_stream_info(
+                playbackmanager,
+                {
+                    "Id": "source-1",
+                    "Container": "strm",
+                    "StreamUrl": "/Videos/item-1/stream.strm?static=true",
+                    "SupportsDirectStream": True,
+                    "SupportsTranscoding": True,
+                    "TranscodingUrl": "/Videos/item-1/master.m3u8",
+                    "TranscodingSubProtocol": "hls",
+                    "MediaStreams": [],
+                },
+            )
+
+            self.assertEqual("Transcode", stream_info["playMethod"])
+            self.assertEqual(
+                "server:/Videos/item-1/master.m3u8",
+                stream_info["url"],
+            )
+
+    def test_virtual_strm_keeps_a_valid_server_stream_url(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            playbackmanager = self._patch_fixture(root)
+            stream_info = self._evaluate_stream_info(
+                playbackmanager,
+                {
+                    "Id": "source-1",
+                    "Container": "strm",
+                    "StreamUrl": "/Videos/item-1/master.m3u8",
+                    "SupportsDirectStream": True,
+                    "SupportsTranscoding": True,
+                    "TranscodingUrl": "/Videos/item-1/fallback.m3u8",
+                    "TranscodingSubProtocol": "hls",
+                    "MediaStreams": [],
+                },
+            )
+
+            self.assertEqual("Transcode", stream_info["playMethod"])
+            self.assertEqual(
+                "/Videos/item-1/master.m3u8",
+                stream_info["url"],
+            )
+
     def test_virtual_strm_prefers_an_explicit_direct_stream_url(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
