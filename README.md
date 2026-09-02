@@ -1,5 +1,8 @@
 # WatchParty for Emby
 
+> Current production-stable engineering archive and rollback instructions:
+> [`docs/operations/watchparty-stable-20260902.md`](docs/operations/watchparty-stable-20260902.md)
+
 A synchronized watch party plugin for Emby Media Server. Create watch parties that keep everyone in sync — when the host plays, pauses, or seeks, all participants follow along.
 
 ## Features
