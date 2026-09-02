@@ -20,24 +20,42 @@ request. That mismatch makes a successfully resolved URL return 403. The
 resolver, Nginx stream locations, and guard therefore use the same non-empty
 `Emby-Xiaoya-Proxy/1.0` User-Agent for the complete signed-link lifecycle.
 
-The loopback `emby-115-guard` process keeps two upstream requests per media
-path. A third Range request, which normally follows a seek or an HLS segment
-rotation, waits for one of the existing requests to finish naturally. The
-guard never cancels a healthy stream: doing that truncates its response and can
-make Emby restart FFmpeg, creating a retry storm. If no slot is released within
-the bounded wait window, the guard returns 503 without opening a third
-upstream; Nginx performs one delayed, refreshed retry for either that condition
-or a transient 115 403. Nginx never needs to interrupt a response that is
-blocked on a slow downstream client.
+Nginx converts every protected Range response into 1 MiB cacheable slices. A
+slow Emby/FFmpeg reader can keep its downstream response open, while each 115
+upstream request finishes as soon as its small slice has been downloaded. A
+privacy-safe cache key combines the hash of the stable media path with the byte
+range; signed URLs, tokens, client addresses, and request headers never enter
+the key. Cache locking also collapses simultaneous reads of the same slice.
+The guard can wait up to 5 seconds for a lease and 250 milliseconds for close
+grace, then gives the complete 1 MiB upstream request 60 seconds. Nginx holds
+the per-slice cache lock for 70 seconds, leaving an explicit margin so a slow
+fill finishes or is cancelled before another request for that slice can reach
+the upstream.
+
+The loopback `emby-115-guard` process still permits at most two upstream
+requests per media path, but now leases represent short slices instead of
+whole playback streams. Additional slices wait in FIFO order for a natural
+release. The guard never cancels a healthy request: doing so truncates an HLS
+input and can make Emby restart FFmpeg, creating a retry storm. If no slice
+slot is released within the bounded wait window, the guard returns 503 without
+opening another upstream; Nginx performs one delayed, refreshed retry for that
+condition or a transient 115 403. Physical local files never enter this path.
 
 The guard exposes loopback-only Prometheus counters at
-`http://127.0.0.1:15678/metrics`. The integration test releases one of the two
-initial streams, then asserts that the waiting third Range returns 206 without
-incrementing the replacement or per-media connection-limit breach counters.
+`http://127.0.0.1:15678/metrics`. The integration test keeps two slow
+downstream readers open, then asserts that a third seek Range returns 206 by
+rotating through short upstream slices without terminating either reader or
+incrementing the replacement, wait-timeout, or per-media connection-limit
+breach counters.
 `emby_115_guard_slot_waits_total` counts requests that had to wait, and
 `emby_115_guard_slot_wait_timeouts_total` counts bounded waits that could not
 obtain a slot. The older replacement and replacement-timeout metrics are
 retained as deprecated compatibility aliases; replacements remain zero.
+`test/xiaoyaSliceSingleFlight.sh` runs against Xiaoya's own Nginx with a unique
+empty cache and a controlled two-second upstream. It requires the overlapping
+requests to finish as `MISS` then `HIT` while the mock receives exactly one
+request, so a pre-existing cache entry or a fast sequential fill cannot make
+the single-flight check pass accidentally.
 
 Files are copied to Xiaoya's persistent `/data` mount. The installer wraps
 `/updateall`, and `install-xiaoyakeeper-hook.sh` adds a post-update reinstall
@@ -77,6 +95,12 @@ classifies and protects the actual backend read. Ready-to-use external links
 retain Xiaoya's native handling, and no MP4 or other output container is
 guessed. The same patch removes Xiaoya's redundant next-episode `stream.strm`
 request, avoiding an invalid `.strm` FFmpeg output job.
+
+The Emby Web seek-patch installer also performs a one-frame ASS render once
+per Emby container start. This warms libass and the configured fallback font
+before a user requests a subtitle-burned HLS stream. It avoids spending almost
+the entire first-segment deadline scanning fonts, and deliberately does not
+create another playback request or Watch Party generation.
 
 The log's `termination_hint` is evidence about the boundary Nginx observed. A
 downstream close can mean the iOS app/device or the network path, and a normal

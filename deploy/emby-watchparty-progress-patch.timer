@@ -1,5 +1,5 @@
 [Unit]
-Description=Keep the WatchParty explicit seek progress patch applied
+Description=Keep the WatchParty Emby Web patch and ASS warmup applied
 
 [Timer]
 OnBootSec=1min

@@ -322,13 +322,14 @@ async function redirect2Pan(r) {
         self.assertNotIn("Bangumi", routing)
         self.assertNotRegex(routing.lower(), r"[.]mkv|[.]mp4")
 
-    def test_seek_guard_waits_for_natural_release_before_connecting(self):
+    def test_seek_guard_uses_cached_slices_and_fifo_upstream_leases(self):
         guard = (DEPLOY_ROOT / "guard" / "main.go").read_text()
         locations = (DEPLOY_ROOT / "emby-115-locations.conf").read_text()
+        throttle = (DEPLOY_ROOT / "emby-115-throttle.conf").read_text()
 
         self.assertIn("newLeaseManager(2", guard)
-        self.assertIn("waitForSlot", guard)
-        self.assertIn("slotChanged", guard)
+        self.assertIn("waiters", guard)
+        self.assertIn("grantWaitingLocked", guard)
         self.assertNotIn("evicted.cancel()", guard)
         self.assertNotIn("replaced oldest upstream stream", guard)
         self.assertIn("errSlotWaitTimeout", guard)
@@ -338,6 +339,39 @@ async function redirect2Pan(r) {
         self.assertIn("X-Emby-115-Target", locations)
         self.assertIn("rewrite ^ /stream break;", locations)
         self.assertIn("proxy_pass http://127.0.0.1:15678;", locations)
+        self.assertIn("proxy_cache_path", throttle)
+        self.assertIn("keys_zone=emby_115_slices", throttle)
+        self.assertEqual(2, locations.count("slice 1m;"))
+        self.assertEqual(2, locations.count("proxy_cache emby_115_slices;"))
+        self.assertEqual(2, locations.count("proxy_cache_lock on;"))
+        self.assertEqual(2, locations.count("proxy_cache_lock_timeout 70s;"))
+        self.assertEqual(2, locations.count("proxy_cache_lock_age 70s;"))
+        request_timeout = int(re.search(
+            r"upstreamRequestTimeout\s*=\s*(\d+) \* time.Second", guard
+        ).group(1))
+        lease_wait = int(re.search(
+            r"upstreamLeaseWait\s*=\s*(\d+) \* time.Second", guard
+        ).group(1))
+        close_grace_ms = int(re.search(
+            r"upstreamCloseGrace\s*=\s*(\d+) \* time.Millisecond", guard
+        ).group(1))
+        lock_seconds = int(re.search(
+            r"proxy_cache_lock_timeout (\d+)s;", locations
+        ).group(1))
+        self.assertGreater(
+            lock_seconds,
+            request_timeout + lease_wait + close_grace_ms / 1000,
+        )
+        self.assertIn("upstreamRequestTimeout = 60 * time.Second", guard)
+        self.assertIn("Timeout: upstreamRequestTimeout", guard)
+        self.assertEqual(2, locations.count("proxy_set_header Range $slice_range;"))
+        self.assertEqual(
+            2,
+            locations.count(
+                'proxy_cache_key "$emby_115_key:$slice_range";'
+            ),
+        )
+        self.assertNotIn("$emby_115_target:$slice_range", locations)
         stream_locations = locations.split("location @emby_115_stream", 1)[1]
         self.assertNotIn("body_filter_by_lua", stream_locations)
 
@@ -454,7 +488,7 @@ async function redirect2Pan(r) {
         self.assertIn('"$data_dir/ensure-emby-direct-link-fallback.sh"', installer)
         self.assertIn("fetchXYApi", direct_link_ensurer)
         self.assertIn("data-appversion=\"4.9.0.42\"", web_cache_buster)
-        self.assertIn("data-appversion=\"4.9.0.42-wp3\"", web_cache_buster)
+        self.assertIn("data-appversion=\"4.9.0.42-wp4\"", web_cache_buster)
         self.assertIn("/web/index.html", web_cache_ensurer)
         self.assertIn("validate_config", web_cache_ensurer)
         self.assertIn("Nginx rejected the Web cache-buster patch", web_cache_ensurer)
@@ -618,6 +652,9 @@ async function redirect2Pan(r) {
                 "  -t) exit 0 ;;\n"
                 "  -T)\n"
                 "    echo '# configuration file /data/emby-115-locations.conf:'\n"
+                "    echo 'keys_zone=emby_115_slices:16m'\n"
+                "    echo 'proxy_cache emby_115_slices;'\n"
+                "    echo 'slice 1m;'\n"
                 "    echo 'location @emby_115_stream {'\n"
                 "    echo 'location @emby_115_retry {'\n"
                 "    echo '# configuration file /data/emby-115-access.conf:'\n"
@@ -641,6 +678,8 @@ async function redirect2Pan(r) {
                     "EMBY_115_DEFAULT_CONFIG": str(default_config),
                     "EMBY_115_EMBY_CONFIG": str(emby_config),
                     "EMBY_115_RUNTIME_CONFIG": str(runtime_config),
+                    "EMBY_115_SLICE_CACHE_DIR": str(root / "slice-cache"),
+                    "EMBY_115_SLICE_CACHE_OWNER": f"{os.getuid()}:{os.getgid()}",
                     "EMBY_115_CRON_FILE": str(cron_file),
                     "EMBY_115_UPDATEALL": str(updateall),
                     "EMBY_115_LEGACY_OVERLAY": str(data_dir / "legacy-overlay.sh"),
@@ -704,6 +743,9 @@ async function redirect2Pan(r) {
                 "echo '# configuration file /etc/nginx/http.d/emby-115-throttle.conf:'\n"
                 f"if [ -e '{route_ready}' ]; then\n"
                 "  echo '# configuration file /data/emby-115-locations.conf:'\n"
+                "  echo 'keys_zone=emby_115_slices:16m'\n"
+                "  echo 'proxy_cache emby_115_slices;'\n"
+                "  echo 'slice 1m;'\n"
                 "  echo 'location @emby_115_stream {'\n"
                 "  echo 'location @emby_115_retry {'\n"
                 "  echo '# configuration file /data/emby-115-access.conf:'\n"
@@ -761,15 +803,28 @@ async function redirect2Pan(r) {
 
     def test_integration_probe_models_two_streams_followed_by_a_seek(self):
         integration = (REPO_ROOT / "test" / "xiaoya115ProxyIntegration.sh").read_text()
+        singleflight = (
+            REPO_ROOT / "test" / "xiaoyaSliceSingleFlight.sh"
+        ).read_text()
 
         self.assertEqual(2, integration.count("--limit-rate 128k"))
         self.assertIn("third range did not return 206", integration)
-        self.assertIn("third range completed before a natural slot release", integration)
+        self.assertIn(
+            "a healthy downstream stream was terminated to make room for the seek",
+            integration,
+        )
         self.assertIn("third seek exceeded", integration)
         self.assertIn("connection limit breach counter increased", integration)
         self.assertIn("replacement counter increased", integration)
+        self.assertIn("slot timeout counter increased", integration)
         self.assertIn("X-Emby-115-Proxy: dynamic", integration)
         self.assertIn("X-Emby-115-Guard: active", integration)
+        self.assertIn("X-Emby-115-Slice-Cache:", integration)
+        self.assertIn("sleep 2", singleflight)
+        self.assertIn('first_cache" != "MISS', singleflight)
+        self.assertIn('second_cache" != "HIT', singleflight)
+        self.assertIn('upstream_requests" -ne 1', singleflight)
+        self.assertIn("duplicate same-slice upstream requests", singleflight)
 
     @unittest.skipUnless(shutil.which("luajit"), "luajit is not installed")
     def test_lua_policy_vectors(self):

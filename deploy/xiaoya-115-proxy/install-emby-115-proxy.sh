@@ -5,6 +5,8 @@ data_dir=${EMBY_115_DATA_DIR:-/data}
 default_config=${EMBY_115_DEFAULT_CONFIG:-/etc/nginx/http.d/default.conf}
 emby_config=${EMBY_115_EMBY_CONFIG:-/etc/nginx/http.d/emby.conf}
 runtime_config=${EMBY_115_RUNTIME_CONFIG:-/etc/nginx/http.d/emby-115-throttle.conf}
+slice_cache_dir=${EMBY_115_SLICE_CACHE_DIR:-/var/cache/nginx/emby-115-slices}
+slice_cache_owner=${EMBY_115_SLICE_CACHE_OWNER:-nginx:root}
 nginx_bin=${EMBY_115_NGINX_BIN:-nginx}
 nginx_pid_file=${EMBY_115_NGINX_PID_FILE:-/run/nginx/nginx.pid}
 reload_attempts=${EMBY_115_RELOAD_ATTEMPTS:-60}
@@ -30,6 +32,9 @@ proxy_routes_present() {
     rendered_config=$("$nginx_bin" -T 2>&1) || return 1
     for marker in \
         '/data/emby-115-locations.conf' \
+        'keys_zone=emby_115_slices:16m' \
+        'proxy_cache emby_115_slices;' \
+        'slice 1m;' \
         'location @emby_115_stream' \
         'location @emby_115_retry' \
         '/data/emby-115-access.conf' \
@@ -139,6 +144,9 @@ if [ ! -x "$data_dir/emby-115-guard" ] \
 fi
 
 mkdir -p "$data_dir/logs"
+mkdir -p "$slice_cache_dir"
+chown "$slice_cache_owner" "$slice_cache_dir"
+chmod 0750 "$slice_cache_dir"
 
 if ! grep -Fq 'location /d/ {' "$default_config"; then
     echo "could not find the official /d/ location in $default_config" >&2

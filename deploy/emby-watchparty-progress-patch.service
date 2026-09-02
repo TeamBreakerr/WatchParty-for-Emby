@@ -1,5 +1,5 @@
 [Unit]
-Description=Apply the WatchParty explicit seek progress patch to Emby Web
+Description=Apply the WatchParty Emby Web patch and warm ASS fonts
 After=docker.service
 Wants=docker.service
 

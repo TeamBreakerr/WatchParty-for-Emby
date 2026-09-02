@@ -120,6 +120,55 @@ DIRECT_STREAM_SELECTION_PATCHED = (
     '("strm"!==mediaSourceContainer||mediaSource.DirectStreamUrl)?('
 )
 
+# A cold ASS/fontconfig start can make Emby's first HLS player.play() attempt
+# fail even though the exact same transcoding URL is usable moments later.  Do
+# not request new PlaybackInfo here: retry the same streamInfo object (and thus
+# the same PlaySessionId and HLS URL) once, only during the first 15 seconds.
+SET_SRC_INTO_PLAYER_ORIGINAL = (
+    'function setSrcIntoPlayer(apiClient,player,streamInfo,progressEventName,'
+    'previousPlaySessionId,signal){return normalizePlayOptions(streamInfo),'
+    'getPlayerData(player).streamInfo=streamInfo,'
+)
+SET_SRC_INTO_PLAYER_PATCHED = (
+    'function retryWatchPartyHlsStartup(player,streamInfo,error){var signal=streamInfo&&'
+    'streamInfo.watchPartyHlsStartupSignal,apiClient=streamInfo&&'
+    'streamInfo.watchPartyHlsStartupApiClient;if(!streamInfo||'
+    '"Transcode"!==streamInfo.playMethod||'
+    '!/\\.m3u8(?:[?#]|$)/i.test(streamInfo.url||"")||'
+    'error&&("AbortError"===error.name||"AbortError"===error.type)||'
+    'signal&&signal.aborted||'
+    'streamInfo.watchPartyHlsStartupRetried||'
+    'Date.now()-(streamInfo.watchPartyHlsStartupStartedAt||0)>15e3||'
+    'getPlayerData(player).streamInfo!==streamInfo||!apiClient)return null;'
+    'return streamInfo.watchPartyHlsStartupRetried=!0,new Promise(function(resolve){'
+    'setTimeout(resolve,350)}).then(function(){'
+    'if(signal&&signal.aborted)return Promise.reject(signal.reason||{name:"AbortError"});'
+    'if(getPlayerData(player).streamInfo===streamInfo)'
+    'return setSrcIntoPlayer(apiClient,player,streamInfo,'
+    'streamInfo.watchPartyHlsStartupProgressEventName,null,signal)})}'
+    'function setSrcIntoPlayer(apiClient,player,streamInfo,progressEventName,'
+    'previousPlaySessionId,signal){return normalizePlayOptions(streamInfo),'
+    '"Transcode"===streamInfo.playMethod&&'
+    '/\\.m3u8(?:[?#]|$)/i.test(streamInfo.url||"")&&('
+    'streamInfo.watchPartyHlsStartupStartedAt=Date.now(),'
+    'streamInfo.watchPartyHlsStartupApiClient=apiClient,'
+    'streamInfo.watchPartyHlsStartupProgressEventName=progressEventName,'
+    'streamInfo.watchPartyHlsStartupSignal=signal),'
+    'getPlayerData(player).streamInfo=streamInfo,'
+)
+PLAYBACK_ERROR_ORIGINAL = (
+    'function onPlaybackError(e,error){var errorType=error.type,errorType=('
+    'console.log("playbackmanager playback error type: "+(errorType||"")),'
+    'error.streamInfo||getPlayerData(this).streamInfo);if(errorType){'
+)
+PLAYBACK_ERROR_PATCHED = (
+    'function onPlaybackError(e,error){var hlsRetry,errorType=error.type,errorType=('
+    'console.log("playbackmanager playback error type: "+(errorType||"")),'
+    'error.streamInfo||getPlayerData(this).streamInfo);'
+    'if(hlsRetry=retryWatchPartyHlsStartup(this,errorType,e),hlsRetry)return hlsRetry;'
+    'if(errorType){'
+)
+
 
 def patch_text(text: str, original: str, patched: str, source: Path) -> tuple[str, bool]:
     original_count = text.count(original)
@@ -255,12 +304,27 @@ def patch_dashboard(dashboard_root: Path) -> bool:
             playbackmanager,
         )
 
+    text, hls_set_src_changed = patch_text(
+        text,
+        SET_SRC_INTO_PLAYER_ORIGINAL,
+        SET_SRC_INTO_PLAYER_PATCHED,
+        playbackmanager,
+    )
+    text, hls_error_changed = patch_text(
+        text,
+        PLAYBACK_ERROR_ORIGINAL,
+        PLAYBACK_ERROR_PATCHED,
+        playbackmanager,
+    )
+
     if (
         helper_changed
         or seek_changed
         or container_changed
         or selection_changed
         or stream_url_changed
+        or hls_set_src_changed
+        or hls_error_changed
     ):
         replace_files_transactionally([(playbackmanager, text)])
     return (
@@ -269,6 +333,8 @@ def patch_dashboard(dashboard_root: Path) -> bool:
         or container_changed
         or selection_changed
         or stream_url_changed
+        or hls_set_src_changed
+        or hls_error_changed
     )
 
 

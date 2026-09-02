@@ -316,6 +316,86 @@ func TestConcurrentWaitersShareOneBoundedAcquisitionDeadline(t *testing.T) {
 	manager.release(key, secondWinner.lease)
 }
 
+func TestLeaseManagerGrantsWaitersInFIFOOrder(t *testing.T) {
+	manager := newLeaseManager(2, time.Second, 0)
+	key := "0123456789abcdef0123456789abcdef"
+
+	_, first, _, err := manager.acquire(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, second, _, err := manager.acquire(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type acquisition struct {
+		lease *streamLease
+		err   error
+	}
+	firstWaiter := make(chan acquisition, 1)
+	secondWaiter := make(chan acquisition, 1)
+	go func() {
+		_, lease, _, acquireErr := manager.acquire(t.Context(), key)
+		firstWaiter <- acquisition{lease: lease, err: acquireErr}
+	}()
+	waitForQueuedWaiters(t, manager, key, 1)
+	go func() {
+		_, lease, _, acquireErr := manager.acquire(t.Context(), key)
+		secondWaiter <- acquisition{lease: lease, err: acquireErr}
+	}()
+	waitForQueuedWaiters(t, manager, key, 2)
+
+	manager.release(key, first)
+	var firstResult acquisition
+	select {
+	case firstResult = <-firstWaiter:
+		if firstResult.err != nil || firstResult.lease == nil {
+			t.Fatalf("first waiter was not granted: lease=%v err=%v",
+				firstResult.lease, firstResult.err)
+		}
+	case result := <-secondWaiter:
+		t.Fatalf("second waiter overtook the first: lease=%v err=%v",
+			result.lease, result.err)
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("first waiter was not granted after a slot release")
+	}
+
+	manager.release(key, second)
+	var secondResult acquisition
+	select {
+	case secondResult = <-secondWaiter:
+		if secondResult.err != nil || secondResult.lease == nil {
+			t.Fatalf("second waiter was not granted: lease=%v err=%v",
+				secondResult.lease, secondResult.err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("second waiter was not granted after the next slot release")
+	}
+
+	manager.release(key, firstResult.lease)
+	manager.release(key, secondResult.lease)
+}
+
+func waitForQueuedWaiters(t *testing.T, manager *leaseManager, key string, count int) {
+	t.Helper()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		manager.mu.Lock()
+		group := manager.byKey[key]
+		queued := 0
+		if group != nil {
+			queued = len(group.waiters)
+		}
+		manager.mu.Unlock()
+		if queued == count {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("expected %d queued waiter(s)", count)
+}
+
 func TestThirdStreamTimesOutWithoutOpeningUpstreamWhenNoSlotIsReleased(t *testing.T) {
 	var calls atomic.Int32
 	var active atomic.Int32
@@ -426,6 +506,9 @@ func TestThirdStreamTimesOutWithoutOpeningUpstreamWhenNoSlotIsReleased(t *testin
 	guard.writeMetrics(metrics)
 	if !strings.Contains(metrics.Body.String(), "emby_115_guard_slot_wait_timeouts_total 1\n") {
 		t.Fatalf("slot wait timeout metric is missing: %s", metrics.Body.String())
+	}
+	if !strings.Contains(metrics.Body.String(), "emby_115_guard_upstream_requests_total 2\n") {
+		t.Fatalf("upstream request metric is missing: %s", metrics.Body.String())
 	}
 
 	releaseOnce.Do(func() { close(releaseClose) })

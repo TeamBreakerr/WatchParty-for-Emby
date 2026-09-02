@@ -4,6 +4,9 @@ set -u
 media_url=${1:?usage: xiaoya115ProxyIntegration.sh MEDIA_URL}
 test_dir=$(mktemp -d /tmp/xiaoya-115-proxy-test.XXXXXX)
 guard_metrics_url=${GUARD_METRICS_URL:-http://127.0.0.1:15678/metrics}
+first_pid=
+second_pid=
+third_pid=
 
 metric_value() {
     curl -fsS --max-time 1 "$guard_metrics_url" \
@@ -11,13 +14,18 @@ metric_value() {
 }
 
 cleanup() {
+    for process_id in "$first_pid" "$second_pid" "$third_pid"; do
+        [ -z "$process_id" ] || kill "$process_id" 2>/dev/null || true
+    done
     rm -rf "$test_dir"
 }
 trap cleanup EXIT HUP INT TERM
 
 before_replacements=$(metric_value emby_115_guard_replacements_total)
 before_breaches=$(metric_value emby_115_guard_connection_limit_breaches_total)
-if [ -z "$before_replacements" ] || [ -z "$before_breaches" ]; then
+before_timeouts=$(metric_value emby_115_guard_slot_wait_timeouts_total)
+if [ -z "$before_replacements" ] || [ -z "$before_breaches" ] \
+    || [ -z "$before_timeouts" ]; then
     echo "could not read guard metrics before the integration test" >&2
     exit 1
 fi
@@ -55,22 +63,20 @@ curl -g -sS --max-time 4 -D "$test_dir/third.headers" \
     "$media_url" >"$test_dir/third.result" &
 third_pid=$!
 
-# The third Range must remain queued while both healthy upstreams are active.
-# Then release one stream as a client would after a completed segment/seek and
-# verify the queued request takes the naturally available slot.
-sleep 0.05
-if ! kill -0 "$third_pid" 2>/dev/null; then
-    wait "$third_pid" 2>/dev/null || true
-    echo "third range completed before a natural slot release" >&2
-    exit 1
-fi
-kill "$first_pid" 2>/dev/null || true
-wait "$first_pid" 2>/dev/null
-first_exit=$?
+# Fixed-size cached slices let each upstream lease finish independently of a
+# slow downstream reader. The seek must therefore succeed without terminating
+# either existing playback response.
 wait "$third_pid"
 third_exit=$?
 
-wait "$second_pid"
+if ! kill -0 "$first_pid" 2>/dev/null || ! kill -0 "$second_pid" 2>/dev/null; then
+    echo "a healthy downstream stream was terminated to make room for the seek" >&2
+    exit 1
+fi
+kill "$first_pid" "$second_pid" 2>/dev/null || true
+wait "$first_pid" 2>/dev/null
+first_exit=$?
+wait "$second_pid" 2>/dev/null
 second_exit=$?
 
 printf 'first=%s exit=%s\n' "$(cat "$test_dir/first.status")" "$first_exit"
@@ -83,11 +89,6 @@ tr -d '\r' <"$test_dir/third.headers" \
 
 if [ "$third_exit" -ne 0 ]; then
     exit "$third_exit"
-fi
-
-if [ "$(cat "$test_dir/second.status" 2>/dev/null || true)" != "206" ]; then
-    echo "the surviving baseline range did not remain healthy" >&2
-    exit 1
 fi
 
 if [ "$third_status" != "206" ]; then
@@ -110,13 +111,23 @@ if ! grep -Fq 'X-Emby-115-Guard: active' "$test_dir/third.headers"; then
     exit 1
 fi
 
+if ! grep -Fq 'X-Emby-115-Slice-Cache:' "$test_dir/third.headers"; then
+    echo "third range did not report the slice-cache state" >&2
+    exit 1
+fi
+
 after_replacements=$(metric_value emby_115_guard_replacements_total)
 after_breaches=$(metric_value emby_115_guard_connection_limit_breaches_total)
+after_timeouts=$(metric_value emby_115_guard_slot_wait_timeouts_total)
 if [ "$after_breaches" -ne "$before_breaches" ]; then
     echo "connection limit breach counter increased: $before_breaches -> $after_breaches" >&2
     exit 1
 fi
 if [ "$after_replacements" -ne "$before_replacements" ]; then
     echo "replacement counter increased: $before_replacements -> $after_replacements" >&2
+    exit 1
+fi
+if [ "$after_timeouts" -ne "$before_timeouts" ]; then
+    echo "slot timeout counter increased: $before_timeouts -> $after_timeouts" >&2
     exit 1
 fi

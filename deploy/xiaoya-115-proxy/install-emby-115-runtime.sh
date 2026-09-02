@@ -4,6 +4,8 @@ set -eu
 data_dir=${EMBY_115_DATA_DIR:-/data}
 default_config=${EMBY_115_DEFAULT_CONFIG:-/etc/nginx/http.d/default.conf}
 runtime_config=${EMBY_115_RUNTIME_CONFIG:-/etc/nginx/http.d/emby-115-throttle.conf}
+slice_cache_dir=${EMBY_115_SLICE_CACHE_DIR:-/var/cache/nginx/emby-115-slices}
+slice_cache_owner=${EMBY_115_SLICE_CACHE_OWNER:-nginx:root}
 nginx_bin=${EMBY_115_NGINX_BIN:-nginx}
 server_include='        include /data/emby-115-locations.conf;'
 access_include='            include /data/emby-115-access.conf;'
@@ -62,6 +64,10 @@ if ! grep -Fq 'location /d/ {' "$default_config"; then
     exit 1
 fi
 
+mkdir -p "$slice_cache_dir"
+chown "$slice_cache_owner" "$slice_cache_dir"
+chmod 0750 "$slice_cache_dir"
+
 default_backup=$(mktemp)
 cp -p "$default_config" "$default_backup"
 if [ -e "$runtime_config" ]; then
@@ -83,6 +89,9 @@ cp -p "$data_dir/emby-115-throttle.conf" "$runtime_config"
 rendered_config=$("$nginx_bin" -T 2>&1)
 for marker in \
     '/data/emby-115-locations.conf' \
+    'keys_zone=emby_115_slices:16m' \
+    'proxy_cache emby_115_slices;' \
+    'slice 1m;' \
     'location @emby_115_stream' \
     'location @emby_115_retry' \
     '/data/emby-115-access.conf' \

@@ -5,10 +5,15 @@ container=${EMBY_CONTAINER:-emby}
 state_dir=${EMBY_PROGRESS_PATCH_STATE_DIR:-/home/teambreaker/emby/watchparty-progress-patch}
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 patcher=${EMBY_PROGRESS_PATCHER:-$script_dir/patch_emby_watchparty_progress.py}
+font_warmup_file=${EMBY_ASS_FONT_WARMUP_FILE:-$script_dir/emby_ass_font_warmup.ass}
 module_path=/system/dashboard-ui/modules/common/playback/playbackmanager.js
 
 if [ ! -f "$patcher" ]; then
     echo "missing patcher: $patcher" >&2
+    exit 2
+fi
+if [ ! -f "$font_warmup_file" ]; then
+    echo "missing ASS font warmup fixture: $font_warmup_file" >&2
     exit 2
 fi
 
@@ -38,6 +43,30 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+
+mkdir -p "$state_dir"
+container_started_at=$(docker inspect --format '{{.State.StartedAt}}' "$container")
+warmup_marker=$state_dir/ass-font-warmup.started-at
+warmed_started_at=
+if [ -r "$warmup_marker" ]; then
+    IFS= read -r warmed_started_at <"$warmup_marker" || warmed_started_at=
+fi
+if [ "$warmed_started_at" != "$container_started_at" ]; then
+    warmup_path=/tmp/watchparty-ass-font-warmup.ass
+    if docker cp "$font_warmup_file" "$container:$warmup_path" \
+        && docker exec "$container" /bin/ffmpeg \
+            -v error \
+            -f lavfi \
+            -i color=c=black:s=16x16:d=0.1 \
+            -vf "subtitles=$warmup_path:fontsdir=/config/fonts" \
+            -frames:v 1 \
+            -f null -; then
+        printf '%s\n' "$container_started_at" >"$warmup_marker"
+    else
+        echo "ASS font warmup failed; it will be retried on the next installer run" >&2
+    fi
+    docker exec "$container" rm -f "$warmup_path" >/dev/null 2>&1 || true
+fi
 
 work_dir=$temp_dir/dashboard-ui/modules/common/playback
 verify_dir=$temp_dir/verify-dashboard-ui/modules/common/playback

@@ -9,6 +9,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PATCHER = REPO_ROOT / "tools" / "patch_emby_watchparty_progress.py"
+INSTALLER = REPO_ROOT / "tools" / "install_emby_watchparty_progress_patch.sh"
+WARMUP = REPO_ROOT / "tools" / "emby_ass_font_warmup.ass"
+TIMER = REPO_ROOT / "deploy" / "emby-watchparty-progress-patch.timer"
 
 
 def load_patcher():
@@ -20,6 +23,10 @@ def load_patcher():
 
 PLAYBACKMANAGER_FIXTURE = (
     "define(function(){"
+    "var _connectionmanager={default:{getApiClient:function(item){return item.apiClient}}};"
+    "function normalizePlayOptions(){}"
+    "function getPlayerData(player){return player.__playbackData||(player.__playbackData={})}"
+    "function reportProgress(){}"
     "function sendProgressUpdate(instance,player,progressEventName,reportPlaylist,additionalData,isAutomated){"
     "return reportProgress(instance,player,progressEventName,additionalData)}"
     "function changeStream(player,ticks,params,progressEventName){return player.currentTime(ticks)}"
@@ -46,7 +53,12 @@ PLAYBACKMANAGER_FIXTURE = (
     "{url:mediaUrl,mimeType:contentType,playMethod:playMethod}}"
     "globalThis.__createStreamInfo=createStreamInfo;"
     "function PlaybackManager(){}"
-    "var self={_currentPlayer:null};"
+    "var self={_currentPlayer:null,getTranscodingFallbackOptions:function(){return {canTrigger:false}}};"
+    "function onPlaybackStopped(e,info){return info.returnPromise?Promise.reject(info):void 0}"
+    "function setSrcIntoPlayer(apiClient,player,streamInfo,progressEventName,previousPlaySessionId,signal){return normalizePlayOptions(streamInfo),getPlayerData(player).streamInfo=streamInfo,player.play(streamInfo,signal).then(function(){streamInfo.started=!0,\"subtitletrackchange\"===progressEventName||\"audiotrackchange\"===progressEventName?_events.default.trigger(player,progressEventName):sendProgressUpdate(self,player,progressEventName||\"timeupdate\"),previousPlaySessionId&&apiClient.stopActiveEncodings(previousPlaySessionId)},function(err){return console.log(\"setSrcIntoPlayer error: \"+(null==err?void 0:err.toString())),previousPlaySessionId&&apiClient.stopActiveEncodings(previousPlaySessionId),streamInfo.started=!1,onPlaybackError.call(player,err,{type:err&&err.name?err.name:\"mediadecodeerror\",streamInfo:streamInfo,returnPromise:!0})})}"
+    "function onPlaybackError(e,error){var errorType=error.type,errorType=(console.log(\"playbackmanager playback error type: \"+(errorType||\"\")),error.streamInfo||getPlayerData(this).streamInfo);if(errorType){var transcodingFallbackOptions=self.getTranscodingFallbackOptions(this,error);if(transcodingFallbackOptions.canTrigger)return changeStream(this,getCurrentTicks(this)||errorType.playerStartPositionTicks,{EnableDirectPlay:!1,EnableDirectStream:!1,AllowVideoStreamCopy:\"Transcode\"!==errorType.playMethod&&null,AllowAudioStreamCopy:!transcodingFallbackOptions.currentlyPreventsAudioStreamCopy&&!transcodingFallbackOptions.currentlyPreventsVideoStreamCopy&&null})}return onPlaybackStopped.call(this,e,{errorCode:\"NoCompatibleStream\",returnPromise:error.returnPromise})}"
+    "globalThis.__setSrcIntoPlayer=setSrcIntoPlayer;"
+    "globalThis.__getPlayerData=getPlayerData;"
     "self.seek=function(ticks,player){return ticks=Math.max(0,ticks),(player=player||self._currentPlayer)&&!enableLocalPlaylistManagement(player)?player.isLocalPlayer?player.seek((ticks||0)/1e4):player.seek(ticks):changeStream(player,ticks)};"
     "function onPlaybackTimeUpdate(e){sendProgressUpdate(self,this,\"timeupdate\")}"
     "});"
@@ -91,6 +103,53 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         return json.loads(result.stdout)
 
+    def _evaluate_hls_retry(
+        self,
+        playbackmanager,
+        switch_stream=False,
+        always_fail=False,
+        abort_during_retry=False,
+        abort_error=False,
+    ):
+        if abort_error:
+            play_result = (
+                "const error=new Error('aborted');error.name='AbortError';"
+                "return Promise.reject(error);"
+            )
+        elif always_fail:
+            play_result = "return Promise.reject(new Error('cold'));"
+        else:
+            play_result = (
+                "return calls.length===1?Promise.reject(new Error('cold')):"
+                "Promise.resolve();"
+            )
+        script = (
+            "globalThis.define=function(factory){factory()};"
+            + playbackmanager.read_text(encoding="utf-8")
+            + "const calls=[];const controller=new AbortController();"
+            + "const apiClient={stopActiveEncodings:function(){}};"
+            + "const streamInfo={url:'/Videos/item/master.m3u8?x=1',playMethod:'Transcode',"
+            + "playSessionId:'same-session',item:{apiClient:apiClient}};"
+            + "const player={play:function(info,signal){calls.push({info:info,signal:signal});"
+            + play_result
+            + "}};"
+            + ("setTimeout(function(){globalThis.__getPlayerData(player).streamInfo={url:'replacement'}},50);"
+               if switch_stream else "")
+            + ("setTimeout(function(){controller.abort()},50);"
+               if abort_during_retry else "")
+            + "globalThis.__setSrcIntoPlayer(apiClient,player,streamInfo,null,null,controller.signal).then(function(){"
+            + "process.stdout.write(JSON.stringify({calls:calls.length,same:calls.every(function(value){return value.info===streamInfo}),sameSignal:calls.every(function(value){return value.signal===controller.signal}),session:streamInfo.playSessionId}))"
+            + "}).catch(function(){process.stdout.write(JSON.stringify({calls:calls.length,same:calls.every(function(value){return value.info===streamInfo}),sameSignal:calls.every(function(value){return value.signal===controller.signal}),session:streamInfo.playSessionId,rejected:true}))});"
+        )
+        result = subprocess.run(
+            ["node", "-e", script],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        return json.loads(result.stdout[result.stdout.rfind("{"):])
+
     def test_seek_sends_explicit_watch_party_progress_with_target(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -120,6 +179,73 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
                 patched.index('markWatchPartySeek(self,player,ticks)'),
                 patched.index('result=player&&!enableLocalPlaylistManagement(player)'),
             )
+
+    def test_installer_prewarms_ass_fonts_once_per_container_start(self):
+        installer = INSTALLER.read_text(encoding="utf-8")
+        warmup = WARMUP.read_text(encoding="utf-8")
+        timer = TIMER.read_text(encoding="utf-8")
+
+        self.assertIn("{{.State.StartedAt}}", installer)
+        self.assertIn("ass-font-warmup.started-at", installer)
+        self.assertIn("subtitles=$warmup_path:fontsdir=/config/fonts", installer)
+        self.assertIn("-frames:v 1", installer)
+        self.assertLess(
+            installer.index("ass-font-warmup.started-at"),
+            installer.index('if [ "$patch_output" = "already-patched" ]'),
+        )
+        self.assertIn("ScriptType: v4.00+", warmup)
+        self.assertIn("Go Noto Kurrent", warmup)
+        self.assertIn("OnBootSec=1min", timer)
+        self.assertIn("OnUnitActiveSec=5min", timer)
+
+    def test_hls_cold_start_retries_same_stream_and_play_session_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            playbackmanager = self._patch_fixture(root)
+            result = self._evaluate_hls_retry(playbackmanager)
+
+            self.assertEqual(2, result["calls"])
+            self.assertTrue(result["same"])
+            self.assertTrue(result["sameSignal"])
+            self.assertEqual("same-session", result["session"])
+
+    def test_hls_cold_start_retry_does_not_revive_a_replaced_stream(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            playbackmanager = self._patch_fixture(root)
+            result = self._evaluate_hls_retry(playbackmanager, switch_stream=True)
+
+            self.assertEqual(1, result["calls"])
+
+    def test_hls_cold_start_retry_respects_abort_signal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            playbackmanager = self._patch_fixture(root)
+            result = self._evaluate_hls_retry(
+                playbackmanager,
+                abort_during_retry=True,
+            )
+
+            self.assertEqual(1, result["calls"])
+            self.assertTrue(result["rejected"])
+
+    def test_hls_cold_start_does_not_retry_abort_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            playbackmanager = self._patch_fixture(root)
+            result = self._evaluate_hls_retry(playbackmanager, abort_error=True)
+
+            self.assertEqual(1, result["calls"])
+            self.assertTrue(result["rejected"])
+
+    def test_hls_cold_start_falls_back_after_exactly_one_retry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            playbackmanager = self._patch_fixture(root)
+            result = self._evaluate_hls_retry(playbackmanager, always_fail=True)
+
+            self.assertEqual(2, result["calls"])
+            self.assertTrue(result["rejected"])
 
     def test_virtual_strm_without_direct_url_uses_server_transcoding_url(self):
         with tempfile.TemporaryDirectory() as temp_dir:
