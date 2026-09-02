@@ -3,10 +3,15 @@
 This deployment layer protects Emby Range requests backed by 115 without
 depending on a Chinese folder name or a fixed library path.
 
-For each new download request under `/d/`, Nginx makes a one-byte internal probe
-against OpenList. Only redirects whose final host belongs to a supported 115
-download domain are proxied directly. Other providers continue through the
-official Xiaoya `/d/` location.
+Physical local files stay on Emby's native path and never enter this layer. For
+each Xiaoya download request under `/d/`, Nginx makes a one-byte internal probe
+against OpenList. The probe does not read the remote CDN body: OpenList answers
+with the current signed redirect, which is used to identify the provider and
+refresh an expiring URL. Only redirects whose final host belongs to a supported
+115 download domain are proxied directly. Other providers continue through the
+official Xiaoya `/d/` location. A `.strm` suffix can identify the original item
+as remote, but it does not contain the final signed CDN URL or distinguish 115
+from another provider by itself.
 
 The loopback `emby-115-guard` process keeps two upstream requests per media
 path. A third Range request, which normally follows a seek or an HLS segment
@@ -30,9 +35,12 @@ retained as deprecated compatibility aliases; replacements remain zero.
 Files are copied to Xiaoya's persistent `/data` mount. The installer wraps
 `/updateall`, and `install-xiaoyakeeper-hook.sh` adds a post-update reinstall
 command to `mycmd.txt`, so both data refreshes and container recreation restore
-the includes. The installer waits for a newly recreated Nginx master and
-retries reload instead of rolling back a valid overlay during the startup
-window. A lightweight in-container cron check verifies both the loopback guard
+the includes. The post-update command first waits for the new Nginx master,
+official `/d/` configuration, and OpenList listener to become ready, then runs
+the installer once. It therefore never sends reload to the stale PID left
+during container replacement. The installer also preserves a validated overlay
+if a later reload race occurs. A lightweight in-container cron check verifies
+both the loopback guard
 and the effective `nginx -T` route set; if the guard is healthy but the `/d/`
 access hook or named stream/retry locations are missing, it reruns the complete
 installer. No host systemd timer is required.

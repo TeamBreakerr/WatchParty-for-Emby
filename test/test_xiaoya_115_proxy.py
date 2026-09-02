@@ -389,8 +389,66 @@ async function redirect2Pan(r) {
         for retired_overlay in retired_periodic_overlays:
             self.assertFalse((DEPLOY_ROOT / retired_overlay).exists())
         self.assertIn("/updateall.xiaoya-original", wrapper)
+        self.assertIn("install-emby-115-proxy-after-start.sh", keeper)
         self.assertIn("install-emby-115-proxy.sh --reload", keeper)
         self.assertIn("xiaoyakeeper-xiaoya-begin", keeper)
+
+    def test_post_update_install_waits_for_fresh_services_then_installs_once(self):
+        post_start = DEPLOY_ROOT / "install-emby-115-proxy-after-start.sh"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pid_file = root / "nginx.pid"
+            proc_root = root / "proc"
+            config = root / "default.conf"
+            curl_count = root / "curl-count"
+            install_calls = root / "install-calls"
+            fake_curl = root / "curl"
+            fake_installer = root / "installer"
+
+            pid_file.write_text(str(os.getpid()), encoding="utf-8")
+            process_dir = proc_root / str(os.getpid())
+            process_dir.mkdir(parents=True)
+            (process_dir / "comm").write_text("nginx\n", encoding="utf-8")
+            config.write_text("location /d/ { }\n", encoding="utf-8")
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                f"count=$(cat '{curl_count}' 2>/dev/null || echo 0)\n"
+                "count=$((count + 1))\n"
+                f"echo \"$count\" >'{curl_count}'\n"
+                "[ \"$count\" -ge 3 ]\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            fake_installer.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >>'{install_calls}'\n",
+                encoding="utf-8",
+            )
+            fake_installer.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "EMBY_115_NGINX_PID_FILE": str(pid_file),
+                    "EMBY_115_PROC_ROOT": str(proc_root),
+                    "EMBY_115_DEFAULT_CONFIG": str(config),
+                    "EMBY_115_CURL_BIN": str(fake_curl),
+                    "EMBY_115_INSTALLER": str(fake_installer),
+                    "EMBY_115_STARTUP_WAIT_ATTEMPTS": "3",
+                    "EMBY_115_STARTUP_WAIT_DELAY_SECONDS": "0",
+                }
+            )
+            result = subprocess.run(
+                [str(post_start)], capture_output=True, text=True, env=env
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("3", curl_count.read_text(encoding="utf-8").strip())
+            self.assertEqual(
+                ["--reload"],
+                install_calls.read_text(encoding="utf-8").splitlines(),
+            )
 
     def test_installer_retries_reload_after_container_recreation(self):
         installer = DEPLOY_ROOT / "install-emby-115-proxy.sh"
@@ -437,6 +495,7 @@ async function redirect2Pan(r) {
                 "emby_115_policy.lua",
                 "ensure-emby-115-guard.sh",
                 "ensure-emby-115-proxy.sh",
+                "install-emby-115-proxy-after-start.sh",
                 "emby-websocket-diagnostic.conf",
                 "emby-websocket-timeout.conf",
                 "ensure-emby-websocket-timeout.sh",
@@ -449,6 +508,7 @@ async function redirect2Pan(r) {
                 "emby-115-guard",
                 "ensure-emby-115-guard.sh",
                 "ensure-emby-115-proxy.sh",
+                "install-emby-115-proxy-after-start.sh",
                 "ensure-emby-websocket-timeout.sh",
                 "ensure-emby-web-cache-buster.sh",
                 "ensure-emby-direct-link-fallback.sh",
