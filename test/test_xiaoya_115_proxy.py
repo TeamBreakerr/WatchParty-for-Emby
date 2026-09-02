@@ -26,6 +26,22 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         self.assertIn("PlaybackInfo?api_key=", patcher)
         self.assertIn("Nginx rejected the Emby direct-link fallback patch", patcher)
 
+    def test_emby_njs_patch_keeps_local_media_on_the_emby_backend(self):
+        patcher = (
+            DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
+        ).read_text()
+
+        self.assertIn("isLocalMediaPath", patcher)
+        self.assertIn("doesNotContainHttp && doesNotContainDOCKER", patcher)
+        self.assertIn(
+            'print "    if (isLocalMediaPath || isXiaoyaMediaPath) {"',
+            patcher,
+        )
+        self.assertIn(
+            'print "        r.internalRedirect(\\"@backend\\");"',
+            patcher,
+        )
+
     def test_emby_njs_patch_is_idempotent_and_restores_on_nginx_failure(self):
         patcher = DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
         fixture = """async function fetchXYApi(xyurl, ua, cookie) {
@@ -163,6 +179,11 @@ async function redirect2Pan(r) {
             self.assertEqual(first_contents, script.read_bytes())
             updated = script.read_text()
             self.assertNotIn('"Range": "bytes=0-0"', updated)
+            self.assertIn("var isLocalMediaPath =", updated)
+            self.assertIn(
+                "isLocalMediaPath || isXiaoyaMediaPath",
+                updated,
+            )
             self.assertIn("var isXiaoyaMediaPath =", updated)
             self.assertIn('r.return(302, embyRes);', updated)
             self.assertNotIn(
@@ -211,10 +232,40 @@ async function redirect2Pan(r) {
             migrated_contents = script.read_text()
 
             self.assertEqual(0, migrated.returncode, migrated.stderr)
-            self.assertIn("codex-emby-guarded-path-routing-v2", migrated_contents)
+            self.assertIn("codex-emby-guarded-path-routing-v3", migrated_contents)
             self.assertNotIn("codex-emby-direct-link-fallback-v1", migrated_contents)
             self.assertNotIn('"Range": "bytes=0-0"', migrated_contents)
             self.assertNotIn("error: media_body", migrated_contents)
+
+            script.write_text(updated.replace(
+                "codex-emby-guarded-path-routing-v3",
+                "codex-emby-guarded-path-routing-v2",
+            ).replace(
+                "    var isLocalMediaPath =\n"
+                "        doesNotContainHttp && doesNotContainDOCKER;\n",
+                "",
+            ).replace(
+                "if (isLocalMediaPath || isXiaoyaMediaPath)",
+                "if (isXiaoyaMediaPath)",
+            ))
+            upgraded_v2 = subprocess.run(
+                [str(patcher)], capture_output=True, text=True, env=env
+            )
+            upgraded_v2_contents = script.read_text()
+
+            self.assertEqual(0, upgraded_v2.returncode, upgraded_v2.stderr)
+            self.assertIn(
+                "codex-emby-guarded-path-routing-v3",
+                upgraded_v2_contents,
+            )
+            self.assertNotIn(
+                "codex-emby-guarded-path-routing-v2",
+                upgraded_v2_contents,
+            )
+            self.assertIn(
+                "isLocalMediaPath || isXiaoyaMediaPath",
+                upgraded_v2_contents,
+            )
 
             unrelated_probe = fixture.replace(
                 "async function getPlaybackPath(itemId, userId, apiKey, r) {",

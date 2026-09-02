@@ -733,6 +733,8 @@ namespace WatchPartyForEmby
             }
 
             PartyParticipant participant = null;
+            IReadOnlyList<PartySessionDisplacement> displacedMemberships =
+                Array.Empty<PartySessionDisplacement>();
             _masterSessionLifecycles.Execute(
                 partyId,
                 () => participant = GetOrCreateParticipantCore(
@@ -740,7 +742,9 @@ namespace WatchPartyForEmby
                     session,
                     playSessionId,
                     nowUtc,
-                    maxParticipants.Value));
+                    maxParticipants.Value,
+                    out displacedMemberships));
+            FinalizeDisplacedMasterMemberships(partyId, displacedMemberships);
             return participant;
         }
 
@@ -749,13 +753,14 @@ namespace WatchPartyForEmby
             SessionInfo session,
             string playSessionId,
             DateTime? nowUtc,
-            int maxParticipants)
+            int maxParticipants,
+            out IReadOnlyList<PartySessionDisplacement> displacedMemberships)
         {
             var user = session.UserName ?? session.UserId;
             var replacesMasterPlayback =
                 _plugin.PartyParticipants.IsMasterSession(partyId, session.Id);
 
-            if (!_plugin.PartyParticipants.TryUpsertSession(
+            if (!_plugin.PartyParticipants.TryClaimSession(
                     partyId,
                     session.Id,
                     session.UserId,
@@ -765,12 +770,23 @@ namespace WatchPartyForEmby
                     maxParticipants,
                     out var participant,
                     out var previousPlaySessionId,
-                    out var created))
+                    out var created,
+                    out displacedMemberships))
             {
                 _logger.Warn(
                     $"[Party {partyId}] Refused session {session.Id} for user {session.UserId}: " +
                     $"maximum distinct-user capacity ({maxParticipants}) reached");
                 return null;
+            }
+            foreach (var displacement in displacedMemberships)
+            {
+                CompleteParticipantRemoval(
+                    displacement.PartyId,
+                    session.Id,
+                    displacement.Participant);
+                _logger.Info(
+                    $"[Party {partyId}] Session {session.Id} moved from party " +
+                    $"{displacement.PartyId}; retired the older room membership");
             }
             if (created)
             {
@@ -797,6 +813,49 @@ namespace WatchPartyForEmby
             }
 
             return participant;
+        }
+
+        private void FinalizeDisplacedMasterMemberships(
+            string destinationPartyId,
+            IReadOnlyList<PartySessionDisplacement> displacedMemberships)
+        {
+            var configurationChanged = false;
+            foreach (var displacement in displacedMemberships ??
+                Array.Empty<PartySessionDisplacement>())
+            {
+                if (!displacement.WasMaster)
+                {
+                    continue;
+                }
+
+                WatchPartyItem previousParty;
+                lock (_plugin.ConfigurationSyncRoot)
+                {
+                    previousParty = _plugin.Configuration.WatchParties.FirstOrDefault(candidate =>
+                        string.Equals(
+                            candidate.Id,
+                            displacement.PartyId,
+                            StringComparison.Ordinal));
+                }
+                if (previousParty == null)
+                {
+                    continue;
+                }
+
+                _masterSessionLifecycles.Execute(
+                    displacement.PartyId,
+                    () => configurationChanged |= !HandleMasterDeparture(
+                        previousParty,
+                        displacement.Participant.UserId,
+                        displacement.Participant.CurrentPositionTicks,
+                        $"session moved to party {destinationPartyId}",
+                        freezeAtFallbackPosition: true));
+            }
+
+            if (configurationChanged)
+            {
+                _plugin.SaveConfigurationSafely();
+            }
         }
 
         private void ClearSessionEpisodeMarkers(string partyId, string sessionId)

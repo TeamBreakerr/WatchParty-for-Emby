@@ -125,6 +125,52 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void ClaimingASessionForANewPartyRemovesItsOldRoomMembership()
+        {
+            var registry = new PartySessionRegistry();
+            var now = new DateTime(2026, 9, 2, 12, 0, 0, DateTimeKind.Utc);
+            registry.AddOrUpdate(
+                "old-party",
+                "ios-session",
+                Participant("viewer", "ios-session", now, "old-playback"));
+            Assert.True(registry.SetMasterSession("old-party", "ios-session"));
+
+            Assert.True(registry.TryClaimSession(
+                "new-party",
+                "ios-session",
+                "viewer",
+                "Viewer",
+                "new-playback",
+                now.AddSeconds(1),
+                maxParticipants: 0,
+                out var claimed,
+                out var previousPlayback,
+                out var created,
+                out var displaced));
+
+            var removal = Assert.Single(displaced);
+            Assert.Equal("old-party", removal.PartyId);
+            Assert.Equal("ios-session", removal.Participant.SessionId);
+            Assert.True(removal.WasMaster);
+            Assert.False(registry.TryGetSession(
+                "old-party",
+                "ios-session",
+                out _));
+            Assert.Null(registry.GetMasterSession("old-party"));
+            Assert.True(registry.IsRetiredPlaybackId(
+                "old-party",
+                "ios-session",
+                "old-playback"));
+            Assert.True(created);
+            Assert.Null(previousPlayback);
+            Assert.Equal("new-playback", claimed.PlaySessionId);
+            Assert.True(registry.IsCurrentPlaybackSession(
+                "new-party",
+                "ios-session",
+                "new-playback"));
+        }
+
+        [Fact]
         public void DelayedStopForOldPlaybackDoesNotRemoveReplacementUsingSameSessionId()
         {
             var registry = new PartySessionRegistry();

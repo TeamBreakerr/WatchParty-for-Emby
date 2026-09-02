@@ -89,6 +89,18 @@ test('a retained follower Stop forces its next accepted Start through reconcilia
     assert.match(playbackStart, /ReconcileParticipantAfterReconnect/);
 });
 
+test('one Emby session cannot remain controllable from two rooms', () => {
+    const registration = methodBody(
+        'private PartyParticipant GetOrCreateParticipant(',
+        'private void ClearSessionEpisodeMarkers');
+
+    assert.match(registration, /TryClaimSession/);
+    assert.match(registration, /displacedMemberships/);
+    assert.match(registration, /CompleteParticipantRemoval/);
+    assert.match(registration, /FinalizeDisplacedMasterMemberships/);
+    assert.doesNotMatch(registration, /TryUpsertSession/);
+});
+
 test('cross-episode handoff still sends a bounded PlayNow command path', () => {
     const requestFactory = methodBody(
         'private PlayRequest CreateEpisodePlayRequest',

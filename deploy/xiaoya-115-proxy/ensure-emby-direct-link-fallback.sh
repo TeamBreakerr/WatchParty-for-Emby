@@ -5,13 +5,15 @@ set -eu
 # direct link.  WatchParty deliberately keeps those paths behind Emby's native
 # backend so the dynamic 115 guard can enforce its two-connection limit.  The
 # path is already known from PlaybackInfo, so route it without opening a
-# one-byte media request first.  Local files already take the native backend
-# branch, while unrelated ready-to-use external links retain Xiaoya's normal
-# behavior.  Also remove the redundant stream.strm next-episode probe.
+# one-byte media request first.  Relative/local filesystem paths must also stay
+# on the native Emby backend; only ready-to-use external HTTP(S) links may be
+# returned to a client.  Also remove the redundant stream.strm next-episode
+# probe.
 
 njs_script=${EMBY_NJS_SCRIPT:-/etc/nginx/http.d/emby.js}
 nginx_bin=${NGINX_BIN:-nginx}
-marker=codex-emby-guarded-path-routing-v2
+marker=codex-emby-guarded-path-routing-v3
+previous_marker=codex-emby-guarded-path-routing-v2
 legacy_marker=codex-emby-direct-link-fallback-v1
 reload=0
 
@@ -33,7 +35,9 @@ validate_patch() {
     file=$1
     grep -Fq "$marker" "$file" \
         && [ "$(grep -c "$marker" "$file")" -eq 1 ] \
+        && grep -Fq 'var isLocalMediaPath =' "$file" \
         && grep -Fq 'var isXiaoyaMediaPath =' "$file" \
+        && grep -Fq 'if (isLocalMediaPath || isXiaoyaMediaPath)' "$file" \
         && grep -Fq 'r.return(302, embyRes);' "$file" \
         && grep -Fq 'r.internalRedirect("@backend")' "$file" \
         && grep -Fq 'PlaybackInfo?api_key=' "$file" \
@@ -42,6 +46,7 @@ validate_patch() {
         && ! grep -Fq 'getCachedXYUrl(alistFilePath' "$file" \
         && ! grep -Fq 'getCachedXYUrl(alistNextPath' "$file" \
         && ! grep -Fq '/stream.strm' "$file" \
+        && ! grep -Fq "$previous_marker" "$file" \
         && ! grep -Fq "$legacy_marker" "$file"
 }
 
@@ -78,6 +83,16 @@ fi
 if grep -Fq "$marker" "$njs_script"; then
     echo "existing Emby guarded-path routing patch is incomplete" >&2
     exit 1
+fi
+
+has_previous_patch=0
+if grep -Fq "$previous_marker" "$njs_script"; then
+    has_previous_patch=1
+    if [ "$(grep -c "$previous_marker" "$njs_script")" -ne 1 ] \
+        || ! grep -Fq 'r.return(302, embyRes);' "$njs_script"; then
+        echo "existing v2 Emby guarded-path routing patch is incomplete" >&2
+        exit 1
+    fi
 fi
 
 has_legacy_patch=0
@@ -133,7 +148,9 @@ trap 'exit 1' HUP INT TERM
 cp -p "$njs_script" "$backup_script"
 restore_needed=1
 
-if ! awk -v marker="$marker" -v legacy_marker="$legacy_marker" \
+if ! awk -v marker="$marker" -v previous_marker="$previous_marker" \
+    -v legacy_marker="$legacy_marker" \
+    -v has_previous_patch="$has_previous_patch" \
     -v has_legacy_patch="$has_legacy_patch" \
     -v remove_strm_preload="$remove_strm_preload" \
     -v remove_next_preload="$remove_next_preload" \
@@ -146,10 +163,43 @@ if ! awk -v marker="$marker" -v legacy_marker="$legacy_marker" \
         drop_media_body = 0
         drop_helper = 0
         drop_redirect_tail = 0
+        drop_previous_route = 0
         helper_replaced = 0
         next_preload_removed = 0
         route_added = 0
         marker_added = 0
+    }
+
+    function print_routing_policy() {
+        print "    // " marker
+        print "    var isLocalMediaPath ="
+        print "        doesNotContainHttp && doesNotContainDOCKER;"
+        print "    var isXiaoyaMediaPath ="
+        print "        embyRes.includes(\"DOCKER_ADDRESS\") ||"
+        print "        embyRes.includes(\"xiaoya.host:5678\") ||"
+        print "        embyRes.includes(\"172.19.0.1:5678\") ||"
+        print "        embyRes.indexOf(\"http://127.0.0.1:80/d/\") === 0;"
+        print "    if (isLocalMediaPath || isXiaoyaMediaPath) {"
+        print "        r.internalRedirect(\"@backend\");"
+        print "        return;"
+        print "    }"
+        print ""
+        print "    r.return(302, embyRes);"
+        marker_added++
+        route_added++
+    }
+
+    has_previous_patch && index($0, previous_marker) > 0 {
+        print_routing_policy()
+        drop_previous_route = 1
+        next
+    }
+
+    drop_previous_route {
+        if ($0 ~ /^[[:space:]]*r[.]return\(302, embyRes\);[[:space:]]*$/) {
+            drop_previous_route = 0
+        }
+        next
     }
 
     has_legacy_patch && index($0, legacy_marker) > 0 {
@@ -217,7 +267,7 @@ if ! awk -v marker="$marker" -v legacy_marker="$legacy_marker" \
         next
     }
 
-    /^[[:space:]]*if \(contain115helper\)[[:space:]]*\{/ {
+    !has_previous_patch && /^[[:space:]]*if \(contain115helper\)[[:space:]]*\{/ {
         print "    if (contain115helper) {"
         print "        r.internalRedirect(\"@backend\");"
         print "        return;"
@@ -236,22 +286,9 @@ if ! awk -v marker="$marker" -v legacy_marker="$legacy_marker" \
     }
 
     /^[[:space:]]*var alistFilePath = embyRes[.]replace/ {
-        print "    // " marker
-        print "    var isXiaoyaMediaPath ="
-        print "        embyRes.includes(\"DOCKER_ADDRESS\") ||"
-        print "        embyRes.includes(\"xiaoya.host:5678\") ||"
-        print "        embyRes.includes(\"172.19.0.1:5678\") ||"
-        print "        embyRes.indexOf(\"http://127.0.0.1:80/d/\") === 0;"
-        print "    if (isXiaoyaMediaPath) {"
-        print "        r.internalRedirect(\"@backend\");"
-        print "        return;"
-        print "    }"
-        print ""
-        print "    r.return(302, embyRes);"
+        print_routing_policy()
         print "}"
         drop_redirect_tail = 1
-        marker_added++
-        route_added++
         next
     }
 
@@ -270,7 +307,7 @@ if ! awk -v marker="$marker" -v legacy_marker="$legacy_marker" \
             (remove_next_preload && next_preload_removed != 1) ||
             (remove_strm_preload && dropped_strm_preload != 1) ||
             drop_media_body || drop_helper || drop_strm_preload ||
-            drop_redirect_tail) {
+            drop_redirect_tail || drop_previous_route) {
             exit 3
         }
     }

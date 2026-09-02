@@ -11,6 +11,15 @@ namespace WatchPartyForEmby
         RemovedMaster
     }
 
+    public sealed class PartySessionDisplacement
+    {
+        public string PartyId { get; set; }
+
+        public PartyParticipant Participant { get; set; }
+
+        public bool WasMaster { get; set; }
+    }
+
     /// <summary>
     /// Tracks watch-party playback sessions keyed by Emby SessionId instead of UserId.
     /// The same user can have several active sessions (official iOS app, VidHub, Conflux,
@@ -167,6 +176,85 @@ namespace WatchPartyForEmby
                     nowUtc,
                     out previousPlaySessionId,
                     out created);
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Atomically gives one physical Emby SessionId to exactly one party. A client
+        /// can only have one active player, so leaving the same SessionId registered in
+        /// an older room lets that room interrupt the new playback with stale commands.
+        /// The caller receives the displaced memberships so their room-specific runtime
+        /// state can be cleaned up after this registry transaction completes.
+        /// </summary>
+        public bool TryClaimSession(
+            string partyId,
+            string sessionId,
+            string userId,
+            string userName,
+            string playSessionId,
+            DateTime nowUtc,
+            int maxParticipants,
+            out PartyParticipant participant,
+            out string previousPlaySessionId,
+            out bool created,
+            out IReadOnlyList<PartySessionDisplacement> displacedMemberships)
+        {
+            if (string.IsNullOrEmpty(partyId) || string.IsNullOrEmpty(sessionId))
+            {
+                throw new ArgumentException("partyId and sessionId are required");
+            }
+
+            lock (_syncRoot)
+            {
+                participant = null;
+                previousPlaySessionId = null;
+                created = false;
+                displacedMemberships = Array.Empty<PartySessionDisplacement>();
+                if (maxParticipants > 0
+                    && !HasUser(partyId, userId)
+                    && DistinctUserCount(partyId) >= maxParticipants)
+                {
+                    return false;
+                }
+
+                var displaced = new List<PartySessionDisplacement>();
+                foreach (var previousPartyId in _sessionsByParty.Keys
+                    .Where(candidate => !string.Equals(
+                        candidate,
+                        partyId,
+                        StringComparison.Ordinal))
+                    .ToList())
+                {
+                    if (!TryRemoveSessionInternal(
+                            previousPartyId,
+                            sessionId,
+                            expectedPlaySessionId: null,
+                            requirePlaySessionMatch: false,
+                            out var removed,
+                            out var wasMaster))
+                    {
+                        continue;
+                    }
+
+                    displaced.Add(new PartySessionDisplacement
+                    {
+                        PartyId = previousPartyId,
+                        Participant = removed,
+                        WasMaster = wasMaster
+                    });
+                }
+
+                participant = UpsertSession(
+                    partyId,
+                    sessionId,
+                    userId,
+                    userName,
+                    playSessionId,
+                    nowUtc,
+                    out previousPlaySessionId,
+                    out created);
+                displacedMemberships = displaced;
                 return true;
             }
         }

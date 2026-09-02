@@ -18,7 +18,7 @@
 
 ## 3. 房间、会话与播放实例生命周期
 
-- R9. 参与者必须按 Emby `SessionId` 保存，不能按 `UserId` 相互覆盖。
+- R9. 参与者必须按 Emby `SessionId` 保存，不能按 `UserId` 相互覆盖；同一个物理 `SessionId` 同一时间只能归属一个房间，进入新房间必须注销旧房间，防止旧房间继续下发控制命令。
 - R10. 每个会话还必须跟踪 `PlaySessionId`；旧播放实例的 Progress/Stop 不得覆盖或移除新播放实例。
 - R11. 客户端快速退出、重播、换集、复用 `SessionId` 或遗漏 `PlaybackStart` 时，应能从可信的 Start/Progress 自动恢复，不要求用户退出房间重进。
 - R12. 同一 Emby Web `SessionId` 并发残留多个 `PlaySessionId` 时，只允许当前实例更新 master 时间轴，旧实例不得造成进度来回跳。
