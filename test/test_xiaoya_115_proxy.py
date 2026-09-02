@@ -310,6 +310,26 @@ async function redirect2Pan(r) {
         self.assertIn("ngx.arg[1] = nil", resolver)
         self.assertIn("ngx.arg[2] = true", resolver)
 
+    def test_resolver_and_stream_use_the_same_nonempty_user_agent(self):
+        locations = (DEPLOY_ROOT / "emby-115-locations.conf").read_text()
+        guard = (DEPLOY_ROOT / "guard" / "main.go").read_text()
+
+        user_agent_match = re.search(
+            r'set \$emby_115_user_agent "([^"]+)";', locations
+        )
+        guard_user_agent_match = re.search(
+            r'stableUserAgent\s*=\s*"([^"]+)"', guard
+        )
+
+        self.assertIsNotNone(user_agent_match)
+        self.assertIsNotNone(guard_user_agent_match)
+        self.assertEqual(user_agent_match.group(1), guard_user_agent_match.group(1))
+        self.assertNotEqual("", user_agent_match.group(1))
+        self.assertEqual(
+            3,
+            locations.count("proxy_set_header User-Agent $emby_115_user_agent;"),
+        )
+
     def test_go_and_lua_115_host_allowlists_are_identical(self):
         guard = (DEPLOY_ROOT / "guard" / "main.go").read_text()
         policy = (DEPLOY_ROOT / "emby_115_policy.lua").read_text()
@@ -353,6 +373,12 @@ async function redirect2Pan(r) {
         direct_link_ensurer = (
             DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
         ).read_text()
+        runtime_installer = (
+            DEPLOY_ROOT / "install-emby-115-runtime.sh"
+        ).read_text()
+        post_start_installer = (
+            DEPLOY_ROOT / "install-emby-115-proxy-after-start.sh"
+        ).read_text()
         retired_periodic_overlays = (
             "ensure-xiaoya-overlays.sh",
             "install-host-overlay-watchdog.sh",
@@ -392,6 +418,13 @@ async function redirect2Pan(r) {
         self.assertIn("install-emby-115-proxy-after-start.sh", keeper)
         self.assertIn("install-emby-115-proxy.sh --reload", keeper)
         self.assertIn("xiaoyakeeper-xiaoya-begin", keeper)
+        self.assertIn("install-emby-115-runtime.sh", post_start_installer)
+        self.assertIn("emby-115-locations.conf", runtime_installer)
+        self.assertIn("ensure-emby-115-guard.sh", runtime_installer)
+        self.assertNotIn("/etc/crontabs/root", runtime_installer)
+        self.assertNotIn("/updateall", runtime_installer)
+        self.assertNotIn("ensure-emby-direct-link-fallback", runtime_installer)
+        self.assertNotIn("ensure-emby-websocket-timeout", runtime_installer)
 
     def test_post_update_install_waits_for_fresh_services_then_installs_once(self):
         post_start = DEPLOY_ROOT / "install-emby-115-proxy-after-start.sh"
@@ -495,6 +528,7 @@ async function redirect2Pan(r) {
                 "emby_115_policy.lua",
                 "ensure-emby-115-guard.sh",
                 "ensure-emby-115-proxy.sh",
+                "install-emby-115-runtime.sh",
                 "install-emby-115-proxy-after-start.sh",
                 "emby-websocket-diagnostic.conf",
                 "emby-websocket-timeout.conf",
@@ -508,6 +542,7 @@ async function redirect2Pan(r) {
                 "emby-115-guard",
                 "ensure-emby-115-guard.sh",
                 "ensure-emby-115-proxy.sh",
+                "install-emby-115-runtime.sh",
                 "install-emby-115-proxy-after-start.sh",
                 "ensure-emby-websocket-timeout.sh",
                 "ensure-emby-web-cache-buster.sh",

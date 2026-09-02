@@ -6,7 +6,7 @@ proc_root=${EMBY_115_PROC_ROOT:-/proc}
 default_config=${EMBY_115_DEFAULT_CONFIG:-/etc/nginx/http.d/default.conf}
 curl_bin=${EMBY_115_CURL_BIN:-curl}
 openlist_url=${EMBY_115_OPENLIST_URL:-http://127.0.0.1:5244/}
-installer=${EMBY_115_INSTALLER:-/data/install-emby-115-proxy.sh}
+installer=${EMBY_115_INSTALLER:-/data/install-emby-115-runtime.sh}
 wait_attempts=${EMBY_115_STARTUP_WAIT_ATTEMPTS:-300}
 wait_delay_seconds=${EMBY_115_STARTUP_WAIT_DELAY_SECONDS:-1}
 

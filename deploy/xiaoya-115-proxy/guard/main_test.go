@@ -78,6 +78,46 @@ func TestParse115Target(t *testing.T) {
 	}
 }
 
+func TestGuardUsesStableUserAgentForSignedDownload(t *testing.T) {
+	t.Parallel()
+
+	var observedUserAgent string
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		observedUserAgent = request.Header.Get("User-Agent")
+		return &http.Response{
+			StatusCode: http.StatusPartialContent,
+			Header: http.Header{
+				"Content-Type":  []string{"application/octet-stream"},
+				"Content-Range": []string{"bytes 0-0/1"},
+			},
+			Body:    io.NopCloser(strings.NewReader("x")),
+			Request: request,
+		}, nil
+	})
+	target, err := url.Parse("https://cdnfhnfile.115cdn.net/video.mkv?token=redacted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := newStreamGuard(
+		&http.Client{Transport: transport},
+		func(string) (*url.URL, error) { return target, nil },
+		log.New(io.Discard, "", 0))
+
+	request := httptest.NewRequest(http.MethodGet, "http://guard/stream", nil)
+	request.Header.Set(targetHeader, target.String())
+	request.Header.Set(keyHeader, fmt.Sprintf("%x", md5.Sum([]byte("/media/video.mkv"))))
+	request.Header.Set("User-Agent", "mismatched-client-agent")
+	response := httptest.NewRecorder()
+	guard.ServeHTTP(response, request)
+
+	if response.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206, got %d", response.Code)
+	}
+	if observedUserAgent != stableUserAgent {
+		t.Fatalf("expected stable user agent %q, got %q", stableUserAgent, observedUserAgent)
+	}
+}
+
 func TestThirdStreamWaitsForNaturalReleaseWithoutEviction(t *testing.T) {
 	var active atomic.Int32
 	var maximum atomic.Int32

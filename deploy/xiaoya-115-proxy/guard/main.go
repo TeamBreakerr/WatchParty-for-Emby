@@ -21,9 +21,10 @@ import (
 )
 
 const (
-	targetHeader = "X-Emby-115-Target"
-	keyHeader    = "X-Emby-115-Key"
-	guardHeader  = "X-Emby-115-Guard"
+	targetHeader    = "X-Emby-115-Target"
+	keyHeader       = "X-Emby-115-Key"
+	guardHeader     = "X-Emby-115-Guard"
+	stableUserAgent = "Emby-Xiaoya-Proxy/1.0"
 )
 
 var keyPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -362,12 +363,12 @@ func copyRequestHeaders(destination, source http.Header) {
 		"If-Range",
 		"Icy-MetaData",
 		"Range",
-		"User-Agent",
 	} {
 		if value := source.Get(name); value != "" {
 			destination.Set(name, value)
 		}
 	}
+	destination.Set("User-Agent", stableUserAgent)
 	destination.Set("Accept-Encoding", "identity")
 }
 

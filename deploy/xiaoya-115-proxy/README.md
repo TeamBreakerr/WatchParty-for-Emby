@@ -13,6 +13,13 @@ official Xiaoya `/d/` location. A `.strm` suffix can identify the original item
 as remote, but it does not contain the final signed CDN URL or distinguish 115
 from another provider by itself.
 
+115 signs each download URL for the User-Agent that requested it. Emby's
+progressive `VideoService` fetches remote media without a User-Agent, while the
+Go HTTP transport otherwise supplies its own default on the subsequent CDN
+request. That mismatch makes a successfully resolved URL return 403. The
+resolver, Nginx stream locations, and guard therefore use the same non-empty
+`Emby-Xiaoya-Proxy/1.0` User-Agent for the complete signed-link lifecycle.
+
 The loopback `emby-115-guard` process keeps two upstream requests per media
 path. A third Range request, which normally follows a seek or an HLS segment
 rotation, waits for one of the existing requests to finish naturally. The
@@ -89,8 +96,12 @@ Xiaoya's image does not automatically include an Nginx file from `/data`.
 recreated. Persistence is therefore provided at two levels:
 
 1. all overlay sources live in Xiaoya's persistent `/data` bind mount;
-2. XiaoyaKeeper's supported `mycmd.txt` post-update hook runs the installer
-   immediately after `update_xiaoya`.
+2. XiaoyaKeeper's supported `mycmd.txt` post-update hook runs the narrow
+   `install-emby-115-runtime.sh` installer immediately after `update_xiaoya`.
+
+The post-update installer restores only the 115 route, its loopback guard, and
+the Nginx reload. It does not install a periodic cron, wrap `/updateall`, patch
+`emby.js`, or touch the WebSocket configuration.
 
 The installer also retains the existing in-container lightweight checks for the
 115 guard, effective proxy routes, and WebSocket include. None of these

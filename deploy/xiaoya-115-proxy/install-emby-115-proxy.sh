@@ -110,6 +110,7 @@ emby-115-guard
 emby_115_policy.lua
 ensure-emby-115-guard.sh
 ensure-emby-115-proxy.sh
+install-emby-115-runtime.sh
 install-emby-115-proxy-after-start.sh
 emby-websocket-diagnostic.conf
 emby-websocket-timeout.conf
@@ -128,6 +129,7 @@ done
 if [ ! -x "$data_dir/emby-115-guard" ] \
     || [ ! -x "$data_dir/ensure-emby-115-guard.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-115-proxy.sh" ] \
+    || [ ! -x "$data_dir/install-emby-115-runtime.sh" ] \
     || [ ! -x "$data_dir/install-emby-115-proxy-after-start.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-websocket-timeout.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-web-cache-buster.sh" ] \
