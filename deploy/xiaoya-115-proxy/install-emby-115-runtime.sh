@@ -49,6 +49,9 @@ for required_file in \
     emby_115_policy.lua \
     ensure-emby-docker-upstream.sh \
     ensure-emby-direct-link-fallback.sh \
+    ensure-emby-openlist-resolver.sh \
+    emby-nginx-rlimit.conf \
+    ensure-emby-nginx-rlimit.sh \
     ensure-emby-115-guard.sh; do
     if [ ! -s "$data_dir/$required_file" ]; then
         echo "missing $data_dir/$required_file" >&2
@@ -59,6 +62,8 @@ done
 if [ ! -x "$data_dir/emby-115-guard" ] \
     || [ ! -x "$data_dir/ensure-emby-docker-upstream.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-direct-link-fallback.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-openlist-resolver.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-nginx-rlimit.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-115-guard.sh" ]; then
     echo "115 guard executables are not executable" >&2
     exit 1
@@ -91,6 +96,8 @@ cp -p "$data_dir/emby-115-throttle.conf" "$runtime_config"
 "$data_dir/ensure-emby-115-guard.sh"
 "$data_dir/ensure-emby-docker-upstream.sh"
 "$data_dir/ensure-emby-direct-link-fallback.sh"
+"$data_dir/ensure-emby-openlist-resolver.sh"
+"$data_dir/ensure-emby-nginx-rlimit.sh"
 "$nginx_bin" -t
 rendered_config=$("$nginx_bin" -T 2>&1)
 for marker in \

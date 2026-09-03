@@ -231,7 +231,7 @@ if ! awk -v marker="$marker" \
         print "        return;"
         print "    }"
         print ""
-        print "    var alistFilePath = embyRes.replace('\''DOCKER_ADDRESS'\'', '\''http://127.0.0.1:80'\'') + '\''?sign='\'';"
+        print "    var alistFilePath = embyRes.replace('\''DOCKER_ADDRESS'\'', '\''http://127.0.0.1:80'\'').replace('\''http://172.19.0.1:5678'\'', '\''http://127.0.0.1:80'\'').replace('\''http://xiaoya.host:5678'\'', '\''http://127.0.0.1:80'\'') + '\''?sign='\'';"
         print "    var alistRes = await getCachedXYUrl(alistFilePath, ua, itemId, cookie, r);"
         print ""
         print "    if (!alistRes.startsWith('\''error'\'')) {"

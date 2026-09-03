@@ -130,6 +130,9 @@ emby-web-cache-buster.conf
 ensure-emby-web-cache-buster.sh
 ensure-emby-docker-upstream.sh
 ensure-emby-direct-link-fallback.sh
+ensure-emby-openlist-resolver.sh
+emby-nginx-rlimit.conf
+ensure-emby-nginx-rlimit.sh
 updateall-emby-115-wrapper.sh'
 for required_file in $required_files; do
     if [ ! -s "$data_dir/$required_file" ]; then
@@ -146,7 +149,9 @@ if [ ! -x "$data_dir/emby-115-guard" ] \
     || [ ! -x "$data_dir/ensure-emby-websocket-timeout.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-web-cache-buster.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-docker-upstream.sh" ] \
-    || [ ! -x "$data_dir/ensure-emby-direct-link-fallback.sh" ]; then
+    || [ ! -x "$data_dir/ensure-emby-direct-link-fallback.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-openlist-resolver.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-nginx-rlimit.sh" ]; then
     echo "115 guard executables are not executable" >&2
     exit 1
 fi
@@ -205,6 +210,8 @@ fi
 "$data_dir/ensure-emby-web-cache-buster.sh"
 "$data_dir/ensure-emby-docker-upstream.sh"
 "$data_dir/ensure-emby-direct-link-fallback.sh"
+"$data_dir/ensure-emby-openlist-resolver.sh"
+"$data_dir/ensure-emby-nginx-rlimit.sh"
 
 "$nginx_bin" -t
 if ! proxy_routes_present; then

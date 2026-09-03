@@ -101,6 +101,41 @@ main proxy can still work while njs metadata lookups fail and turn original or
 direct-stream requests into HTTP 500. `ensure-emby-docker-upstream.sh` repairs
 the two generated files transactionally and restores both if `nginx -t` fails.
 
+The upstream name alone is not enough. njs resolves an `ngx.fetch` host name
+through Nginx's own `resolver` directive, never through `/etc/resolv.conf`, and
+Xiaoya's generated `emby.conf` declares only public resolvers, which cannot
+answer for a Docker container name. The same repair therefore installs Docker's
+embedded DNS as a server-scope resolver in every Emby server block, leaving the
+http-scope public resolver in place for everything else. A server block that
+already declares its own resolver is left alone rather than given a duplicate.
+Without this the njs metadata lookups fail on a regenerated `emby.conf` and
+every direct-play client receives HTTP 500 with `error: emby_api fetch failed`.
+
+Ordinary playback resolves its signed direct link against OpenList's own
+listener rather than Xiaoya's `/d/` location. The two are no longer
+interchangeable: this layer installs an access hook on `/d/`, so that location
+answers a protected read with the media body in 1 MiB slices instead of
+OpenList's 302. njs caps `ngx.fetch` at `max_response_body_size`, so resolving
+through `/d/` makes a multi-gigabyte body raise an exception, `fetchXYApi`
+returns `error: xy_api fetch failed`, and every direct-play client receives
+HTTP 500 while Emby Web silently falls back to a server transcode.
+`ensure-emby-openlist-resolver.sh` rewrites the `alistFilePath` and
+`alistNextPath` origins to OpenList and validates that no direct-link
+resolution addresses the guarded location. Link resolution therefore stays
+metadata-only, and the guard keeps protecting the reads that Emby itself
+performs for active room media.
+
+Nginx's worker descriptor limit is raised for the same slice cache. Each slice
+needs its own cache and temporary descriptor, so one multi-gigabyte playback
+exhausts Xiaoya's stock soft `RLIMIT_NOFILE` of 1024, logs
+`open() ... failed (24: No file descriptors available)` and truncates the
+stream. `emby-nginx-rlimit.conf` carries `worker_rlimit_nofile`, and
+`ensure-emby-nginx-rlimit.sh` installs it through the `/etc/nginx/conf.d`
+include that Xiaoya's `nginx.conf` already evaluates in the main context, so no
+image-owned file is edited. The installer refuses to write the file if that
+include is missing or is not in the main context. A reload is enough: Nginx
+applies the limit to the workers it spawns for the new configuration.
+
 The Emby Web seek patch changes only explicit seek reporting. Older revisions
 also changed global STRM output selection and retried a failed HLS `play()`;
 the current patcher migrates those edits back to Emby's native implementation.
@@ -133,8 +168,9 @@ recreated. Persistence is therefore provided at two levels:
    `install-emby-115-runtime.sh` installer immediately after `update_xiaoya`.
 
 The post-update installer restores the 115 route, its loopback guard, the
-Docker-DNS Emby upstream and room-routing njs patch in the regenerated runtime
-files, and the Nginx reload. It does not install a periodic cron, wrap
+Docker-DNS Emby upstream, the room-routing njs patch, the OpenList direct-link
+resolution and the worker descriptor limit in the regenerated runtime files,
+and the Nginx reload. It does not install a periodic cron, wrap
 `/updateall`, or touch the WebSocket configuration.
 
 The installer also retains the existing in-container lightweight checks for the

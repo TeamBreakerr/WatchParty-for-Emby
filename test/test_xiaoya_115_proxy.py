@@ -10,6 +10,36 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_ROOT = REPO_ROOT / "deploy" / "xiaoya-115-proxy"
 UPSTREAM_FIXER = DEPLOY_ROOT / "ensure-emby-docker-upstream.sh"
+OPENLIST_RESOLVER = DEPLOY_ROOT / "ensure-emby-openlist-resolver.sh"
+RLIMIT_INSTALLER = DEPLOY_ROOT / "ensure-emby-nginx-rlimit.sh"
+RLIMIT_CONFIG = DEPLOY_ROOT / "emby-nginx-rlimit.conf"
+
+# Xiaoya's generated emby.js rewrites an Emby media path onto its own
+# listener before asking OpenList for the signed direct link.  The dynamic
+# 115 guard owns Xiaoya's `/d/` location and answers with the media body,
+# so the resolution must address OpenList itself.
+GUARDED_ORIGIN = "http://127.0.0.1:80"
+OPENLIST_ORIGIN = "http://127.0.0.1:5244"
+RESOLUTION_FIXTURE = """async function redirect2Pan(r) {
+    var alistNextPath = nextPath.replace('DOCKER_ADDRESS', 'http://127.0.0.1:80').replace('http://172.19.0.1:5678', 'http://127.0.0.1:80').replace('http://xiaoya.host:5678', 'http://127.0.0.1:80') + '?sign=';
+    var alistFilePath = embyRes.replace('DOCKER_ADDRESS', 'http://127.0.0.1:80').replace('http://172.19.0.1:5678', 'http://127.0.0.1:80').replace('http://xiaoya.host:5678', 'http://127.0.0.1:80') + '?sign=';
+    return [alistFilePath, alistNextPath];
+}
+"""
+
+
+def _resolver_env(script, nginx):
+    return {
+        "PATH": "/usr/bin:/bin",
+        "EMBY_NJS_SCRIPT": str(script),
+        "NGINX_BIN": str(nginx),
+    }
+
+
+def _write_fake_nginx(path, exit_code=0):
+    path.write_text("#!/bin/sh\nexit %d\n" % exit_code)
+    path.chmod(0o755)
+    return path
 
 
 class Xiaoya115ProxyTests(unittest.TestCase):
@@ -21,11 +51,14 @@ class Xiaoya115ProxyTests(unittest.TestCase):
             fake_nginx = root / "nginx"
             emby_js.write_text("var EMBY_HOST = 'http://10.250.0.100:6908';\n")
             emby_conf.write_text(
-                "location @backend {\n"
-                "    proxy_pass http://10.250.0.100:6908;\n"
-                "}\n"
-                "location @transcode_backend {\n"
-                "    proxy_pass http://emby:6908; # existing Docker DNS\n"
+                "server{\n"
+                "    listen 2345;\n"
+                "    location @backend {\n"
+                "        proxy_pass http://10.250.0.100:6908;\n"
+                "    }\n"
+                "    location @transcode_backend {\n"
+                "        proxy_pass http://emby:6908; # existing Docker DNS\n"
+                "    }\n"
                 "}\n"
             )
             fake_nginx.write_text("#!/bin/sh\nexit 0\n")
@@ -56,6 +89,100 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 emby_conf.read_text().count("proxy_pass http://emby:6908;"),
             )
             self.assertNotIn("10.250.0.100", emby_js.read_text() + emby_conf.read_text())
+
+    def test_emby_server_blocks_get_docker_dns_for_njs_lookups(self):
+        # njs resolves `ngx.fetch` host names through Nginx's `resolver`, never
+        # through /etc/resolv.conf.  A public resolver cannot answer for the
+        # Docker DNS upstream name, so every njs metadata lookup would fail and
+        # `redirect2Pan` would answer HTTP 500.
+        regenerated = (
+            "resolver 114.114.114.114 8.8.8.8 valid=1800s ipv6=off;\n"
+            "\n"
+            "server{\n"
+            "    listen 2345;\n"
+            "    location @backend {\n"
+            "        proxy_pass http://10.250.0.99:6908;\n"
+            "    }\n"
+            "}\n"
+            "\n"
+            "server{\n"
+            "    listen 2347;\n"
+            "    # a commented brace { must not confuse block tracking\n"
+            "    location / {\n"
+            "        proxy_pass http://10.250.0.99:6908;\n"
+            "    }\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            emby_js = root / "emby.js"
+            emby_conf = root / "emby.conf"
+            fake_nginx = root / "nginx"
+            emby_js.write_text("var EMBY_HOST = 'http://10.250.0.99:6908';\n")
+            emby_conf.write_text(regenerated)
+            fake_nginx.write_text("#!/bin/sh\nexit 0\n")
+            fake_nginx.chmod(0o755)
+            env = {
+                "PATH": "/usr/bin:/bin",
+                "EMBY_NJS_SCRIPT": str(emby_js),
+                "EMBY_NGINX_CONFIG": str(emby_conf),
+                "NGINX_BIN": str(fake_nginx),
+            }
+
+            first = subprocess.run(
+                [str(UPSTREAM_FIXER)], capture_output=True, text=True, env=env
+            )
+            patched = emby_conf.read_text()
+            second = subprocess.run(
+                [str(UPSTREAM_FIXER)], capture_output=True, text=True, env=env
+            )
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual("patched", first.stdout.strip())
+            self.assertEqual("already-present", second.stdout.strip())
+            self.assertEqual(patched, emby_conf.read_text())
+            self.assertEqual(2, patched.count("resolver 127.0.0.11"))
+            self.assertNotIn("10.250.0.99", patched)
+            # The http-scope public resolver stays; only the Emby server blocks
+            # gain Docker DNS.
+            self.assertIn("resolver 114.114.114.114 8.8.8.8", patched)
+
+    def test_an_existing_server_resolver_is_never_duplicated(self):
+        existing = (
+            "server{\n"
+            "    resolver 10.0.0.53 valid=30s;\n"
+            "    location @backend {\n"
+            "        proxy_pass http://10.250.0.99:6908;\n"
+            "    }\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            emby_js = root / "emby.js"
+            emby_conf = root / "emby.conf"
+            fake_nginx = root / "nginx"
+            emby_js.write_text("var EMBY_HOST = 'http://10.250.0.99:6908';\n")
+            emby_conf.write_text(existing)
+            fake_nginx.write_text("#!/bin/sh\nexit 0\n")
+            fake_nginx.chmod(0o755)
+
+            result = subprocess.run(
+                [str(UPSTREAM_FIXER)],
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "EMBY_NJS_SCRIPT": str(emby_js),
+                    "EMBY_NGINX_CONFIG": str(emby_conf),
+                    "NGINX_BIN": str(fake_nginx),
+                },
+            )
+            patched = emby_conf.read_text()
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(1, patched.count("resolver "))
+            self.assertIn("resolver 10.0.0.53 valid=30s;", patched)
+            self.assertIn("proxy_pass http://emby:6908;", patched)
 
     def test_emby_runtime_upstream_repair_restores_both_files_on_nginx_failure(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -805,6 +932,9 @@ async function redirect2Pan(r) {
                 "ensure-emby-web-cache-buster.sh",
                 "ensure-emby-docker-upstream.sh",
                 "ensure-emby-direct-link-fallback.sh",
+                "ensure-emby-openlist-resolver.sh",
+                "emby-nginx-rlimit.conf",
+                "ensure-emby-nginx-rlimit.sh",
                 "updateall-emby-115-wrapper.sh",
             )
             executable_files = {
@@ -817,6 +947,8 @@ async function redirect2Pan(r) {
                 "ensure-emby-web-cache-buster.sh",
                 "ensure-emby-docker-upstream.sh",
                 "ensure-emby-direct-link-fallback.sh",
+                "ensure-emby-openlist-resolver.sh",
+                "ensure-emby-nginx-rlimit.sh",
             }
             for name in required_files:
                 path = data_dir / name
@@ -1026,6 +1158,250 @@ async function redirect2Pan(r) {
             ],
             check=True,
         )
+
+
+class OpenListDirectLinkResolutionTests(unittest.TestCase):
+    """The guard owns Xiaoya's `/d/`, so njs must resolve against OpenList.
+
+    Resolving through the guarded location returns the media body instead of
+    the signed 302.  njs caps `ngx.fetch` at `max_response_body_size`, so a
+    multi-gigabyte body raises an exception, `fetchXYApi` answers
+    `error: xy_api fetch failed`, and every direct-play client receives
+    HTTP 500.
+    """
+
+    def _run(self, script, nginx):
+        return subprocess.run(
+            [str(OPENLIST_RESOLVER)],
+            capture_output=True,
+            text=True,
+            env=_resolver_env(script, nginx),
+        )
+
+    def test_direct_link_resolution_never_addresses_the_guarded_location(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(RESOLUTION_FIXTURE)
+            nginx = _write_fake_nginx(root / "nginx")
+
+            first = self._run(script, nginx)
+            patched = script.read_text()
+            second = self._run(script, nginx)
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual("patched", first.stdout.strip())
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertEqual("already-present", second.stdout.strip())
+            self.assertEqual(patched, script.read_text())
+
+            for line in patched.splitlines():
+                if "alistFilePath =" in line or "alistNextPath =" in line:
+                    self.assertNotIn("'%s'" % GUARDED_ORIGIN, line)
+                    self.assertIn("'%s'" % OPENLIST_ORIGIN, line)
+            self.assertEqual(
+                2, patched.count("codex-emby-openlist-resolver-v1")
+            )
+            self.assertEqual(
+                6, patched.count("'%s'" % OPENLIST_ORIGIN)
+            )
+
+    def test_rewrite_converges_after_an_interrupted_run(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            nginx = _write_fake_nginx(root / "nginx")
+
+            complete = root / "complete.js"
+            complete.write_text(RESOLUTION_FIXTURE)
+            self.assertEqual(0, self._run(complete, nginx).returncode)
+
+            partial = root / "partial.js"
+            partial.write_text(
+                RESOLUTION_FIXTURE.replace(
+                    "    var alistFilePath =",
+                    "    // codex-emby-openlist-resolver-v1\n"
+                    "    var alistFilePath =",
+                    1,
+                )
+            )
+            recovered = self._run(partial, nginx)
+
+            self.assertEqual(0, recovered.returncode, recovered.stderr)
+            self.assertEqual(complete.read_text(), partial.read_text())
+
+    def test_restores_the_script_when_nginx_rejects_the_rewrite(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(RESOLUTION_FIXTURE)
+            nginx = _write_fake_nginx(root / "nginx", exit_code=1)
+
+            rejected = self._run(script, nginx)
+
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertEqual(RESOLUTION_FIXTURE, script.read_text())
+
+    def test_missing_resolution_fails_without_touching_the_script(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text("var unrelated = 1;\n")
+            nginx = _write_fake_nginx(root / "nginx")
+
+            missing = self._run(script, nginx)
+
+            self.assertNotEqual(0, missing.returncode)
+            self.assertIn("no OpenList direct-link resolution", missing.stderr)
+            self.assertEqual("var unrelated = 1;\n", script.read_text())
+
+    def test_resolved_script_requests_the_openlist_listener(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(RESOLUTION_FIXTURE)
+            nginx = _write_fake_nginx(root / "nginx")
+            self.assertEqual(0, self._run(script, nginx).returncode)
+
+            observed = subprocess.run(
+                [
+                    "node",
+                    "-e",
+                    "var nextPath='http://xiaoya.host:5678/d/show/next.mp4';"
+                    "var embyRes='http://xiaoya.host:5678/d/show/current.mp4';"
+                    + script.read_text()
+                    + "redirect2Pan({}).then(function(resolved){"
+                    "process.stdout.write(JSON.stringify(resolved))})",
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(0, observed.returncode, observed.stderr)
+            self.assertEqual(
+                '["http://127.0.0.1:5244/d/show/current.mp4?sign=",'
+                '"http://127.0.0.1:5244/d/show/next.mp4?sign="]',
+                observed.stdout,
+            )
+
+
+class NginxWorkerDescriptorLimitTests(unittest.TestCase):
+    """A 1 MiB slice cache exhausts the stock 1024 descriptor soft limit.
+
+    An exhausted worker logs `(24: No file descriptors available)` and
+    truncates the stream mid-playback.
+    """
+
+    MAIN_CONFIG = (
+        "user nginx;\n"
+        "worker_processes auto;\n"
+        "include /etc/nginx/modules/*.conf;\n"
+        "include /etc/nginx/conf.d/*.conf;\n"
+        "\n"
+        "events {\n"
+        "\tworker_connections 1024;\n"
+        "}\n"
+    )
+
+    def _run(self, root, main_config, nginx):
+        return subprocess.run(
+            [str(RLIMIT_INSTALLER)],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "EMBY_RLIMIT_SOURCE": str(RLIMIT_CONFIG),
+                "EMBY_RLIMIT_TARGET_DIR": str(root / "conf.d"),
+                "EMBY_RLIMIT_TARGET": str(
+                    root / "conf.d" / "emby-nginx-rlimit.conf"
+                ),
+                "EMBY_NGINX_MAIN_CONFIG": str(main_config),
+                "NGINX_BIN": str(nginx),
+            },
+        )
+
+    def test_limit_is_installed_as_a_main_context_include(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            main_config = root / "nginx.conf"
+            main_config.write_text(self.MAIN_CONFIG)
+            nginx = _write_fake_nginx(root / "nginx")
+
+            first = self._run(root, main_config, nginx)
+            second = self._run(root, main_config, nginx)
+            installed = (root / "conf.d" / "emby-nginx-rlimit.conf").read_text()
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual("patched", first.stdout.strip())
+            self.assertEqual("already-present", second.stdout.strip())
+            self.assertIn("worker_rlimit_nofile 65535;", installed)
+            self.assertEqual(RLIMIT_CONFIG.read_text(), installed)
+
+    def test_limit_is_refused_when_the_include_is_not_main_context(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            main_config = root / "nginx.conf"
+            main_config.write_text(
+                self.MAIN_CONFIG.replace(
+                    "include /etc/nginx/conf.d/*.conf;\n", ""
+                )
+            )
+            nginx = _write_fake_nginx(root / "nginx")
+
+            refused = self._run(root, main_config, nginx)
+
+            self.assertNotEqual(0, refused.returncode)
+            self.assertIn("main context", refused.stderr)
+            self.assertFalse((root / "conf.d").exists())
+
+    def test_limit_is_removed_when_nginx_rejects_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            main_config = root / "nginx.conf"
+            main_config.write_text(self.MAIN_CONFIG)
+            nginx = _write_fake_nginx(root / "nginx", exit_code=1)
+
+            rejected = self._run(root, main_config, nginx)
+
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertFalse(
+                (root / "conf.d" / "emby-nginx-rlimit.conf").exists()
+            )
+
+
+class RepairStepDeploymentTests(unittest.TestCase):
+    def test_both_installers_deploy_and_run_the_new_repair_steps(self):
+        steps = (
+            "ensure-emby-openlist-resolver.sh",
+            "ensure-emby-nginx-rlimit.sh",
+        )
+        for installer_name in (
+            "install-emby-115-proxy.sh",
+            "install-emby-115-runtime.sh",
+        ):
+            installer = (DEPLOY_ROOT / installer_name).read_text()
+            self.assertIn("emby-nginx-rlimit.conf", installer, installer_name)
+            for step in steps:
+                self.assertIn(step, installer, installer_name)
+                self.assertIn(
+                    '[ ! -x "$data_dir/%s" ]' % step, installer, installer_name
+                )
+                self.assertIn(
+                    '"$data_dir/%s"\n' % step, installer, installer_name
+                )
+
+    def test_the_routing_patch_keeps_every_xiaoya_host_rewrite(self):
+        # A media path reported as `http://xiaoya.host:5678/d/...` must be
+        # rewritten onto the resolution origin; dropping the rewrite sends the
+        # resolution back through the guarded location.
+        patcher = (DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh").read_text()
+        emitted = [
+            line
+            for line in patcher.splitlines()
+            if "var alistFilePath = embyRes.replace(" in line
+        ]
+        self.assertEqual(1, len(emitted))
+        for host in ("DOCKER_ADDRESS", "172.19.0.1:5678", "xiaoya.host:5678"):
+            self.assertIn(host, emitted[0])
 
 
 if __name__ == "__main__":
