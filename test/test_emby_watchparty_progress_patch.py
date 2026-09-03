@@ -180,7 +180,7 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
                 patched.index('result=player&&!enableLocalPlaylistManagement(player)'),
             )
 
-    def test_patch_leaves_native_media_selection_and_hls_error_handling_unchanged(self):
+    def test_patch_guards_strm_urls_and_leaves_hls_error_handling_native(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             playbackmanager = self._write_fixture(root)
@@ -196,15 +196,15 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
 
             self.assertEqual(0, result.returncode, result.stderr)
             patched = playbackmanager.read_text(encoding="utf-8")
-            self.assertIn(patcher.STREAM_URL_SELECTION_ORIGINAL, patched)
-            self.assertIn(patcher.DIRECT_STREAM_SELECTION_ORIGINAL, patched)
+            # Startup retry and error handling stay native; only the two
+            # guards that keep a `.strm` pointer from becoming a media URL are
+            # installed.
             self.assertIn(patcher.SET_SRC_INTO_PLAYER_ORIGINAL, patched)
             self.assertIn(patcher.PLAYBACK_ERROR_ORIGINAL, patched)
             self.assertNotIn("retryWatchPartyHlsStartup", patched)
-            self.assertEqual(
-                original.count(patcher.STREAM_URL_SELECTION_ORIGINAL),
-                patched.count(patcher.STREAM_URL_SELECTION_ORIGINAL),
-            )
+            self.assertIn(patcher.STREAM_URL_SELECTION_PATCHED, patched)
+            self.assertIn(patcher.DIRECT_STREAM_SELECTION_PATCHED, patched)
+            self.assertNotIn(patcher.LEGACY_STRM_MP4_MAPPING, patched)
 
     def test_installer_prewarms_ass_fonts_once_per_container_start(self):
         installer = INSTALLER.read_text(encoding="utf-8")
@@ -253,12 +253,9 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
                 },
             )
 
-            self.assertEqual("DirectStream", stream_info["playMethod"])
-            self.assertEqual(
-                "server:Videos/item-1/stream.strm",
-                stream_info["url"],
-            )
-            self.assertEqual("video/strm", stream_info["mimeType"])
+            self.assertEqual("Transcode", stream_info["playMethod"])
+            self.assertNotIn(".strm", stream_info["url"])
+            self.assertIn("master.m3u8", stream_info["url"])
 
     def test_virtual_strm_stream_url_keeps_native_selection(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -278,13 +275,14 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
                 },
             )
 
+            # `.strm` is a pointer, never an output container: taking it as the
+            # media URL makes Emby build a transcode whose output file is
+            # `.strm`, which ffmpeg cannot write.
             self.assertEqual("Transcode", stream_info["playMethod"])
-            self.assertEqual(
-                "/Videos/item-1/stream.strm?static=true",
-                stream_info["url"],
-            )
+            self.assertNotIn(".strm", stream_info["url"])
+            self.assertIn("master.m3u8", stream_info["url"])
 
-    def test_probed_mp4_strm_path_keeps_native_stream_url(self):
+    def test_probed_mp4_strm_path_uses_the_probed_container(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             playbackmanager = self._patch_fixture(root)
@@ -303,11 +301,9 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
                 },
             )
 
-            self.assertEqual("Transcode", stream_info["playMethod"])
-            self.assertEqual(
-                "/Videos/item-1/stream.strm?static=true",
-                stream_info["url"],
-            )
+            self.assertEqual("DirectStream", stream_info["playMethod"])
+            self.assertNotIn(".strm", stream_info["url"])
+            self.assertIn("stream.mp4", stream_info["url"])
 
     def test_probed_mp4_strm_path_can_fall_back_to_server_transcoding(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -329,11 +325,9 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
             )
 
             self.assertEqual("Transcode", stream_info["playMethod"])
-            self.assertEqual(
-                "/Videos/item-1/stream.strm?static=true",
-                stream_info["url"],
-            )
-            self.assertEqual("video/mp4", stream_info["mimeType"])
+            self.assertNotIn(".strm", stream_info["url"])
+            self.assertIn("master.m3u8", stream_info["url"])
+            self.assertEqual("application/x-mpegURL", stream_info["mimeType"])
 
     def test_virtual_strm_keeps_a_valid_server_stream_url(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -429,7 +423,11 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
             updated = playbackmanager.read_text(encoding="utf-8")
             self.assertNotIn(patcher.LEGACY_STRM_MP4_MAPPING, updated)
             self.assertNotIn('mediaSourceContainer="mp4",contentType="video/mp4"', updated)
-            self.assertIn('mediaSource.SupportsDirectStream?(', updated)
+            self.assertIn(
+                'mediaSource.SupportsDirectStream&&'
+                '("strm"!==mediaSourceContainer||mediaSource.DirectStreamUrl)?(',
+                updated,
+            )
 
     def test_patch_migrates_the_container_gated_stream_url_guard(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -442,7 +440,8 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
             )
             playbackmanager.write_text(
                 PLAYBACKMANAGER_FIXTURE.replace(
-                    ':mediaSource.StreamUrl?(',
+                    ':mediaSource.StreamUrl&&'
+                    '!/\\.strm(?:[?#]|$)/i.test(mediaSource.StreamUrl)?(',
                     old_guard,
                     1,
                 ),
@@ -459,7 +458,11 @@ class EmbyWatchPartyProgressPatchTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             updated = playbackmanager.read_text(encoding="utf-8")
             self.assertNotIn(old_guard, updated)
-            self.assertIn(':mediaSource.StreamUrl?(', updated)
+            self.assertIn(
+                ':mediaSource.StreamUrl&&'
+                '!/\\.strm(?:[?#]|$)/i.test(mediaSource.StreamUrl)?(',
+                updated,
+            )
 
     def test_patch_is_idempotent_and_rejects_unknown_dashboard_shape(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -6,11 +6,16 @@ keeps the native player behavior intact while sending one authenticated request
 to the plugin's dedicated seek endpoint with the requested target.  The server
 can therefore distinguish a user drag from ordinary progress heartbeats.
 
-Older revisions also changed global STRM media selection and retried failed HLS
-startup.  Those changes affected ordinary playback outside a room and could
-keep an abandoned transcoding stream alive.  This patch migrates either legacy
-shape back to Emby's native behavior; the server endpoint independently checks
-that an explicit seek belongs to an active room before applying it.
+It also refuses a StreamUrl that still ends in ``stream.strm``.  That is not a
+room-scoped behavior change but a correctness one: ``.strm`` is a text pointer,
+so Emby ends up asking ffmpeg to write a ``.strm`` output container, which
+fails instantly and surfaces as "no compatible stream".
+
+Older revisions went further - forcing a virtual STRM container to MP4 and
+retrying a failed HLS startup.  Those did affect ordinary playback and could
+keep an abandoned transcoding stream alive, so this patch migrates them back to
+Emby's native behavior; the server endpoint independently checks that an
+explicit seek belongs to an active room before applying it.
 """
 
 import argparse
@@ -95,9 +100,16 @@ LEGACY_STRM_MP4_MAPPING = (
     '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4"),'
 )
 
-# Older revisions overrode Emby Web's StreamUrl and Direct Stream selection for
-# virtual STRM sources.  Retain those byte-exact shapes only so the patcher can
-# recognize and migrate an existing dashboard back to the native expressions.
+# A `.strm` path is a text pointer, never a playable output format.  Emby can
+# still hand Emby Web a StreamUrl of `/Videos/{id}/stream.strm` after probing
+# the indirection, and Emby then derives the transcode output container from
+# that extension: ffmpeg is asked to write a `.strm` file, reports
+# `Unable to find a suitable output format`, and exits immediately, so the
+# first HLS segment answers 500 and the client reports that no compatible
+# stream exists.  Reject such a URL by its own extension, independently of
+# Container - the probe normally replaces Container with the real remote one.
+# The Direct Stream branch then builds stream.{probed-container}, and if
+# Container itself is still strm its own guard falls through to TranscodingUrl.
 STREAM_URL_SELECTION_ORIGINAL = ':mediaSource.StreamUrl?('
 STREAM_URL_SELECTION_PATCHED_LEGACY = (
     ':mediaSource.StreamUrl&&'
@@ -108,6 +120,9 @@ STREAM_URL_SELECTION_PATCHED = (
     ':mediaSource.StreamUrl&&'
     '!/\\.strm(?:[?#]|$)/i.test(mediaSource.StreamUrl)?('
 )
+# The same rule on the Direct Stream branch: with Container still "strm" and no
+# DirectStreamUrl, Emby Web would build stream.strm itself. Fall through to the
+# server's TranscodingUrl instead.
 DIRECT_STREAM_SELECTION_ORIGINAL = 'mediaSource.SupportsDirectStream?('
 DIRECT_STREAM_SELECTION_PATCHED = (
     'mediaSource.SupportsDirectStream&&'
@@ -272,8 +287,8 @@ def patch_dashboard(dashboard_root: Path) -> bool:
 
     text, selection_changed = patch_text(
         text,
-        DIRECT_STREAM_SELECTION_PATCHED,
         DIRECT_STREAM_SELECTION_ORIGINAL,
+        DIRECT_STREAM_SELECTION_PATCHED,
         playbackmanager,
     )
     legacy_stream_url_count = text.count(STREAM_URL_SELECTION_PATCHED_LEGACY)
@@ -283,17 +298,20 @@ def patch_dashboard(dashboard_root: Path) -> bool:
             f"{playbackmanager} (legacy={legacy_stream_url_count})"
         )
     if legacy_stream_url_count:
+        # The legacy shape only rejected stream.strm while Container was still
+        # "strm"; the probe usually replaces Container, so it let the unplayable
+        # URL through. Migrate it to the extension-only guard.
         text = text.replace(
             STREAM_URL_SELECTION_PATCHED_LEGACY,
-            STREAM_URL_SELECTION_ORIGINAL,
+            STREAM_URL_SELECTION_PATCHED,
             1,
         )
         stream_url_changed = True
     else:
         text, stream_url_changed = patch_text(
             text,
-            STREAM_URL_SELECTION_PATCHED,
             STREAM_URL_SELECTION_ORIGINAL,
+            STREAM_URL_SELECTION_PATCHED,
             playbackmanager,
         )
 
