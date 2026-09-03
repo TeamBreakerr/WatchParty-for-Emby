@@ -526,7 +526,12 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         self.assertIn("ensure-emby-room-agnostic-routing", runtime_installer)
         self.assertIn("ensure-emby-web-cache-buster.sh", runtime_installer)
         self.assertIn("emby-web-cache-buster.conf", runtime_installer)
-        self.assertNotIn("ensure-emby-websocket-timeout", runtime_installer)
+        # Xiaoya regenerates emby.conf on restart, so the post-update path has
+        # to restore the 24h WebSocket timeout too: the stock server block
+        # applies proxy_read_timeout 20s to /socket, which drops an idle
+        # participant every 20 seconds.
+        self.assertIn("ensure-emby-websocket-timeout.sh", runtime_installer)
+        self.assertIn("emby-websocket-timeout.conf", runtime_installer)
 
     def test_post_update_install_waits_for_fresh_services_then_installs_once(self):
         post_start = DEPLOY_ROOT / "install-emby-115-proxy-after-start.sh"
@@ -873,6 +878,43 @@ class Xiaoya115ProxyTests(unittest.TestCase):
             ],
             check=True,
         )
+
+
+class PostUpdateRepairCoverageTests(unittest.TestCase):
+    """Whatever the post-update path skips reverts on every Xiaoya restart.
+
+    Xiaoya regenerates its Nginx configuration and njs script when its container
+    is recreated, and the narrow installer is the only thing XiaoyaKeeper runs
+    afterwards. A repair present only in the full installer therefore looks
+    installed right up until the next restart, then silently disappears - which
+    is how the Web cache buster and the 24-hour WebSocket timeout were lost.
+    """
+
+    # The periodic health check is scheduled, not a repair step.
+    EXEMPT = {"ensure-emby-115-proxy.sh"}
+
+    @staticmethod
+    def _repairs(installer_name):
+        text = (DEPLOY_ROOT / installer_name).read_text()
+        return set(re.findall(r'\$data_dir/(ensure-[a-z0-9-]+\.sh)', text))
+
+    def test_the_post_update_path_runs_every_repair(self):
+        full = self._repairs("install-emby-115-proxy.sh") - self.EXEMPT
+        narrow = self._repairs("install-emby-115-runtime.sh")
+
+        self.assertTrue(full)
+        self.assertEqual(
+            set(),
+            full - narrow,
+            "repairs missing from the post-update installer; they revert on "
+            "the next Xiaoya restart",
+        )
+
+    def test_one_failed_repair_does_not_stop_the_others(self):
+        runtime = (DEPLOY_ROOT / "install-emby-115-runtime.sh").read_text()
+        self.assertIn("failed_repairs", runtime)
+        self.assertIn('if ! "$data_dir/$repair"; then', runtime)
+        self.assertIn("incomplete runtime installation", runtime)
 
 
 class RoomAgnosticRoutingTests(unittest.TestCase):
@@ -1532,8 +1574,12 @@ class RepairStepDeploymentTests(unittest.TestCase):
                 self.assertIn(
                     '[ ! -x "$data_dir/%s" ]' % step, installer, installer_name
                 )
-                self.assertIn(
-                    '"$data_dir/%s"\n' % step, installer, installer_name
+                # Either invocation shape counts; PostUpdateRepairCoverageTests
+                # is what enforces that both installers run the same set.
+                self.assertRegex(
+                    installer,
+                    r"\$data_dir/%s|^\s+%s \\$" % (re.escape(step), re.escape(step)),
+                    installer_name,
                 )
 
 if __name__ == "__main__":

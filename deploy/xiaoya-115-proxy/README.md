@@ -216,8 +216,12 @@ recreated. Persistence is therefore provided at two levels:
 
 The post-update installer restores the 115 route, its loopback guard, the
 Docker-DNS Emby upstream, the room-agnostic njs routing, the OpenList
-direct-link resolution, the manifest routing and the worker descriptor limit in
-the regenerated runtime files, and the Nginx reload. It does not install a periodic cron, wrap
+direct-link resolution, the manifest routing, the placeholder guard, the
+WebSocket timeout, the Web cache buster and the worker descriptor limit in the
+regenerated runtime files, and the Nginx reload. Xiaoya regenerates
+`emby.conf`, so anything left out of this path silently reverts to stock on
+every restart - which is how the 24-hour WebSocket timeout was lost and
+participants started dropping every 20 seconds again. It does not install a periodic cron, wrap
 `/updateall`, or touch the WebSocket configuration.
 
 The installer also retains the existing in-container lightweight checks for the

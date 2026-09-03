@@ -287,6 +287,26 @@ Web 客户端还补了指数退避重连和前台恢复时的连接重建。这�
 
 Seek 不会回到服务端重新取地址——客户端直接对 CDN 发 Range（生产日志核实：一次完整播放中该 item 只被请求 2 次）。所以错开必须做在插件的命令扇出上，njs 层无法覆盖 Seek。
 
+#### 更正（2026-09-04）：没进"更新后路径"的修复等于没有
+
+Xiaoya 容器重建或更新时会重新生成 `default.conf`、`emby.conf` 和 `emby.js`。此后唯一自动执行的是 XiaoyaKeeper 钩子里的 `install-emby-115-runtime.sh`。**任何只写在完整安装器里、没进这个窄安装器的修复，都会在每次重启后静默消失**，而且看起来一切正常——直到下次用到它。
+
+一晚之内被这一条坑了三次：
+
+| 丢失的东西 | 表现 |
+|---|---|
+| Emby Web 缓存刷新（`data-appversion`） | 浏览器一直用缓存里的旧 `playbackmanager.js`，显式 Seek 上报没生效，同步差 2 秒、拖到开头卡住 |
+| 24 小时 WebSocket 超时 | `/socket` 退回出厂 `proxy_read_timeout 20s`，参与者每 20 秒掉线一次 |
+| Emby Web 补丁本体 | 补丁在镜像内的 `/system/dashboard-ui/`，容器一重建就还原 |
+
+另外，窄安装器原本以 `set -e` 顺序执行各修复，**一步失败会中断后面全部**。`ensure-emby-docker-upstream.sh` 因为 Xiaoya 改用 `proxy_pass $emby;` 变量写法而失败后，后面所有 njs 补丁都没装上；由于它是无人值守运行的，没人看到报错。
+
+现在的约束：
+
+1. 两个安装器的修复集合必须一致，由 `PostUpdateRepairCoverageTests` 强制；
+2. 各修复独立执行、互不阻断，失败汇总后以非零码退出（每个修复本身都自带校验和回滚，部分应用是安全的）；
+3. Emby Web 补丁由 `emby-watchparty-progress-patch.timer` 每 5 分钟兜底重装。
+
 ### 4.9 第九阶段：本地 MKV、ASS 字幕和 Web HLS 冷启动
 
 真实日志显示，本地 MKV 根本没有绕到 115：首次播放开启 ASS 字幕后，FFmpeg 在本地打开文件，但 fontconfig/libass 初始化接近 9 秒，首个 HLS 请求约 10 秒后失败；完全相同的第二次任务不到 1 秒即可开始。
