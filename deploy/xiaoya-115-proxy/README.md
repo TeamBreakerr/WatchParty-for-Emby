@@ -116,10 +116,18 @@ main proxy can still work while njs metadata lookups fail and turn original or
 direct-stream requests into HTTP 500. `ensure-emby-docker-upstream.sh` repairs
 the two generated files transactionally and restores both if `nginx -t` fails.
 
-The upstream name alone is not enough. njs resolves an `ngx.fetch` host name
-through Nginx's own `resolver` directive, never through `/etc/resolv.conf`, and
-Xiaoya's generated `emby.conf` declares only public resolvers, which cannot
-answer for a Docker container name. The same repair therefore installs Docker's
+Current Xiaoya versions already name the upstream themselves, as
+`set $emby http://emby:6908;` reached through `proxy_pass $emby;`; older ones
+wrote a literal address into each `proxy_pass`. Both are accepted, and a stale
+literal address is rewritten.
+
+The name alone is not enough, and the variable form makes that sharper: Nginx
+resolves a `proxy_pass` that contains a variable on every request, and njs
+resolves an `ngx.fetch` host name the same way - through Nginx's own `resolver`
+directive, never through `/etc/resolv.conf`. Xiaoya's generated `emby.conf`
+declares only public resolvers, which cannot answer for a Docker container
+name, so its stock configuration returns 502 for every request until Docker's
+embedded DNS is added. The same repair therefore installs Docker's
 embedded DNS as a server-scope resolver in every Emby server block, leaving the
 http-scope public resolver in place for everything else. A server block that
 already declares its own resolver is left alone rather than given a duplicate.

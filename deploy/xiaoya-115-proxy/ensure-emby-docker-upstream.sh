@@ -3,7 +3,9 @@ set -eu
 
 # Xiaoya regenerates these files when its container is recreated.  A literal
 # Emby container address becomes stale after that recreation, while Docker DNS
-# keeps following the current container address.
+# keeps following the current container address.  Current Xiaoya versions ship
+# the name themselves as `set $emby http://emby:6908;` and `proxy_pass $emby;`;
+# older ones wrote a literal address into each proxy_pass.  Accept both.
 #
 # njs resolves `ngx.fetch` host names through Nginx's own `resolver`, not
 # through /etc/resolv.conf.  Xiaoya's generated `emby.conf` only declares
@@ -64,16 +66,24 @@ count_lines() {
     awk -v needle="$2" 'index($0, needle) > 0 { found++ } END { print found + 0 }' "$1"
 }
 
+# The Emby upstream must be named by Docker DNS, however this Xiaoya version
+# spells it: through its own `set $emby` variable, or written into each
+# proxy_pass. A literal container address is stale the moment Emby is recreated.
+upstream_is_docker_dns() {
+    awk '
+        /set[[:space:]]+\$emby[[:space:]]+http:\/\/emby:6908;/ { named++ }
+        /proxy_pass[[:space:]]+http:\/\/emby:6908;/ { named++ }
+        /(set[[:space:]]+\$emby|proxy_pass)[[:space:]]+http:\/\/[^;$]+:6908;/ {
+            if ($0 !~ /http:\/\/emby:6908;/) stale++
+        }
+        END { exit (named > 0 && stale == 0) ? 0 : 1 }
+    ' "$1"
+}
+
 validate_upstream() {
     grep -Fq "var EMBY_HOST = 'http://emby:6908';" "$njs_script" \
         && [ "$(count_lines "$njs_script" "var EMBY_HOST = 'http://emby:6908';")" -eq 1 ] \
-        && awk '
-            /proxy_pass[[:space:]]+http:\/\/[^;]+:6908;/ {
-                found++
-                if ($0 !~ /proxy_pass[[:space:]]+http:\/\/emby:6908;/) bad++
-            }
-            END { exit found > 0 && bad == 0 ? 0 : 1 }
-        ' "$emby_config" \
+        && upstream_is_docker_dns "$emby_config" \
         && server_blocks_resolve_docker_dns "$emby_config"
 }
 
@@ -168,15 +178,14 @@ if ! awk -v resolver_line="$resolver_line" -v marker="$resolver_marker" '
         next
     }
 
-    /proxy_pass[[:space:]]+http:\/\/[^;]+:6908;/ {
-        sub(/proxy_pass[[:space:]]+http:\/\/[^;]+:6908;/,
-            "proxy_pass http://emby:6908;")
+    /(set[[:space:]]+\$emby|proxy_pass)[[:space:]]+http:\/\/[^;$]+:6908;/ {
+        sub(/http:\/\/[^;$]+:6908;/, "http://emby:6908;")
         replaced++
     }
 
     { print }
 
-    END { if (replaced < 1 || replaced_block < 1) exit 3 }
+    END { if (replaced_block < 1) exit 3 }
 ' "$emby_config" "$emby_config" >"$temporary_config"; then
     echo "could not locate a Xiaoya Emby proxy_pass" >&2
     exit 1
