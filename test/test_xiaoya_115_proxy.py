@@ -493,8 +493,16 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         self.assertIn('cp -p "$njs_script_backup" "$njs_script"', installer)
         self.assertIn("isActiveWatchPartyItem", room_agnostic_router)
         self.assertIn("http://emby:6908", upstream_ensurer)
-        self.assertIn("data-appversion=\"4.9.0.42\"", web_cache_buster)
-        self.assertIn("data-appversion=\"4.9.0.42-wp5\"", web_cache_buster)
+        # Pinning the suffix would break on every bump; what matters is that the
+        # rewrite actually changes the version, so a browser cannot keep an older
+        # module under the same URL.
+        rewrite = re.search(
+            r"sub_filter\s+'(data-appversion=\"[^\"]+\")'\s+'(data-appversion=\"[^\"]+\")'",
+            web_cache_buster,
+        )
+        self.assertIsNotNone(rewrite, web_cache_buster)
+        self.assertNotEqual(rewrite.group(1), rewrite.group(2))
+        self.assertIn('data-appversion="4.9.0.42"', rewrite.group(1))
         self.assertIn("/web/index.html", web_cache_ensurer)
         self.assertIn("validate_config", web_cache_ensurer)
         self.assertIn("Nginx rejected the Web cache-buster patch", web_cache_ensurer)
@@ -516,6 +524,8 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         self.assertNotIn("/etc/crontabs/root", runtime_installer)
         self.assertNotIn("/updateall", runtime_installer)
         self.assertIn("ensure-emby-room-agnostic-routing", runtime_installer)
+        self.assertIn("ensure-emby-web-cache-buster.sh", runtime_installer)
+        self.assertIn("emby-web-cache-buster.conf", runtime_installer)
         self.assertNotIn("ensure-emby-websocket-timeout", runtime_installer)
 
     def test_post_update_install_waits_for_fresh_services_then_installs_once(self):
