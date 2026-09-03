@@ -4,6 +4,7 @@ set -eu
 data_dir=${EMBY_115_DATA_DIR:-/data}
 default_config=${EMBY_115_DEFAULT_CONFIG:-/etc/nginx/http.d/default.conf}
 emby_config=${EMBY_115_EMBY_CONFIG:-/etc/nginx/http.d/emby.conf}
+njs_script=${EMBY_NJS_SCRIPT:-/etc/nginx/http.d/emby.js}
 runtime_config=${EMBY_115_RUNTIME_CONFIG:-/etc/nginx/http.d/emby-115-throttle.conf}
 slice_cache_dir=${EMBY_115_SLICE_CACHE_DIR:-/var/cache/nginx/emby-115-slices}
 slice_cache_owner=${EMBY_115_SLICE_CACHE_OWNER:-nginx:root}
@@ -17,6 +18,7 @@ access_include='            include /data/emby-115-access.conf;'
 wrapper_marker='codex-dynamic-emby-115-updateall-wrapper'
 default_backup=
 emby_config_backup=
+njs_script_backup=
 runtime_backup=
 runtime_existed=0
 updateall_backup=
@@ -79,6 +81,9 @@ cleanup() {
         if [ -n "$emby_config_backup" ]; then
             cp -p "$emby_config_backup" "$emby_config"
         fi
+        if [ -n "$njs_script_backup" ]; then
+            cp -p "$njs_script_backup" "$njs_script"
+        fi
         if [ "$runtime_existed" -eq 1 ] && [ -n "$runtime_backup" ]; then
             cp -p "$runtime_backup" "$runtime_config"
         elif [ "$runtime_existed" -eq 0 ]; then
@@ -98,6 +103,7 @@ cleanup() {
     fi
     [ -z "$default_backup" ] || rm -f "$default_backup"
     [ -z "$emby_config_backup" ] || rm -f "$emby_config_backup"
+    [ -z "$njs_script_backup" ] || rm -f "$njs_script_backup"
     [ -z "$runtime_backup" ] || rm -f "$runtime_backup"
     [ -z "$updateall_backup" ] || rm -f "$updateall_backup"
     [ -z "$cron_backup" ] || rm -f "$cron_backup"
@@ -122,6 +128,7 @@ emby-websocket-timeout.conf
 ensure-emby-websocket-timeout.sh
 emby-web-cache-buster.conf
 ensure-emby-web-cache-buster.sh
+ensure-emby-docker-upstream.sh
 ensure-emby-direct-link-fallback.sh
 updateall-emby-115-wrapper.sh'
 for required_file in $required_files; do
@@ -138,6 +145,7 @@ if [ ! -x "$data_dir/emby-115-guard" ] \
     || [ ! -x "$data_dir/install-emby-115-proxy-after-start.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-websocket-timeout.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-web-cache-buster.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-docker-upstream.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-direct-link-fallback.sh" ]; then
     echo "115 guard executables are not executable" >&2
     exit 1
@@ -157,6 +165,8 @@ default_backup=$(mktemp)
 cp -p "$default_config" "$default_backup"
 emby_config_backup=$(mktemp)
 cp -p "$emby_config" "$emby_config_backup"
+njs_script_backup=$(mktemp)
+cp -p "$njs_script" "$njs_script_backup"
 if [ -e "$runtime_config" ]; then
     runtime_existed=1
     runtime_backup=$(mktemp)
@@ -193,6 +203,7 @@ fi
 "$data_dir/ensure-emby-115-guard.sh"
 "$data_dir/ensure-emby-websocket-timeout.sh"
 "$data_dir/ensure-emby-web-cache-buster.sh"
+"$data_dir/ensure-emby-docker-upstream.sh"
 "$data_dir/ensure-emby-direct-link-fallback.sh"
 
 "$nginx_bin" -t

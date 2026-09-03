@@ -3,6 +3,7 @@ set -eu
 
 nginx_bin=${EMBY_115_NGINX_BIN:-nginx}
 guard_ensure=${EMBY_115_GUARD_ENSURE:-/data/ensure-emby-115-guard.sh}
+upstream_ensure=${EMBY_UPSTREAM_ENSURE:-/data/ensure-emby-docker-upstream.sh}
 installer=${EMBY_115_INSTALLER:-/data/install-emby-115-proxy.sh}
 lock_dir=${EMBY_115_HEALTH_LOCK_DIR:-/tmp/emby-115-proxy-health.lock}
 
@@ -22,6 +23,7 @@ proxy_routes_present() {
 }
 
 "$guard_ensure"
+"$upstream_ensure"
 if proxy_routes_present; then
     exit 0
 fi

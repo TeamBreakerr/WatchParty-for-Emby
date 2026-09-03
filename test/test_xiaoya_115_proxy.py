@@ -9,21 +9,107 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_ROOT = REPO_ROOT / "deploy" / "xiaoya-115-proxy"
+UPSTREAM_FIXER = DEPLOY_ROOT / "ensure-emby-docker-upstream.sh"
 
 
 class Xiaoya115ProxyTests(unittest.TestCase):
+    def test_emby_runtime_uses_docker_dns_instead_of_a_stale_container_ip(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            emby_js = root / "emby.js"
+            emby_conf = root / "emby.conf"
+            fake_nginx = root / "nginx"
+            emby_js.write_text("var EMBY_HOST = 'http://10.250.0.100:6908';\n")
+            emby_conf.write_text(
+                "location @backend {\n"
+                "    proxy_pass http://10.250.0.100:6908;\n"
+                "}\n"
+                "location @transcode_backend {\n"
+                "    proxy_pass http://emby:6908; # existing Docker DNS\n"
+                "}\n"
+            )
+            fake_nginx.write_text("#!/bin/sh\nexit 0\n")
+            fake_nginx.chmod(0o755)
+            env = {
+                "PATH": "/usr/bin:/bin",
+                "EMBY_NJS_SCRIPT": str(emby_js),
+                "EMBY_NGINX_CONFIG": str(emby_conf),
+                "NGINX_BIN": str(fake_nginx),
+            }
+
+            first = subprocess.run(
+                [str(UPSTREAM_FIXER)], capture_output=True, text=True, env=env
+            )
+            first_js = emby_js.read_bytes()
+            first_conf = emby_conf.read_bytes()
+            second = subprocess.run(
+                [str(UPSTREAM_FIXER)], capture_output=True, text=True, env=env
+            )
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertEqual(first_js, emby_js.read_bytes())
+            self.assertEqual(first_conf, emby_conf.read_bytes())
+            self.assertIn("var EMBY_HOST = 'http://emby:6908';", emby_js.read_text())
+            self.assertEqual(
+                2,
+                emby_conf.read_text().count("proxy_pass http://emby:6908;"),
+            )
+            self.assertNotIn("10.250.0.100", emby_js.read_text() + emby_conf.read_text())
+
+    def test_emby_runtime_upstream_repair_restores_both_files_on_nginx_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            emby_js = root / "emby.js"
+            emby_conf = root / "emby.conf"
+            fake_nginx = root / "nginx"
+            emby_js.write_text("var EMBY_HOST = 'http://10.250.0.100:6908';\n")
+            emby_conf.write_text(
+                "location @backend {\n"
+                "    proxy_pass http://10.250.0.100:6908;\n"
+                "}\n"
+            )
+            original_js = emby_js.read_bytes()
+            original_conf = emby_conf.read_bytes()
+            fake_nginx.write_text("#!/bin/sh\nexit 1\n")
+            fake_nginx.chmod(0o755)
+            env = {
+                "PATH": "/usr/bin:/bin",
+                "EMBY_NJS_SCRIPT": str(emby_js),
+                "EMBY_NGINX_CONFIG": str(emby_conf),
+                "NGINX_BIN": str(fake_nginx),
+            }
+
+            result = subprocess.run(
+                [str(UPSTREAM_FIXER)], capture_output=True, text=True, env=env
+            )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual(original_js, emby_js.read_bytes())
+            self.assertEqual(original_conf, emby_conf.read_bytes())
+
+    def test_emby_njs_patch_scopes_guarded_routing_to_active_room_items(self):
+        patcher = (
+            DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
+        ).read_text()
+
+        self.assertIn("isActiveWatchPartyItem", patcher)
+        self.assertIn("/emby/WatchParty/List?api_key=", patcher)
+        self.assertIn("party.IsActive", patcher)
+        self.assertIn("party.CurrentEpisodeId", patcher)
+        self.assertIn("isWatchPartyMedia && isXiaoyaMediaPath", patcher)
+        self.assertIn("if (!isWatchPartyMedia)", patcher)
+
     def test_emby_njs_patch_routes_guarded_media_without_a_range_probe(self):
         patcher = (
             DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
         ).read_text()
 
         self.assertIn("isXiaoyaMediaPath", patcher)
-        self.assertIn('r.return(302, embyRes)', patcher)
         self.assertNotIn('print "                \\"Range\\": \\"bytes=0-0\\""', patcher)
         self.assertIn("r.internalRedirect(\"@backend\")", patcher)
         self.assertIn("getPlaybackPath", patcher)
-        self.assertIn("drop_strm_preload", patcher)
-        self.assertIn("PlaybackInfo?api_key=", patcher)
+        self.assertIn("print_native_stream_probe", patcher)
         self.assertIn("Nginx rejected the Emby direct-link fallback patch", patcher)
 
     def test_emby_njs_patch_keeps_local_media_on_the_emby_backend(self):
@@ -34,7 +120,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         self.assertIn("isLocalMediaPath", patcher)
         self.assertIn("doesNotContainHttp && doesNotContainDOCKER", patcher)
         self.assertIn(
-            'print "    if (isLocalMediaPath || isXiaoyaMediaPath) {"',
+            'print "    if (isLocalMediaPath || isGuardedWatchPartyPath ||"',
             patcher,
         )
         self.assertIn(
@@ -120,6 +206,9 @@ async function getCachedXYUrl(url, ua, itemId, cookie, r) {
 }
 
 async function redirect2Pan(r) {
+    var itemIdMatch = /\\/videos\\/(\\d+)/i.exec(r.uri);
+    var itemId = itemIdMatch ? itemIdMatch[1] : null;
+    var api_key = r.args.api_key || 'fixture-token';
     (async function() {
         var alistNextPath = nextPath.replace('DOCKER_ADDRESS', 'http://127.0.0.1:80') + '?sign=';
         await getCachedXYUrl(alistNextPath, ua, nextItemId, cookie, r);
@@ -179,27 +268,87 @@ async function redirect2Pan(r) {
             self.assertEqual(first_contents, script.read_bytes())
             updated = script.read_text()
             self.assertNotIn('"Range": "bytes=0-0"', updated)
+            self.assertIn("codex-emby-watchparty-routing-v4", updated)
+            self.assertIn("async function isActiveWatchPartyItem", updated)
             self.assertIn("var isLocalMediaPath =", updated)
             self.assertIn(
-                "isLocalMediaPath || isXiaoyaMediaPath",
+                "isWatchPartyMedia && isXiaoyaMediaPath",
                 updated,
             )
             self.assertIn("var isXiaoyaMediaPath =", updated)
-            self.assertIn('r.return(302, embyRes);', updated)
-            self.assertNotIn(
+            self.assertIn(
                 "var helperRedirectUrl = await fetchXYApi",
                 updated,
             )
-            self.assertNotIn("futureDiagnostic", updated)
-            self.assertNotIn(
+            self.assertIn("futureDiagnostic", updated)
+            self.assertIn(
                 "getCachedXYUrl(alistFilePath",
                 updated,
             )
-            self.assertNotIn(
+            self.assertIn(
                 "getCachedXYUrl(alistNextPath",
                 updated,
             )
-            self.assertNotIn("/stream.strm", updated)
+            self.assertIn("/stream.strm", updated)
+
+            helper_start = updated.index("var watchPartyItemCache")
+            helper_end = updated.index(
+                "async function getPlaybackPath", helper_start
+            )
+            helper = updated[helper_start:helper_end]
+            node_result = subprocess.run(
+                [
+                    "node",
+                    "-e",
+                    "const EMBY_HOST='http://emby:6908';"
+                    "const ngx={fetch:async function(){return {ok:true,json:async function(){"
+                    "return {Parties:["
+                    "{IsActive:true,ItemId:'root-1',CurrentEpisodeId:'episode-1'},"
+                    "{IsActive:false,ItemId:'inactive',CurrentEpisodeId:'inactive-episode'}"
+                    "]}}}}};"
+                    + helper
+                    + "Promise.all(['root-1','episode-1','inactive','missing'].map("
+                    "function(id){return isActiveWatchPartyItem(id,'token')})).then("
+                    "function(values){process.stdout.write(JSON.stringify(values))})",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, node_result.returncode, node_result.stderr)
+            self.assertEqual("[true,true,false,false]", node_result.stdout)
+
+            redirect_result = subprocess.run(
+                [
+                    "node",
+                    "-e",
+                    "var EMBY_HOST='http://emby:6908';"
+                    "var nextPath='DOCKER_ADDRESS/next',ua='ua',nextItemId='1002',"
+                    "cookie='',embyRes='DOCKER_ADDRESS/current',"
+                    "doesNotContainHttp=false,doesNotContainDOCKER=false;"
+                    "function getCacheKey(){return 'fixture'}"
+                    "function getFromCache(){return null}"
+                    "function setToCache(){}"
+                    "var ngx={fetch:async function(uri){"
+                    "if(String(uri).includes('WatchParty/List'))return {ok:true,json:async function(){"
+                    "return {Parties:[{IsActive:true,ItemId:'1001'}]}}};"
+                    "return {status:302,headers:{Location:'https://media.invalid/file'}}}};"
+                    + updated
+                    + "var activeActions=[],inactiveActions=[];"
+                    "var active={uri:'/videos/1001/original.mkv',args:{api_key:'token'},"
+                    "internalRedirect:function(value){activeActions.push(value)},"
+                    "return:function(status){activeActions.push(status)}};"
+                    "var inactive={uri:'/videos/1009/original.mkv',args:{api_key:'token'},"
+                    "internalRedirect:function(value){inactiveActions.push(value)},"
+                    "return:function(status){inactiveActions.push(status)}};"
+                    "redirect2Pan(active).then(function(){return redirect2Pan(inactive)})"
+                    ".then(function(){process.stdout.write(JSON.stringify([activeActions,inactiveActions]))})"
+                    ".catch(function(error){console.error(error);process.exit(1)})",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, redirect_result.returncode, redirect_result.stderr)
+            self.assertEqual('[["@backend"],[302]]', redirect_result.stdout)
 
             legacy = fixture.replace(
                 "async function fetchXYApi(xyurl, ua, cookie) {",
@@ -232,40 +381,61 @@ async function redirect2Pan(r) {
             migrated_contents = script.read_text()
 
             self.assertEqual(0, migrated.returncode, migrated.stderr)
-            self.assertIn("codex-emby-guarded-path-routing-v3", migrated_contents)
+            self.assertIn("codex-emby-watchparty-routing-v4", migrated_contents)
             self.assertNotIn("codex-emby-direct-link-fallback-v1", migrated_contents)
             self.assertNotIn('"Range": "bytes=0-0"', migrated_contents)
             self.assertNotIn("error: media_body", migrated_contents)
+            self.assertIn("/stream.strm", migrated_contents)
+            self.assertIn("getCachedXYUrl(alistFilePath", migrated_contents)
 
-            script.write_text(updated.replace(
-                "codex-emby-guarded-path-routing-v3",
-                "codex-emby-guarded-path-routing-v2",
-            ).replace(
-                "    var isLocalMediaPath =\n"
-                "        doesNotContainHttp && doesNotContainDOCKER;\n",
-                "",
-            ).replace(
-                "if (isLocalMediaPath || isXiaoyaMediaPath)",
-                "if (isXiaoyaMediaPath)",
-            ))
-            upgraded_v2 = subprocess.run(
+            playback_path_start = fixture.index(
+                "async function getPlaybackPath(itemId, userId, apiKey, r) {"
+            )
+            first_probe_start = fixture.index("    try {", playback_path_start)
+            playback_info_start = fixture.index("    try {", first_probe_start + 1)
+            previous_v3 = fixture[:first_probe_start] + fixture[playback_info_start:]
+            previous_v3 = previous_v3.replace(
+                "        await getCachedXYUrl(alistNextPath, ua, nextItemId, cookie, r);",
+                "        // Guarded media is resolved when playback starts.",
+                1,
+            )
+            old_tail_start = previous_v3.index(
+                "    var contain115helper = embyRes.includes"
+            )
+            previous_v3 = previous_v3[:old_tail_start] + """    var contain115helper = embyRes.includes("P115StrmHelper");
+    if (contain115helper) {
+        r.internalRedirect("@backend");
+        return;
+    }
+    // codex-emby-guarded-path-routing-v3
+    var isLocalMediaPath = doesNotContainHttp && doesNotContainDOCKER;
+    var isXiaoyaMediaPath = embyRes.includes("DOCKER_ADDRESS") ||
+        embyRes.includes("xiaoya.host:5678");
+    if (isLocalMediaPath || isXiaoyaMediaPath) {
+        r.internalRedirect("@backend");
+        return;
+    }
+    r.return(302, embyRes);
+}
+"""
+            script.write_text(previous_v3)
+            upgraded_v3 = subprocess.run(
                 [str(patcher)], capture_output=True, text=True, env=env
             )
-            upgraded_v2_contents = script.read_text()
+            upgraded_v3_contents = script.read_text()
 
-            self.assertEqual(0, upgraded_v2.returncode, upgraded_v2.stderr)
+            self.assertEqual(0, upgraded_v3.returncode, upgraded_v3.stderr)
             self.assertIn(
-                "codex-emby-guarded-path-routing-v3",
-                upgraded_v2_contents,
+                "codex-emby-watchparty-routing-v4",
+                upgraded_v3_contents,
             )
             self.assertNotIn(
-                "codex-emby-guarded-path-routing-v2",
-                upgraded_v2_contents,
+                "codex-emby-guarded-path-routing-v3",
+                upgraded_v3_contents,
             )
-            self.assertIn(
-                "isLocalMediaPath || isXiaoyaMediaPath",
-                upgraded_v2_contents,
-            )
+            self.assertIn("/stream.strm", upgraded_v3_contents)
+            self.assertIn("getCachedXYUrl(alistFilePath", upgraded_v3_contents)
+            self.assertIn("getCachedXYUrl(alistNextPath", upgraded_v3_contents)
 
             unrelated_probe = fixture.replace(
                 "async function getPlaybackPath(itemId, userId, apiKey, r) {",
@@ -297,7 +467,7 @@ async function redirect2Pan(r) {
             )
 
             self.assertEqual(0, changed_result.returncode, changed_result.stderr)
-            self.assertNotIn("r.return(502, alistRes);", script.read_text())
+            self.assertIn("r.return(502, alistRes);", script.read_text())
 
             script.write_text(fixture)
             fake_nginx.write_text("#!/bin/sh\nexit 1\n")
@@ -455,6 +625,9 @@ async function redirect2Pan(r) {
         web_cache_ensurer = (
             DEPLOY_ROOT / "ensure-emby-web-cache-buster.sh"
         ).read_text()
+        upstream_ensurer = (
+            DEPLOY_ROOT / "ensure-emby-docker-upstream.sh"
+        ).read_text()
         direct_link_ensurer = (
             DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
         ).read_text()
@@ -486,9 +659,14 @@ async function redirect2Pan(r) {
         self.assertIn('"$data_dir/ensure-emby-web-cache-buster.sh"', installer)
         self.assertIn("ensure-emby-direct-link-fallback.sh", installer)
         self.assertIn('"$data_dir/ensure-emby-direct-link-fallback.sh"', installer)
+        self.assertIn("ensure-emby-docker-upstream.sh", installer)
+        self.assertIn('"$data_dir/ensure-emby-docker-upstream.sh"', installer)
+        self.assertIn('cp -p "$njs_script" "$njs_script_backup"', installer)
+        self.assertIn('cp -p "$njs_script_backup" "$njs_script"', installer)
         self.assertIn("fetchXYApi", direct_link_ensurer)
+        self.assertIn("http://emby:6908", upstream_ensurer)
         self.assertIn("data-appversion=\"4.9.0.42\"", web_cache_buster)
-        self.assertIn("data-appversion=\"4.9.0.42-wp4\"", web_cache_buster)
+        self.assertIn("data-appversion=\"4.9.0.42-wp5\"", web_cache_buster)
         self.assertIn("/web/index.html", web_cache_ensurer)
         self.assertIn("validate_config", web_cache_ensurer)
         self.assertIn("Nginx rejected the Web cache-buster patch", web_cache_ensurer)
@@ -506,9 +684,10 @@ async function redirect2Pan(r) {
         self.assertIn("install-emby-115-runtime.sh", post_start_installer)
         self.assertIn("emby-115-locations.conf", runtime_installer)
         self.assertIn("ensure-emby-115-guard.sh", runtime_installer)
+        self.assertIn("ensure-emby-docker-upstream.sh", runtime_installer)
         self.assertNotIn("/etc/crontabs/root", runtime_installer)
         self.assertNotIn("/updateall", runtime_installer)
-        self.assertNotIn("ensure-emby-direct-link-fallback", runtime_installer)
+        self.assertIn("ensure-emby-direct-link-fallback", runtime_installer)
         self.assertNotIn("ensure-emby-websocket-timeout", runtime_installer)
 
     def test_post_update_install_waits_for_fresh_services_then_installs_once(self):
@@ -582,6 +761,7 @@ async function redirect2Pan(r) {
 
             default_config = nginx_dir / "default.conf"
             emby_config = nginx_dir / "emby.conf"
+            emby_js = nginx_dir / "emby.js"
             runtime_config = nginx_dir / "emby-115-throttle.conf"
             cron_file = root / "root.cron"
             updateall = root / "updateall"
@@ -598,6 +778,9 @@ async function redirect2Pan(r) {
                 encoding="utf-8",
             )
             emby_config.write_text("server { listen 2345; }\n", encoding="utf-8")
+            emby_js.write_text(
+                "var EMBY_HOST = 'http://emby:6908';\n", encoding="utf-8"
+            )
             cron_file.write_text("", encoding="utf-8")
             updateall.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             updateall.chmod(0o755)
@@ -620,6 +803,7 @@ async function redirect2Pan(r) {
                 "ensure-emby-websocket-timeout.sh",
                 "emby-web-cache-buster.conf",
                 "ensure-emby-web-cache-buster.sh",
+                "ensure-emby-docker-upstream.sh",
                 "ensure-emby-direct-link-fallback.sh",
                 "updateall-emby-115-wrapper.sh",
             )
@@ -631,6 +815,7 @@ async function redirect2Pan(r) {
                 "install-emby-115-proxy-after-start.sh",
                 "ensure-emby-websocket-timeout.sh",
                 "ensure-emby-web-cache-buster.sh",
+                "ensure-emby-docker-upstream.sh",
                 "ensure-emby-direct-link-fallback.sh",
             }
             for name in required_files:
@@ -677,6 +862,7 @@ async function redirect2Pan(r) {
                     "EMBY_115_DATA_DIR": str(data_dir),
                     "EMBY_115_DEFAULT_CONFIG": str(default_config),
                     "EMBY_115_EMBY_CONFIG": str(emby_config),
+                    "EMBY_NJS_SCRIPT": str(emby_js),
                     "EMBY_115_RUNTIME_CONFIG": str(runtime_config),
                     "EMBY_115_SLICE_CACHE_DIR": str(root / "slice-cache"),
                     "EMBY_115_SLICE_CACHE_OWNER": f"{os.getuid()}:{os.getgid()}",
@@ -726,10 +912,13 @@ async function redirect2Pan(r) {
             install_calls = root / "install-calls"
             fake_nginx = root / "nginx"
             fake_guard_ensure = root / "ensure-guard"
+            fake_upstream_ensure = root / "ensure-upstream"
             fake_installer = root / "install-proxy"
 
             fake_guard_ensure.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             fake_guard_ensure.chmod(0o755)
+            fake_upstream_ensure.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_upstream_ensure.chmod(0o755)
             fake_installer.write_text(
                 "#!/bin/sh\n"
                 f"echo called >'{install_calls}'\n"
@@ -760,6 +949,7 @@ async function redirect2Pan(r) {
                 {
                     "EMBY_115_NGINX_BIN": str(fake_nginx),
                     "EMBY_115_GUARD_ENSURE": str(fake_guard_ensure),
+                    "EMBY_UPSTREAM_ENSURE": str(fake_upstream_ensure),
                     "EMBY_115_INSTALLER": str(fake_installer),
                     "EMBY_115_HEALTH_LOCK_DIR": str(root / "lock"),
                 }

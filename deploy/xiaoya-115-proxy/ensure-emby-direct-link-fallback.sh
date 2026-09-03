@@ -1,19 +1,17 @@
 #!/bin/sh
 set -eu
 
-# Xiaoya's emby.js normally resolves an internal /d/ media path into a 302
-# direct link.  WatchParty deliberately keeps those paths behind Emby's native
-# backend so the dynamic 115 guard can enforce its two-connection limit.  The
-# path is already known from PlaybackInfo, so route it without opening a
-# one-byte media request first.  Relative/local filesystem paths must also stay
-# on the native Emby backend; only ready-to-use external HTTP(S) links may be
-# returned to a client.  Also remove the redundant stream.strm next-episode
-# probe.
+# Keep Xiaoya's native direct-link behavior for ordinary playback.  Only the
+# current item of an active WatchParty bypasses Xiaoya's early 302 resolution
+# and stays behind Emby's backend, where the dynamic 115 Range guard can
+# protect the two upstream leases.  The room decision is metadata-only; active
+# room media skips Xiaoya's stream.strm and next-item probes.
 
 njs_script=${EMBY_NJS_SCRIPT:-/etc/nginx/http.d/emby.js}
 nginx_bin=${NGINX_BIN:-nginx}
-marker=codex-emby-guarded-path-routing-v3
-previous_marker=codex-emby-guarded-path-routing-v2
+marker=codex-emby-watchparty-routing-v4
+previous_marker_v3=codex-emby-guarded-path-routing-v3
+previous_marker_v2=codex-emby-guarded-path-routing-v2
 legacy_marker=codex-emby-direct-link-fallback-v1
 reload=0
 
@@ -31,40 +29,38 @@ if [ ! -r "$njs_script" ]; then
     exit 1
 fi
 
+fetch_has_media_probe() {
+    awk '
+        /^async function fetchXYApi\(xyurl, ua, cookie\)/ { in_fetch = 1 }
+        in_fetch && /"Range": "bytes=0-0"|error: media_body/ { found = 1 }
+        in_fetch && /^}/ { in_fetch = 0 }
+        END { exit found ? 0 : 1 }
+    ' "$1"
+}
+
 validate_patch() {
     file=$1
     grep -Fq "$marker" "$file" \
-        && [ "$(grep -c "$marker" "$file")" -eq 1 ] \
+        && [ "$(grep -Fc "$marker" "$file")" -eq 1 ] \
+        && grep -Fq 'async function isActiveWatchPartyItem' "$file" \
+        && grep -Fq '/emby/WatchParty/List?api_key=' "$file" \
+        && grep -Fq 'party.IsActive' "$file" \
+        && grep -Fq 'party.CurrentEpisodeId' "$file" \
+        && grep -Fq 'var isWatchPartyMedia = await isActiveWatchPartyItem(itemId, apiKey);' "$file" \
+        && grep -Fq 'var isWatchPartyMedia = await isActiveWatchPartyItem(itemId, api_key);' "$file" \
         && grep -Fq 'var isLocalMediaPath =' "$file" \
         && grep -Fq 'var isXiaoyaMediaPath =' "$file" \
-        && grep -Fq 'if (isLocalMediaPath || isXiaoyaMediaPath)' "$file" \
-        && grep -Fq 'r.return(302, embyRes);' "$file" \
+        && grep -Fq 'isWatchPartyMedia && isXiaoyaMediaPath' "$file" \
+        && grep -Fq 'if (!isWatchPartyMedia) {' "$file" \
         && grep -Fq 'r.internalRedirect("@backend")' "$file" \
-        && grep -Fq 'PlaybackInfo?api_key=' "$file" \
+        && grep -Fq 'var helperRedirectUrl = await fetchXYApi' "$file" \
+        && grep -Fq 'getCachedXYUrl(alistFilePath' "$file" \
+        && grep -Fq 'getCachedXYUrl(alistNextPath' "$file" \
+        && grep -Fq '/stream.strm' "$file" \
         && ! fetch_has_media_probe "$file" \
-        && ! grep -Fq 'var helperRedirectUrl = await fetchXYApi' "$file" \
-        && ! grep -Fq 'getCachedXYUrl(alistFilePath' "$file" \
-        && ! grep -Fq 'getCachedXYUrl(alistNextPath' "$file" \
-        && ! grep -Fq '/stream.strm' "$file" \
-        && ! grep -Fq "$previous_marker" "$file" \
+        && ! grep -Fq "$previous_marker_v3" "$file" \
+        && ! grep -Fq "$previous_marker_v2" "$file" \
         && ! grep -Fq "$legacy_marker" "$file"
-}
-
-fetch_has_media_probe() {
-    awk '
-        /^async function fetchXYApi\(xyurl, ua, cookie\)/ {
-            in_fetch = 1
-        }
-        in_fetch && /"Range": "bytes=0-0"|error: media_body/ {
-            found = 1
-        }
-        in_fetch && /^}/ {
-            in_fetch = 0
-        }
-        END {
-            exit found ? 0 : 1
-        }
-    ' "$1"
 }
 
 reload_nginx() {
@@ -81,42 +77,20 @@ if validate_patch "$njs_script"; then
 fi
 
 if grep -Fq "$marker" "$njs_script"; then
-    echo "existing Emby guarded-path routing patch is incomplete" >&2
+    echo "existing room-scoped Emby routing patch is incomplete" >&2
     exit 1
 fi
 
-has_previous_patch=0
-if grep -Fq "$previous_marker" "$njs_script"; then
-    has_previous_patch=1
-    if [ "$(grep -c "$previous_marker" "$njs_script")" -ne 1 ] \
-        || ! grep -Fq 'r.return(302, embyRes);' "$njs_script"; then
-        echo "existing v2 Emby guarded-path routing patch is incomplete" >&2
-        exit 1
+has_previous_route=0
+for old_marker in "$previous_marker_v3" "$previous_marker_v2" "$legacy_marker"; do
+    if grep -Fq "$old_marker" "$njs_script"; then
+        has_previous_route=1
     fi
-fi
+done
 
-has_legacy_patch=0
+has_legacy_probe=0
 if grep -Fq "$legacy_marker" "$njs_script"; then
-    has_legacy_patch=1
-    if ! fetch_has_media_probe "$njs_script"; then
-        echo "existing v1 Emby direct-link patch is incomplete" >&2
-        exit 1
-    fi
-fi
-
-remove_strm_preload=0
-if grep -Fq '/stream.strm' "$njs_script"; then
-    remove_strm_preload=1
-fi
-
-remove_next_preload=0
-if grep -Fq 'getCachedXYUrl(alistNextPath' "$njs_script"; then
-    remove_next_preload=1
-fi
-
-replace_helper=0
-if grep -Fq 'var helperRedirectUrl = await fetchXYApi' "$njs_script"; then
-    replace_helper=1
+    has_legacy_probe=1
 fi
 
 temporary_script=$(mktemp)
@@ -148,29 +122,84 @@ trap 'exit 1' HUP INT TERM
 cp -p "$njs_script" "$backup_script"
 restore_needed=1
 
-if ! awk -v marker="$marker" -v previous_marker="$previous_marker" \
+if ! awk -v marker="$marker" \
+    -v previous_marker_v3="$previous_marker_v3" \
+    -v previous_marker_v2="$previous_marker_v2" \
     -v legacy_marker="$legacy_marker" \
-    -v has_previous_patch="$has_previous_patch" \
-    -v has_legacy_patch="$has_legacy_patch" \
-    -v remove_strm_preload="$remove_strm_preload" \
-    -v remove_next_preload="$remove_next_preload" \
-    -v replace_helper="$replace_helper" '
+    -v has_previous_route="$has_previous_route" \
+    -v has_legacy_probe="$has_legacy_probe" '
     BEGIN {
         in_fetch = 0
         in_playback_path = 0
-        drop_strm_preload = 0
-        dropped_strm_preload = 0
+        in_redirect = 0
+        wrap_native_probe = 0
+        drop_native_probe = 0
         drop_media_body = 0
-        drop_helper = 0
-        drop_redirect_tail = 0
-        drop_previous_route = 0
-        helper_replaced = 0
-        next_preload_removed = 0
+        drop_old_redirect_tail = 0
+        active_helper_added = 0
+        playback_scope_added = 0
+        redirect_scope_added = 0
+        preload_scoped = 0
         route_added = 0
-        marker_added = 0
     }
 
-    function print_routing_policy() {
+    function print_active_helper() {
+        print "var watchPartyItemCache = { key: null, expiresAt: 0, active: false };"
+        print "async function isActiveWatchPartyItem(itemId, apiKey) {"
+        print "    var cacheKey = String(apiKey || \"\") + \":\" + String(itemId || \"\");"
+        print "    var now = Date.now();"
+        print "    if (watchPartyItemCache.key === cacheKey && watchPartyItemCache.expiresAt > now) {"
+        print "        return watchPartyItemCache.active;"
+        print "    }"
+        print "    var active = false;"
+        print "    try {"
+        print "        var partyUri = EMBY_HOST + \"/emby/WatchParty/List?api_key=\" + encodeURIComponent(apiKey);"
+        print "        var response = await ngx.fetch(partyUri, {"
+        print "            max_response_body_size: 65535,"
+        print "            headers: { \"X-Emby-Token\": apiKey }"
+        print "        });"
+        print "        if (response.ok) {"
+        print "            var data = await response.json();"
+        print "            var parties = data && data.Parties ? data.Parties : [];"
+        print "            active = parties.some(function(party) {"
+        print "                return party && party.IsActive && ("
+        print "                    String(party.ItemId || \"\") === String(itemId) ||"
+        print "                    String(party.CurrentEpisodeId || \"\") === String(itemId)"
+        print "                );"
+        print "            });"
+        print "        }"
+        print "    } catch (e) {}"
+        print "    watchPartyItemCache = { key: cacheKey, expiresAt: now + 1000, active: active };"
+        print "    return active;"
+        print "}"
+        print ""
+        active_helper_added++
+    }
+
+    function print_native_stream_probe() {
+        print "    if (!isWatchPartyMedia) {"
+        print "        try {"
+        print "            var strmUri = EMBY_HOST + '\''/emby/Videos/'\'' + itemId + '\''/stream.strm?api_key='\'' + apiKey;"
+        print "            var res = await ngx.fetch(strmUri, {"
+        print "                max_response_body_size: 65535,"
+        print "                headers: { '\''X-Emby-Token'\'': apiKey }"
+        print "            });"
+        print "            if (res.ok) {"
+        print "                var content = await res.text();"
+        print "                var url = content.trim();"
+        print "                if (url && (url.startsWith('\''http://'\'') || url.startsWith('\''https://'\''))) {"
+        print "                    return url;"
+        print "                }"
+        print "                if (url && url.includes('\''DOCKER_ADDRESS'\'')) {"
+        print "                    return url;"
+        print "                }"
+        print "            }"
+        print "        } catch (e) {}"
+        print "    }"
+        print ""
+    }
+
+    function print_route_guard() {
         print "    // " marker
         print "    var isLocalMediaPath ="
         print "        doesNotContainHttp && doesNotContainDOCKER;"
@@ -179,31 +208,46 @@ if ! awk -v marker="$marker" -v previous_marker="$previous_marker" \
         print "        embyRes.includes(\"xiaoya.host:5678\") ||"
         print "        embyRes.includes(\"172.19.0.1:5678\") ||"
         print "        embyRes.indexOf(\"http://127.0.0.1:80/d/\") === 0;"
-        print "    if (isLocalMediaPath || isXiaoyaMediaPath) {"
+        print "    var isGuardedWatchPartyPath = isWatchPartyMedia && isXiaoyaMediaPath;"
+        print "    if (isLocalMediaPath || isGuardedWatchPartyPath ||"
+        print "        (isWatchPartyMedia && contain115helper)) {"
         print "        r.internalRedirect(\"@backend\");"
         print "        return;"
         print "    }"
         print ""
-        print "    r.return(302, embyRes);"
-        marker_added++
         route_added++
     }
 
-    has_previous_patch && index($0, previous_marker) > 0 {
-        print_routing_policy()
-        drop_previous_route = 1
-        next
+    function print_native_redirect_tail() {
+        print "    var contain115helper = embyRes.includes(\"P115StrmHelper\");"
+        print_route_guard()
+        print "    if (contain115helper) {"
+        print "        var helperRedirectUrl = await fetchXYApi(embyRes, ua, cookie);"
+        print "        if (helperRedirectUrl.startsWith('\''error'\'')) {"
+        print "            r.internalRedirect(\"@backend\");"
+        print "            return;"
+        print "        }"
+        print "        r.return(302, helperRedirectUrl);"
+        print "        return;"
+        print "    }"
+        print ""
+        print "    var alistFilePath = embyRes.replace('\''DOCKER_ADDRESS'\'', '\''http://127.0.0.1:80'\'') + '\''?sign='\'';"
+        print "    var alistRes = await getCachedXYUrl(alistFilePath, ua, itemId, cookie, r);"
+        print ""
+        print "    if (!alistRes.startsWith('\''error'\'')) {"
+        print "        if (alistRes.indexOf(\"http\") !== -1) {"
+        print "            r.return(302, alistRes);"
+        print "            return;"
+        print "        }"
+        print "    }"
+        print ""
+        print "    r.return(500, alistRes);"
+        print "}"
     }
 
-    drop_previous_route {
-        if ($0 ~ /^[[:space:]]*r[.]return\(302, embyRes\);[[:space:]]*$/) {
-            drop_previous_route = 0
-        }
-        next
-    }
-
-    has_legacy_patch && index($0, legacy_marker) > 0 {
-        next
+    index($0, previous_marker_v3) || index($0, previous_marker_v2) ||
+        index($0, legacy_marker) {
+        if (in_fetch && index($0, legacy_marker)) next
     }
 
     /^async function fetchXYApi\(xyurl, ua, cookie\)/ {
@@ -212,20 +256,16 @@ if ! awk -v marker="$marker" -v previous_marker="$previous_marker" \
         next
     }
 
-    has_legacy_patch && in_fetch && /"Range": "bytes=0-0"/ {
-        next
-    }
+    has_legacy_probe && in_fetch && /"Range": "bytes=0-0"/ { next }
 
-    has_legacy_patch && in_fetch &&
+    has_legacy_probe && in_fetch &&
         /if \(res[.]status === 206 \|\| res[.]headers\["X-Emby-115-Proxy"\]/ {
         drop_media_body = 1
         next
     }
 
     drop_media_body {
-        if ($0 ~ /^[[:space:]]*}[[:space:]]*$/) {
-            drop_media_body = 0
-        }
+        if ($0 ~ /^[[:space:]]*}[[:space:]]*$/) drop_media_body = 0
         next
     }
 
@@ -236,78 +276,92 @@ if ! awk -v marker="$marker" -v previous_marker="$previous_marker" \
     }
 
     /^async function getPlaybackPath\(itemId, userId, apiKey, r\)/ {
+        print_active_helper()
         in_playback_path = 1
         print
-        next
-    }
-
-    remove_strm_preload && in_playback_path && !dropped_strm_preload &&
-        /^[[:space:]]*try[[:space:]]*\{/ {
-        drop_strm_preload = 1
-        next
-    }
-
-    drop_strm_preload {
-        if (index($0, "} catch (e) {}") > 0) {
-            drop_strm_preload = 0
-            dropped_strm_preload++
+        print "    var isWatchPartyMedia = await isActiveWatchPartyItem(itemId, apiKey);"
+        playback_scope_added++
+        if (has_previous_route) {
+            print_native_stream_probe()
+            if (has_legacy_probe) drop_native_probe = 1
+        } else {
+            wrap_native_probe = 1
         }
         next
     }
 
-    /await getCachedXYUrl\(alistNextPath, ua, nextItemId, cookie, r\);/ {
-        print "                            // Guarded media is resolved when playback starts."
-        next_preload_removed++
+    drop_native_probe {
+        if (index($0, "} catch (e) {}") > 0) drop_native_probe = 0
         next
     }
 
-    /下一集预缓存成功:/ {
-        sub(/下一集预缓存成功:/, "下一集媒体将在播放时解析:")
+    in_playback_path && wrap_native_probe && /^[[:space:]]*try[[:space:]]*\{/ {
+        print "    if (!isWatchPartyMedia) {"
+        print
+        wrap_native_probe = 2
+        next
+    }
+
+    in_playback_path && wrap_native_probe == 2 && /} catch \(e\) \{}/ {
+        print
+        print "    }"
+        wrap_native_probe = 0
+        next
+    }
+
+    in_playback_path && /^}/ {
+        in_playback_path = 0
         print
         next
     }
 
-    !has_previous_patch && /^[[:space:]]*if \(contain115helper\)[[:space:]]*\{/ {
-        print "    if (contain115helper) {"
-        print "        r.internalRedirect(\"@backend\");"
-        print "        return;"
-        print "    }"
-        drop_helper = 1
-        helper_replaced++
+    /^async function redirect2Pan\(r\)/ {
+        in_redirect = 1
+        print
         next
     }
 
-    drop_helper {
-        if ($0 ~ /^[[:space:]]*var alistFilePath = embyRes[.]replace/) {
-            drop_helper = 0
-        } else {
-            next
-        }
-    }
-
-    /^[[:space:]]*var alistFilePath = embyRes[.]replace/ {
-        print_routing_policy()
-        print "}"
-        drop_redirect_tail = 1
+    in_redirect && /^[[:space:]]*var api_key[[:space:]]*=/ {
+        print
+        print "    var isWatchPartyMedia = await isActiveWatchPartyItem(itemId, api_key);"
+        redirect_scope_added++
+        in_redirect = 0
         next
     }
 
-    drop_redirect_tail {
-        if ($0 ~ /^}/) {
-            drop_redirect_tail = 0
-        }
+    /await getCachedXYUrl\(alistNextPath, ua, nextItemId, cookie, r\);/ ||
+        /Guarded media is resolved when playback starts[.]/ {
+        print "        if (!isWatchPartyMedia) {"
+        print "            await getCachedXYUrl(alistNextPath, ua, nextItemId, cookie, r);"
+        print "        }"
+        preload_scoped++
+        next
+    }
+
+    has_previous_route && /^[[:space:]]*var contain115helper =/ {
+        print_native_redirect_tail()
+        drop_old_redirect_tail = 1
+        next
+    }
+
+    drop_old_redirect_tail {
+        if ($0 ~ /^}/) drop_old_redirect_tail = 0
+        next
+    }
+
+    !has_previous_route && /^[[:space:]]*var contain115helper =/ {
+        print
+        print_route_guard()
         next
     }
 
     { print }
 
     END {
-        if (marker_added != 1 || route_added != 1 ||
-            (replace_helper && helper_replaced != 1) ||
-            (remove_next_preload && next_preload_removed != 1) ||
-            (remove_strm_preload && dropped_strm_preload != 1) ||
-            drop_media_body || drop_helper || drop_strm_preload ||
-            drop_redirect_tail || drop_previous_route) {
+        if (active_helper_added != 1 || playback_scope_added != 1 ||
+            redirect_scope_added != 1 || preload_scoped != 1 ||
+            route_added != 1 || wrap_native_probe || drop_native_probe ||
+            drop_media_body || drop_old_redirect_tail) {
             exit 3
         }
     }
@@ -322,7 +376,7 @@ if ! validate_patch "$temporary_script"; then
 fi
 
 if ! cp "$temporary_script" "$njs_script"; then
-    echo "could not install the Emby direct-link fallback patch" >&2
+    echo "could not install the room-scoped Emby routing patch" >&2
     exit 1
 fi
 

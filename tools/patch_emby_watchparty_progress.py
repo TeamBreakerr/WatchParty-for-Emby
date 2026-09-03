@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
-"""Make Emby Web playback compatible with WatchParty media sources.
+"""Report explicit Emby Web seeks to WatchParty without changing playback.
 
 Emby Web normally reports a seek only as a later ``timeupdate``.  This patch
 keeps the native player behavior intact while sending one authenticated request
 to the plugin's dedicated seek endpoint with the requested target.  The server
 can therefore distinguish a user drag from ordinary progress heartbeats.
 
-The patch leaves Emby's media-source and codec decision alone.  A ``.strm``
-path is an input indirection rather than a playable output format.  After Emby
-probes the target, ``MediaSource.Container`` normally contains the real remote
-container (for example ``mp4``), while an invalid supplied ``StreamUrl`` can
-still end in ``stream.strm``.  The patch therefore rejects the URL by its own
-extension instead of assuming that ``Container`` remains ``strm``.  Emby Web
-then uses the probed container for Direct Stream or consumes the server's
-``TranscodingUrl``; no remote STRM is globally forced to MP4.
+Older revisions also changed global STRM media selection and retried failed HLS
+startup.  Those changes affected ordinary playback outside a room and could
+keep an abandoned transcoding stream alive.  This patch migrates either legacy
+shape back to Emby's native behavior; the server endpoint independently checks
+that an explicit seek belongs to an active room before applying it.
 """
 
 import argparse
@@ -98,12 +95,9 @@ LEGACY_STRM_MP4_MAPPING = (
     '"strm"===mediaSourceContainer&&"Video"===type&&(mediaSourceContainer="mp4",contentType="video/mp4"),'
 )
 
-# Emby Web can receive /Videos/{id}/stream.strm through StreamUrl even after
-# the server has probed the indirection and reported the actual remote
-# container as MP4 or MKV.  ``stream.strm`` is never a valid media output URL,
-# so reject it independently of Container.  The following Direct Stream branch
-# can then construct stream.{probed-container}; if Container itself is still
-# strm, its existing guard falls through to TranscodingUrl instead.
+# Older revisions overrode Emby Web's StreamUrl and Direct Stream selection for
+# virtual STRM sources.  Retain those byte-exact shapes only so the patcher can
+# recognize and migrate an existing dashboard back to the native expressions.
 STREAM_URL_SELECTION_ORIGINAL = ':mediaSource.StreamUrl?('
 STREAM_URL_SELECTION_PATCHED_LEGACY = (
     ':mediaSource.StreamUrl&&'
@@ -120,10 +114,9 @@ DIRECT_STREAM_SELECTION_PATCHED = (
     '("strm"!==mediaSourceContainer||mediaSource.DirectStreamUrl)?('
 )
 
-# A cold ASS/fontconfig start can make Emby's first HLS player.play() attempt
-# fail even though the exact same transcoding URL is usable moments later.  Do
-# not request new PlaybackInfo here: retry the same streamInfo object (and thus
-# the same PlaySessionId and HLS URL) once, only during the first 15 seconds.
+# Older revisions retried a failed HLS player.play() call.  Retain the legacy
+# shapes only for removal: the retry could outlive a cancelled player, so the
+# installed dashboard now uses Emby's native startup and cancellation path.
 SET_SRC_INTO_PLAYER_ORIGINAL = (
     'function setSrcIntoPlayer(apiClient,player,streamInfo,progressEventName,'
     'previousPlaySessionId,signal){return normalizePlayOptions(streamInfo),'
@@ -279,8 +272,8 @@ def patch_dashboard(dashboard_root: Path) -> bool:
 
     text, selection_changed = patch_text(
         text,
-        DIRECT_STREAM_SELECTION_ORIGINAL,
         DIRECT_STREAM_SELECTION_PATCHED,
+        DIRECT_STREAM_SELECTION_ORIGINAL,
         playbackmanager,
     )
     legacy_stream_url_count = text.count(STREAM_URL_SELECTION_PATCHED_LEGACY)
@@ -292,28 +285,28 @@ def patch_dashboard(dashboard_root: Path) -> bool:
     if legacy_stream_url_count:
         text = text.replace(
             STREAM_URL_SELECTION_PATCHED_LEGACY,
-            STREAM_URL_SELECTION_PATCHED,
+            STREAM_URL_SELECTION_ORIGINAL,
             1,
         )
         stream_url_changed = True
     else:
         text, stream_url_changed = patch_text(
             text,
-            STREAM_URL_SELECTION_ORIGINAL,
             STREAM_URL_SELECTION_PATCHED,
+            STREAM_URL_SELECTION_ORIGINAL,
             playbackmanager,
         )
 
     text, hls_set_src_changed = patch_text(
         text,
-        SET_SRC_INTO_PLAYER_ORIGINAL,
         SET_SRC_INTO_PLAYER_PATCHED,
+        SET_SRC_INTO_PLAYER_ORIGINAL,
         playbackmanager,
     )
     text, hls_error_changed = patch_text(
         text,
-        PLAYBACK_ERROR_ORIGINAL,
         PLAYBACK_ERROR_PATCHED,
+        PLAYBACK_ERROR_ORIGINAL,
         playbackmanager,
     )
 

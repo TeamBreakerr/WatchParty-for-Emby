@@ -86,17 +86,26 @@ as an Nginx idle timeout even though upgraded tunnels retain HTTP status 101.
 The log deliberately excludes addresses, request paths, query strings,
 headers, cookies, user agents and tokens.
 
-The installer also applies a narrow compatibility patch to Xiaoya's generated
-`emby.js`. Local media already goes directly to Emby's native backend. For an
-internal Xiaoya `/d/` media path, the patched resolver now uses the path already
-returned by `PlaybackInfo` and sends the original video request to `@backend`
-without opening an extra one-byte media request. The dynamic 115 guard then
-classifies and protects the actual backend read. Ready-to-use external links
-retain Xiaoya's native handling, and no MP4 or other output container is
-guessed. The same patch removes Xiaoya's redundant next-episode `stream.strm`
-request, avoiding an invalid `.strm` FFmpeg output job.
+The installer also applies a room-scoped compatibility patch to Xiaoya's
+generated `emby.js`. It asks the authenticated `WatchParty/List` endpoint
+whether the requested item is the root/current episode of an active room. Only
+that media skips Xiaoya's early `stream.strm` and next-item probes and stays on
+Emby's `@backend`, where the dynamic 115 guard can protect the actual read.
+Ordinary playback retains Xiaoya's native probe, cached direct-link resolution,
+helper handling, next-item preload, and 302 response. Local media remains on the
+native Emby backend, and no MP4 or other output container is guessed.
 
-The Emby Web seek-patch installer also performs a one-frame ASS render once
+Both `emby.js` and `emby.conf` now use Docker DNS (`emby:6908`) for the Emby
+upstream. A literal container address becomes stale when Emby is recreated: the
+main proxy can still work while njs metadata lookups fail and turn original or
+direct-stream requests into HTTP 500. `ensure-emby-docker-upstream.sh` repairs
+the two generated files transactionally and restores both if `nginx -t` fails.
+
+The Emby Web seek patch changes only explicit seek reporting. Older revisions
+also changed global STRM output selection and retried a failed HLS `play()`;
+the current patcher migrates those edits back to Emby's native implementation.
+This keeps ordinary playback and cancellation semantics outside a room
+untouched. The installer also performs a one-frame ASS render once
 per Emby container start. This warms libass and the configured fallback font
 before a user requests a subtitle-burned HLS stream. It avoids spending almost
 the entire first-segment deadline scanning fonts, and deliberately does not
@@ -123,9 +132,10 @@ recreated. Persistence is therefore provided at two levels:
 2. XiaoyaKeeper's supported `mycmd.txt` post-update hook runs the narrow
    `install-emby-115-runtime.sh` installer immediately after `update_xiaoya`.
 
-The post-update installer restores only the 115 route, its loopback guard, and
-the Nginx reload. It does not install a periodic cron, wrap `/updateall`, patch
-`emby.js`, or touch the WebSocket configuration.
+The post-update installer restores the 115 route, its loopback guard, the
+Docker-DNS Emby upstream and room-routing njs patch in the regenerated runtime
+files, and the Nginx reload. It does not install a periodic cron, wrap
+`/updateall`, or touch the WebSocket configuration.
 
 The installer also retains the existing in-container lightweight checks for the
 115 guard, effective proxy routes, and WebSocket include. None of these
