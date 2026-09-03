@@ -131,6 +131,7 @@ ensure-emby-web-cache-buster.sh
 ensure-emby-docker-upstream.sh
 ensure-emby-room-agnostic-routing.sh
 ensure-emby-openlist-resolver.sh
+ensure-emby-placeholder-guard.sh
 ensure-emby-manifest-backend.sh
 emby-nginx-rlimit.conf
 ensure-emby-nginx-rlimit.sh
@@ -152,6 +153,7 @@ if [ ! -x "$data_dir/emby-115-guard" ] \
     || [ ! -x "$data_dir/ensure-emby-docker-upstream.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-room-agnostic-routing.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-openlist-resolver.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-placeholder-guard.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-manifest-backend.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-nginx-rlimit.sh" ]; then
     echo "115 guard executables are not executable" >&2
@@ -213,6 +215,7 @@ fi
 "$data_dir/ensure-emby-docker-upstream.sh"
 "$data_dir/ensure-emby-room-agnostic-routing.sh"
 "$data_dir/ensure-emby-openlist-resolver.sh"
+"$data_dir/ensure-emby-placeholder-guard.sh"
 "$data_dir/ensure-emby-manifest-backend.sh"
 "$data_dir/ensure-emby-nginx-rlimit.sh"
 

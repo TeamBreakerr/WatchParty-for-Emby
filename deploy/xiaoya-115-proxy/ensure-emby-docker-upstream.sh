@@ -58,9 +58,15 @@ server_blocks_resolve_docker_dns() {
     ' "$1"
 }
 
+# The container's grep prints nothing for -c when there are no matches, so a
+# numeric test on its output errors instead of comparing.
+count_lines() {
+    awk -v needle="$2" 'index($0, needle) > 0 { found++ } END { print found + 0 }' "$1"
+}
+
 validate_upstream() {
     grep -Fq "var EMBY_HOST = 'http://emby:6908';" "$njs_script" \
-        && [ "$(grep -Fc "var EMBY_HOST = 'http://emby:6908';" "$njs_script")" -eq 1 ] \
+        && [ "$(count_lines "$njs_script" "var EMBY_HOST = 'http://emby:6908';")" -eq 1 ] \
         && awk '
             /proxy_pass[[:space:]]+http:\/\/[^;]+:6908;/ {
                 found++

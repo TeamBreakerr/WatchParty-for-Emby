@@ -34,12 +34,18 @@ if [ ! -r "$njs_script" ]; then
     exit 1
 fi
 
+# The container's grep prints nothing for -c when there are no matches, which
+# would make a numeric test error out instead of comparing.
+count_lines() {
+    awk -v needle="$2" 'index($0, needle) > 0 { found++ } END { print found + 0 }' "$1"
+}
+
 validate_manifest_route() {
     file=$1
-    [ "$(grep -Fc "$marker" "$file")" -eq 1 ] \
+    [ "$(count_lines "$file" "$marker")" -eq 1 ] \
         && grep -Fq 'var isServerRenderedStream = r.uri.indexOf(".m3u8") !== -1;' "$file" \
         && grep -Fq 'if (isServerRenderedStream) {' "$file" \
-        && [ "$(grep -Fc "$anchor" "$file")" -eq 1 ]
+        && [ "$(count_lines "$file" "$anchor")" -eq 1 ]
 }
 
 reload_nginx() {

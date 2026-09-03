@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -13,6 +14,7 @@ UPSTREAM_FIXER = DEPLOY_ROOT / "ensure-emby-docker-upstream.sh"
 OPENLIST_RESOLVER = DEPLOY_ROOT / "ensure-emby-openlist-resolver.sh"
 RLIMIT_INSTALLER = DEPLOY_ROOT / "ensure-emby-nginx-rlimit.sh"
 RLIMIT_CONFIG = DEPLOY_ROOT / "emby-nginx-rlimit.conf"
+PLACEHOLDER_GUARD = DEPLOY_ROOT / "ensure-emby-placeholder-guard.sh"
 ROOM_AGNOSTIC_ROUTER = DEPLOY_ROOT / "ensure-emby-room-agnostic-routing.sh"
 MANIFEST_ROUTER = DEPLOY_ROOT / "ensure-emby-manifest-backend.sh"
 
@@ -546,6 +548,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "ensure-emby-docker-upstream.sh",
                 "ensure-emby-room-agnostic-routing.sh",
                 "ensure-emby-openlist-resolver.sh",
+                "ensure-emby-placeholder-guard.sh",
                 "ensure-emby-manifest-backend.sh",
                 "emby-nginx-rlimit.conf",
                 "ensure-emby-nginx-rlimit.sh",
@@ -562,6 +565,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "ensure-emby-docker-upstream.sh",
                 "ensure-emby-room-agnostic-routing.sh",
                 "ensure-emby-openlist-resolver.sh",
+                "ensure-emby-placeholder-guard.sh",
                 "ensure-emby-manifest-backend.sh",
                 "ensure-emby-nginx-rlimit.sh",
             }
@@ -1079,6 +1083,157 @@ class OpenListDirectLinkResolutionTests(unittest.TestCase):
             )
 
 
+class PlaceholderResolutionTests(unittest.TestCase):
+    """A placeholder resolution is a failure, not media.
+
+    When Xiaoya cannot produce a real link - an expired share, a failed
+    `AliyundriveShare2Pan115` transfer, provider rate limiting - it answers 302
+    to `img.xiaoya.pro/abnormal.png`. That is a successful redirect carrying an
+    image, so nothing downstream recognises it: the link cache stores it and the
+    client is handed a PNG in place of the video, which then keeps failing for
+    hours after the provider recovers.
+    """
+
+    FIXTURE = """async function getCachedXYUrl(url, ua, itemId, cookie, r) {
+    var cacheKey = getCacheKey(url, ua, itemId);
+    var cached = getFromCache(cacheKey, r);
+    if (cached) {
+        return cached;
+    }
+    try {
+        var result = await fetchXYApi(url, ua, cookie);
+        var isError = result.startsWith('error');
+        var isHtmlError = result.includes('<html');
+        var isEmpty = result.trim() === '';
+        var isJsonError = isAlistErrorResponse(result);
+        if (!isError && !isHtmlError && !isEmpty && !isJsonError) {
+            setToCache(cacheKey, result, r);
+        }
+        return result;
+    } catch (e) {
+        return 'error: ' + e;
+    }
+}
+
+async function redirect2Pan(r) {
+    var alistFilePath = embyRes + '?sign=';
+    var alistRes = await getCachedXYUrl(alistFilePath, ua, itemId, cookie, r);
+
+    if (!alistRes.startsWith('error')) {
+        if (alistRes.indexOf("http") !== -1) {
+            r.return(302, alistRes);
+            return;
+        }
+    }
+
+    r.return(500, alistRes);
+}
+"""
+
+    def _run(self, script, nginx):
+        return subprocess.run(
+            [str(PLACEHOLDER_GUARD)],
+            capture_output=True,
+            text=True,
+            env=_resolver_env(script, nginx),
+        )
+
+    def _drive(self, script, resolved):
+        return subprocess.run(
+            [
+                "node",
+                "-e",
+                "var cached=null, stored=null, actions=[];"
+                "function getCacheKey(){return 'k'}"
+                "function getFromCache(){return cached}"
+                "function setToCache(k,v){stored=v}"
+                "function isAlistErrorResponse(){return false}"
+                "async function fetchXYApi(){return " + resolved + "}"
+                "var embyRes='http://xiaoya.host:5678/d/show/ep.mkv';"
+                "var ua='ua', itemId='1', cookie='';"
+                + script
+                + "var r={return:function(status,body){actions.push([status,body])}};"
+                "redirect2Pan(r).then(function(){"
+                "process.stdout.write(JSON.stringify({actions:actions,stored:stored}))})",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_a_placeholder_is_neither_cached_nor_served_as_media(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(self.FIXTURE)
+            nginx = _write_fake_nginx(root / "nginx")
+
+            first = self._run(script, nginx)
+            patched = script.read_text()
+            second = self._run(script, nginx)
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual("patched", first.stdout.strip())
+            self.assertEqual("already-present", second.stdout.strip())
+            self.assertEqual(patched, script.read_text())
+
+            observed = self._drive(
+                patched, "'http://img.xiaoya.pro/abnormal.png'"
+            )
+            self.assertEqual(0, observed.returncode, observed.stderr)
+            result = json.loads(observed.stdout)
+
+            self.assertEqual(
+                [[502, "error: provider returned a placeholder"]],
+                result["actions"],
+            )
+            self.assertIsNone(result["stored"])
+
+    def test_a_real_link_is_still_cached_and_redirected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(self.FIXTURE)
+            nginx = _write_fake_nginx(root / "nginx")
+            self.assertEqual(0, self._run(script, nginx).returncode)
+
+            observed = self._drive(
+                script.read_text(), "'https://cdn.invalid/signed.mkv?t=1'"
+            )
+            self.assertEqual(0, observed.returncode, observed.stderr)
+            result = json.loads(observed.stdout)
+
+            self.assertEqual(
+                [[302, "https://cdn.invalid/signed.mkv?t=1"]], result["actions"]
+            )
+            self.assertEqual(
+                "https://cdn.invalid/signed.mkv?t=1", result["stored"]
+            )
+
+    def test_missing_anchors_fail_without_touching_the_script(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text("var unrelated = 1;\n")
+            nginx = _write_fake_nginx(root / "nginx")
+
+            result = self._run(script, nginx)
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual("var unrelated = 1;\n", script.read_text())
+
+    def test_restores_the_script_when_nginx_rejects_the_guard(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(self.FIXTURE)
+            nginx = _write_fake_nginx(root / "nginx", exit_code=1)
+
+            rejected = self._run(script, nginx)
+
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertEqual(self.FIXTURE, script.read_text())
+
+
 class ServerRenderedManifestRoutingTests(unittest.TestCase):
     """A manifest request asks the server to produce a stream.
 
@@ -1266,6 +1421,7 @@ class RepairStepDeploymentTests(unittest.TestCase):
     def test_both_installers_deploy_and_run_the_new_repair_steps(self):
         steps = (
             "ensure-emby-openlist-resolver.sh",
+            "ensure-emby-placeholder-guard.sh",
             "ensure-emby-manifest-backend.sh",
             "ensure-emby-nginx-rlimit.sh",
         )

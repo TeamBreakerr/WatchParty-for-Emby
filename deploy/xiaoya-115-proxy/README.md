@@ -154,6 +154,16 @@ the original file on Xiaoya's native direct-link path. The rule is the request
 class, not the room: ask for the original file and the client gets a direct
 link; ask the server to render a stream and Emby renders it.
 
+A placeholder resolution is a failure, not media. When Xiaoya cannot produce a
+real link - an expired share, a failed `AliyundriveShare2Pan115` transfer,
+provider rate limiting - its `/d/` handler answers `302` to
+`img.xiaoya.pro/abnormal.png`. That is a successful redirect carrying an image,
+so nothing downstream recognises it: the link cache stores it for its full
+lifetime and the client is handed a PNG in place of the video, which then keeps
+failing for hours after the provider recovers.
+`ensure-emby-placeholder-guard.sh` keeps a placeholder out of the cache and
+answers the request with `502` instead of a redirect no player can use.
+
 Nginx's worker descriptor limit is raised for the same slice cache. Each slice
 needs its own cache and temporary descriptor, so one multi-gigabyte playback
 exhausts Xiaoya's stock soft `RLIMIT_NOFILE` of 1024, logs
