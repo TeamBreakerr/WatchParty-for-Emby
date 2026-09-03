@@ -234,5 +234,116 @@ namespace WatchPartyForEmby.Tests
                 Assert.True(await blocked);
             }
         }
+
+        [Fact]
+        public async Task ProviderBurstsAreSpacedAcrossParticipantsOfOneParty()
+        {
+            using (var dormancies = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan))
+            {
+                var delays = new System.Collections.Generic.List<TimeSpan>();
+                var now = new DateTime(2026, 9, 3, 12, 0, 0, DateTimeKind.Utc);
+                var pacer = new ProviderBurstPacer(
+                    2,
+                    TimeSpan.FromMilliseconds(400),
+                    (delay, _) =>
+                    {
+                        delays.Add(delay);
+                        return Task.CompletedTask;
+                    },
+                    () => now);
+                var queue = new DormancyAwarePlaybackCommandQueue(dormancies, 8, pacer);
+
+                for (var participant = 0; participant < 3; participant++)
+                {
+                    var sent = await queue.EnqueueAsync(
+                        "party",
+                        "session-" + participant,
+                        ParticipantRoomCommand.Seek,
+                        ParticipantCommandQueueMode.Ordered,
+                        _ => Task.CompletedTask,
+                        CancellationToken.None);
+                    Assert.True(sent);
+                }
+
+                // Two participants seek together; only the third waits.
+                Assert.Equal(new[] { TimeSpan.FromMilliseconds(400) }, delays);
+            }
+        }
+
+        [Fact]
+        public async Task PausingIsNeverDelayedByProviderPacing()
+        {
+            using (var dormancies = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan))
+            {
+                var paced = 0;
+                var now = new DateTime(2026, 9, 3, 12, 0, 0, DateTimeKind.Utc);
+                var pacer = new ProviderBurstPacer(
+                    1,
+                    TimeSpan.FromMilliseconds(400),
+                    (_, __) =>
+                    {
+                        paced++;
+                        return Task.CompletedTask;
+                    },
+                    () => now);
+                var queue = new DormancyAwarePlaybackCommandQueue(dormancies, 8, pacer);
+
+                for (var participant = 0; participant < 4; participant++)
+                {
+                    await queue.EnqueueAsync(
+                        "party",
+                        "session-" + participant,
+                        ParticipantRoomCommand.Pause,
+                        ParticipantCommandQueueMode.Ordered,
+                        _ => Task.CompletedTask,
+                        CancellationToken.None);
+                }
+
+                Assert.Equal(0, paced);
+            }
+        }
+
+        [Fact]
+        public async Task AParticipantThatGoesDormantWhileWaitingIsNotCommanded()
+        {
+            using (var dormancies = new ParticipantDormancyTracker(Timeout.InfiniteTimeSpan))
+            {
+                var now = new DateTime(2026, 9, 3, 12, 0, 0, DateTimeKind.Utc);
+                var pacer = new ProviderBurstPacer(
+                    1,
+                    TimeSpan.FromMilliseconds(400),
+                    (_, __) =>
+                    {
+                        // Stop arrives while this command is spacing itself out.
+                        dormancies.MarkDormant("party", "late", "playback-1", now);
+                        return Task.CompletedTask;
+                    },
+                    () => now);
+                var queue = new DormancyAwarePlaybackCommandQueue(dormancies, 8, pacer);
+                var invoked = 0;
+
+                await queue.EnqueueAsync(
+                    "party",
+                    "first",
+                    ParticipantRoomCommand.Seek,
+                    ParticipantCommandQueueMode.Ordered,
+                    _ => Task.CompletedTask,
+                    CancellationToken.None);
+                var sent = await queue.EnqueueAsync(
+                    "party",
+                    "late",
+                    ParticipantRoomCommand.Seek,
+                    ParticipantCommandQueueMode.Ordered,
+                    _ =>
+                    {
+                        invoked++;
+                        return Task.CompletedTask;
+                    },
+                    CancellationToken.None);
+
+                Assert.False(sent);
+                Assert.Equal(0, invoked);
+            }
+        }
     }
 }

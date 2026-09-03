@@ -129,7 +129,7 @@ ensure-emby-websocket-timeout.sh
 emby-web-cache-buster.conf
 ensure-emby-web-cache-buster.sh
 ensure-emby-docker-upstream.sh
-ensure-emby-direct-link-fallback.sh
+ensure-emby-room-agnostic-routing.sh
 ensure-emby-openlist-resolver.sh
 ensure-emby-manifest-backend.sh
 emby-nginx-rlimit.conf
@@ -150,7 +150,7 @@ if [ ! -x "$data_dir/emby-115-guard" ] \
     || [ ! -x "$data_dir/ensure-emby-websocket-timeout.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-web-cache-buster.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-docker-upstream.sh" ] \
-    || [ ! -x "$data_dir/ensure-emby-direct-link-fallback.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-room-agnostic-routing.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-openlist-resolver.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-manifest-backend.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-nginx-rlimit.sh" ]; then
@@ -211,7 +211,7 @@ fi
 "$data_dir/ensure-emby-websocket-timeout.sh"
 "$data_dir/ensure-emby-web-cache-buster.sh"
 "$data_dir/ensure-emby-docker-upstream.sh"
-"$data_dir/ensure-emby-direct-link-fallback.sh"
+"$data_dir/ensure-emby-room-agnostic-routing.sh"
 "$data_dir/ensure-emby-openlist-resolver.sh"
 "$data_dir/ensure-emby-manifest-backend.sh"
 "$data_dir/ensure-emby-nginx-rlimit.sh"

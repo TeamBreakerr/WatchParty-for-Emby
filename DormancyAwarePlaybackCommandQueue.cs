@@ -19,14 +19,17 @@ namespace WatchPartyForEmby
     {
         private readonly KeyedAsyncSerialQueue<string> _queue;
         private readonly ParticipantDormancyTracker _dormancies;
+        private readonly ProviderBurstPacer _providerBursts;
 
         public DormancyAwarePlaybackCommandQueue(
             ParticipantDormancyTracker dormancies,
-            int capacityPerSession)
+            int capacityPerSession,
+            ProviderBurstPacer providerBursts = null)
         {
             _dormancies = dormancies
                 ?? throw new ArgumentNullException(nameof(dormancies));
             _queue = new KeyedAsyncSerialQueue<string>(capacityPerSession);
+            _providerBursts = providerBursts;
         }
 
         public async Task<bool> EnqueueAsync(
@@ -95,16 +98,34 @@ namespace WatchPartyForEmby
             }
 
             var commandSent = false;
+            bool StillDispatchable()
+            {
+                return (allowDormant
+                        || _dormancies.CanReceiveCommand(partyId, sessionId, command))
+                    && (authorizationStillValid == null || authorizationStillValid());
+            }
+
             Func<CancellationToken, Task> guardedOperation = async queuedToken =>
             {
-                if (!allowDormant
-                    && !_dormancies.CanReceiveCommand(partyId, sessionId, command))
+                if (!StillDispatchable())
                 {
                     return;
                 }
-                if (authorizationStillValid != null && !authorizationStillValid())
+
+                if (_providerBursts != null)
                 {
-                    return;
+                    // Participants of one party act together only because the server
+                    // told them to, and the provider rejects a third read that starts
+                    // with the other two. Spacing the fan-out is the only place that
+                    // can prevent an error a direct-playing client cannot retry.
+                    await _providerBursts
+                        .PaceAsync(partyId, command, queuedToken)
+                        .ConfigureAwait(false);
+                    // Stop can arrive while a command is spacing itself out.
+                    if (!StillDispatchable())
+                    {
+                        return;
+                    }
                 }
 
                 await operation(queuedToken).ConfigureAwait(false);

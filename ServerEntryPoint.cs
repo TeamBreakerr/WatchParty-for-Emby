@@ -154,6 +154,16 @@ namespace WatchPartyForEmby
         private static readonly TimeSpan MasterSeekNearZeroThreshold = TimeSpan.FromSeconds(5);
         private static readonly TimeSpan MasterSeekDrasticFromThreshold = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan MasterSeekDrasticDebounce = TimeSpan.FromSeconds(10);
+        // Media backed by 115 serves two reads that start together and answers a
+        // third with 403, while reads spaced a few hundred milliseconds apart all
+        // succeed. Participants only start together because this server commanded
+        // them to, so the fan-out releases two commands per window. A party of two
+        // never waits, and a direct-playing client never has to recover from an error
+        // it cannot retry. The window sits far below SyncToleranceSeconds, and the
+        // existing resume-latency compensation absorbs what remains.
+        private const int ProviderBurstSize = 2;
+        private static readonly TimeSpan ProviderBurstWindow =
+            TimeSpan.FromMilliseconds(400);
         private static readonly TimeSpan SeriesSelectionCoalesceWindow =
             TimeSpan.FromSeconds(1);
         private static readonly TimeSpan SeriesPlaybackHandoffWindow =
@@ -623,7 +633,8 @@ namespace WatchPartyForEmby
                 _logger);
             _playbackCommandQueue = new DormancyAwarePlaybackCommandQueue(
                 _participantDormancies,
-                capacityPerSession: 256);
+                capacityPerSession: 256,
+                new ProviderBurstPacer(ProviderBurstSize, ProviderBurstWindow));
             _masterSessionLifecycles = new MasterSessionLifecycleCoordinator(
                 _plugin.PartyParticipants,
                 _participantDormancies);

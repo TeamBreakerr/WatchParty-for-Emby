@@ -13,6 +13,7 @@ UPSTREAM_FIXER = DEPLOY_ROOT / "ensure-emby-docker-upstream.sh"
 OPENLIST_RESOLVER = DEPLOY_ROOT / "ensure-emby-openlist-resolver.sh"
 RLIMIT_INSTALLER = DEPLOY_ROOT / "ensure-emby-nginx-rlimit.sh"
 RLIMIT_CONFIG = DEPLOY_ROOT / "emby-nginx-rlimit.conf"
+ROOM_AGNOSTIC_ROUTER = DEPLOY_ROOT / "ensure-emby-room-agnostic-routing.sh"
 MANIFEST_ROUTER = DEPLOY_ROOT / "ensure-emby-manifest-backend.sh"
 
 # Xiaoya's generated emby.js rewrites an Emby media path onto its own
@@ -216,395 +217,6 @@ class Xiaoya115ProxyTests(unittest.TestCase):
             self.assertEqual(original_js, emby_js.read_bytes())
             self.assertEqual(original_conf, emby_conf.read_bytes())
 
-    def test_emby_njs_patch_scopes_guarded_routing_to_active_room_items(self):
-        patcher = (
-            DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
-        ).read_text()
-
-        self.assertIn("isActiveWatchPartyItem", patcher)
-        self.assertIn("/emby/WatchParty/List?api_key=", patcher)
-        self.assertIn("party.IsActive", patcher)
-        self.assertIn("party.CurrentEpisodeId", patcher)
-        self.assertIn("isWatchPartyMedia && isXiaoyaMediaPath", patcher)
-        self.assertIn("if (!isWatchPartyMedia)", patcher)
-
-    def test_emby_njs_patch_routes_guarded_media_without_a_range_probe(self):
-        patcher = (
-            DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
-        ).read_text()
-
-        self.assertIn("isXiaoyaMediaPath", patcher)
-        self.assertNotIn('print "                \\"Range\\": \\"bytes=0-0\\""', patcher)
-        self.assertIn("r.internalRedirect(\"@backend\")", patcher)
-        self.assertIn("getPlaybackPath", patcher)
-        self.assertIn("print_native_stream_probe", patcher)
-        self.assertIn("Nginx rejected the Emby direct-link fallback patch", patcher)
-
-    def test_emby_njs_patch_keeps_local_media_on_the_emby_backend(self):
-        patcher = (
-            DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
-        ).read_text()
-
-        self.assertIn("isLocalMediaPath", patcher)
-        self.assertIn("doesNotContainHttp && doesNotContainDOCKER", patcher)
-        self.assertIn(
-            'print "    if (isLocalMediaPath || isGuardedWatchPartyPath ||"',
-            patcher,
-        )
-        self.assertIn(
-            'print "        r.internalRedirect(\\"@backend\\");"',
-            patcher,
-        )
-
-    def test_emby_njs_patch_is_idempotent_and_restores_on_nginx_failure(self):
-        patcher = DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
-        fixture = """async function fetchXYApi(xyurl, ua, cookie) {
-    try {
-        var res = await ngx.fetch(xyurl, {
-            headers: {
-                \"Content-Type\": 'application/json;charset=utf-8',
-                \"User-Agent\": ua,
-                \"X-Alist-OriUA\": ua
-            },
-            max_response_body_size: 65535
-        });
-        if (res.status >= 301 && res.status <= 307) {
-            var loc = res.headers[\"Location\"] || res.headers[\"location\"];
-            return loc || \"error: no location\";
-        }
-        var text = await res.text();
-        try {
-            var json = JSON.parse(text);
-            if (json.url) return json.url;
-            return text;
-        } catch (e) {
-            return text;
-        }
-    } catch (error) {
-        return 'error: xy_api fetch failed';
-    }
-}
-
-async function getPlaybackPath(itemId, userId, apiKey, r) {
-    try {
-        var strmUri = EMBY_HOST + '/emby/Videos/' + itemId + '/stream.strm?api_key=' + apiKey;
-        var res = await ngx.fetch(strmUri, {
-            max_response_body_size: 65535,
-            headers: { 'X-Emby-Token': apiKey }
-        });
-        if (res.ok) {
-            var content = await res.text();
-            var url = content.trim();
-            if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
-                return url;
-            }
-            if (url && url.includes('DOCKER_ADDRESS')) {
-                return url;
-            }
-        }
-    } catch (e) {}
-
-    try {
-        var playInfoUri = EMBY_HOST + '/emby/Items/' + itemId + '/PlaybackInfo?api_key=' + apiKey;
-        var res = await ngx.fetch(playInfoUri, { max_response_body_size: 65535 });
-        if (res.ok) {
-            var data = await res.json();
-            if (data && data.MediaSources && data.MediaSources.length > 0) {
-                var mediaPath = data.MediaSources[0].Path;
-                if (mediaPath) {
-                    return mediaPath;
-                }
-            }
-        }
-    } catch (e) {}
-    return null;
-}
-
-async function getCachedXYUrl(url, ua, itemId, cookie, r) {
-    var cacheKey = getCacheKey(url, ua, itemId);
-    var cached = getFromCache(cacheKey, r);
-    if (cached) {
-        return cached;
-    }
-    var result = await fetchXYApi(url, ua, cookie);
-    if (!result.startsWith('error')) {
-        setToCache(cacheKey, result, r);
-    }
-    return result;
-}
-
-async function redirect2Pan(r) {
-    var itemIdMatch = /\\/videos\\/(\\d+)/i.exec(r.uri);
-    var itemId = itemIdMatch ? itemIdMatch[1] : null;
-    var api_key = r.args.api_key || 'fixture-token';
-    (async function() {
-        var alistNextPath = nextPath.replace('DOCKER_ADDRESS', 'http://127.0.0.1:80') + '?sign=';
-        await getCachedXYUrl(alistNextPath, ua, nextItemId, cookie, r);
-    })();
-
-    var contain115helper = embyRes.includes("P115StrmHelper");
-    if (contain115helper) {
-        var futureDiagnostic = "}";
-        var helperRedirectUrl = await fetchXYApi(embyRes, ua, cookie);
-        if (helperRedirectUrl.startsWith('error')) {
-            r.internalRedirect("@backend");
-            return;
-        }
-        r.return(302, helperRedirectUrl);
-        return;
-    }
-
-    var alistFilePath = embyRes.replace('DOCKER_ADDRESS', 'http://127.0.0.1:80') + '?sign=';
-    var alistRes = await getCachedXYUrl(alistFilePath, ua, itemId, cookie, r);
-
-    if (!alistRes.startsWith('error')) {
-        if (alistRes.indexOf(\"http\") !== -1) {
-            r.return(302, alistRes);
-            return;
-        }
-    }
-
-    r.return(500, alistRes);
-}
-"""
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            script = root / "emby.js"
-            fake_nginx = root / "nginx"
-            script.write_text(fixture)
-            original = script.read_bytes()
-            fake_nginx.write_text("#!/bin/sh\nexit 0\n")
-            fake_nginx.chmod(0o755)
-            env = {
-                "PATH": "/usr/bin:/bin",
-                "EMBY_NJS_SCRIPT": str(script),
-                "NGINX_BIN": str(fake_nginx),
-            }
-
-            first = subprocess.run(
-                [str(patcher)], capture_output=True, text=True, env=env
-            )
-            first_contents = script.read_bytes()
-            second = subprocess.run(
-                [str(patcher)], capture_output=True, text=True, env=env
-            )
-
-            self.assertEqual(0, first.returncode, first.stderr)
-            self.assertEqual(0, second.returncode, second.stderr)
-            self.assertNotEqual(original, first_contents)
-            self.assertEqual(first_contents, script.read_bytes())
-            updated = script.read_text()
-            self.assertNotIn('"Range": "bytes=0-0"', updated)
-            self.assertIn("codex-emby-watchparty-routing-v4", updated)
-            self.assertIn("async function isActiveWatchPartyItem", updated)
-            self.assertIn("var isLocalMediaPath =", updated)
-            self.assertIn(
-                "isWatchPartyMedia && isXiaoyaMediaPath",
-                updated,
-            )
-            self.assertIn("var isXiaoyaMediaPath =", updated)
-            self.assertIn(
-                "var helperRedirectUrl = await fetchXYApi",
-                updated,
-            )
-            self.assertIn("futureDiagnostic", updated)
-            self.assertIn(
-                "getCachedXYUrl(alistFilePath",
-                updated,
-            )
-            self.assertIn(
-                "getCachedXYUrl(alistNextPath",
-                updated,
-            )
-            self.assertIn("/stream.strm", updated)
-
-            helper_start = updated.index("var watchPartyItemCache")
-            helper_end = updated.index(
-                "async function getPlaybackPath", helper_start
-            )
-            helper = updated[helper_start:helper_end]
-            node_result = subprocess.run(
-                [
-                    "node",
-                    "-e",
-                    "const EMBY_HOST='http://emby:6908';"
-                    "const ngx={fetch:async function(){return {ok:true,json:async function(){"
-                    "return {Parties:["
-                    "{IsActive:true,ItemId:'root-1',CurrentEpisodeId:'episode-1'},"
-                    "{IsActive:false,ItemId:'inactive',CurrentEpisodeId:'inactive-episode'}"
-                    "]}}}}};"
-                    + helper
-                    + "Promise.all(['root-1','episode-1','inactive','missing'].map("
-                    "function(id){return isActiveWatchPartyItem(id,'token')})).then("
-                    "function(values){process.stdout.write(JSON.stringify(values))})",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(0, node_result.returncode, node_result.stderr)
-            self.assertEqual("[true,true,false,false]", node_result.stdout)
-
-            redirect_result = subprocess.run(
-                [
-                    "node",
-                    "-e",
-                    "var EMBY_HOST='http://emby:6908';"
-                    "var nextPath='DOCKER_ADDRESS/next',ua='ua',nextItemId='1002',"
-                    "cookie='',embyRes='DOCKER_ADDRESS/current',"
-                    "doesNotContainHttp=false,doesNotContainDOCKER=false;"
-                    "function getCacheKey(){return 'fixture'}"
-                    "function getFromCache(){return null}"
-                    "function setToCache(){}"
-                    "var ngx={fetch:async function(uri){"
-                    "if(String(uri).includes('WatchParty/List'))return {ok:true,json:async function(){"
-                    "return {Parties:[{IsActive:true,ItemId:'1001'}]}}};"
-                    "return {status:302,headers:{Location:'https://media.invalid/file'}}}};"
-                    + updated
-                    + "var activeActions=[],inactiveActions=[];"
-                    "var active={uri:'/videos/1001/original.mkv',args:{api_key:'token'},"
-                    "internalRedirect:function(value){activeActions.push(value)},"
-                    "return:function(status){activeActions.push(status)}};"
-                    "var inactive={uri:'/videos/1009/original.mkv',args:{api_key:'token'},"
-                    "internalRedirect:function(value){inactiveActions.push(value)},"
-                    "return:function(status){inactiveActions.push(status)}};"
-                    "redirect2Pan(active).then(function(){return redirect2Pan(inactive)})"
-                    ".then(function(){process.stdout.write(JSON.stringify([activeActions,inactiveActions]))})"
-                    ".catch(function(error){console.error(error);process.exit(1)})",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(0, redirect_result.returncode, redirect_result.stderr)
-            self.assertEqual('[["@backend"],[302]]', redirect_result.stdout)
-
-            legacy = fixture.replace(
-                "async function fetchXYApi(xyurl, ua, cookie) {",
-                "async function fetchXYApi(xyurl, ua, cookie) {\n"
-                "    // codex-emby-direct-link-fallback-v1",
-                1,
-            ).replace(
-                '                "X-Alist-OriUA": ua',
-                '                "X-Alist-OriUA": ua,\n'
-                '                "Range": "bytes=0-0"',
-                1,
-            ).replace(
-                "        var text = await res.text();",
-                "        if (res.status === 206 || "
-                'res.headers["X-Emby-115-Proxy"] || '
-                'res.headers["x-emby-115-proxy"]) {\n'
-                '            return "error: media_body";\n'
-                "        }\n"
-                "        var text = await res.text();",
-                1,
-            ).replace(
-                "    r.return(500, alistRes);",
-                '    r.internalRedirect("@backend");',
-                1,
-            )
-            script.write_text(legacy)
-            migrated = subprocess.run(
-                [str(patcher)], capture_output=True, text=True, env=env
-            )
-            migrated_contents = script.read_text()
-
-            self.assertEqual(0, migrated.returncode, migrated.stderr)
-            self.assertIn("codex-emby-watchparty-routing-v4", migrated_contents)
-            self.assertNotIn("codex-emby-direct-link-fallback-v1", migrated_contents)
-            self.assertNotIn('"Range": "bytes=0-0"', migrated_contents)
-            self.assertNotIn("error: media_body", migrated_contents)
-            self.assertIn("/stream.strm", migrated_contents)
-            self.assertIn("getCachedXYUrl(alistFilePath", migrated_contents)
-
-            playback_path_start = fixture.index(
-                "async function getPlaybackPath(itemId, userId, apiKey, r) {"
-            )
-            first_probe_start = fixture.index("    try {", playback_path_start)
-            playback_info_start = fixture.index("    try {", first_probe_start + 1)
-            previous_v3 = fixture[:first_probe_start] + fixture[playback_info_start:]
-            previous_v3 = previous_v3.replace(
-                "        await getCachedXYUrl(alistNextPath, ua, nextItemId, cookie, r);",
-                "        // Guarded media is resolved when playback starts.",
-                1,
-            )
-            old_tail_start = previous_v3.index(
-                "    var contain115helper = embyRes.includes"
-            )
-            previous_v3 = previous_v3[:old_tail_start] + """    var contain115helper = embyRes.includes("P115StrmHelper");
-    if (contain115helper) {
-        r.internalRedirect("@backend");
-        return;
-    }
-    // codex-emby-guarded-path-routing-v3
-    var isLocalMediaPath = doesNotContainHttp && doesNotContainDOCKER;
-    var isXiaoyaMediaPath = embyRes.includes("DOCKER_ADDRESS") ||
-        embyRes.includes("xiaoya.host:5678");
-    if (isLocalMediaPath || isXiaoyaMediaPath) {
-        r.internalRedirect("@backend");
-        return;
-    }
-    r.return(302, embyRes);
-}
-"""
-            script.write_text(previous_v3)
-            upgraded_v3 = subprocess.run(
-                [str(patcher)], capture_output=True, text=True, env=env
-            )
-            upgraded_v3_contents = script.read_text()
-
-            self.assertEqual(0, upgraded_v3.returncode, upgraded_v3.stderr)
-            self.assertIn(
-                "codex-emby-watchparty-routing-v4",
-                upgraded_v3_contents,
-            )
-            self.assertNotIn(
-                "codex-emby-guarded-path-routing-v3",
-                upgraded_v3_contents,
-            )
-            self.assertIn("/stream.strm", upgraded_v3_contents)
-            self.assertIn("getCachedXYUrl(alistFilePath", upgraded_v3_contents)
-            self.assertIn("getCachedXYUrl(alistNextPath", upgraded_v3_contents)
-
-            unrelated_probe = fixture.replace(
-                "async function getPlaybackPath(itemId, userId, apiKey, r) {",
-                "async function unrelatedMetadataProbe() {\n"
-                '    return { "Range": "bytes=0-0" };\n'
-                "}\n\n"
-                "async function getPlaybackPath(itemId, userId, apiKey, r) {",
-                1,
-            )
-            script.write_text(unrelated_probe)
-            unrelated_result = subprocess.run(
-                [str(patcher)], capture_output=True, text=True, env=env
-            )
-
-            self.assertEqual(0, unrelated_result.returncode, unrelated_result.stderr)
-            self.assertIn(
-                'return { "Range": "bytes=0-0" };',
-                script.read_text(),
-            )
-
-            changed_fallback = fixture.replace(
-                "r.return(500, alistRes);",
-                "r.return(502, alistRes);",
-                1,
-            )
-            script.write_text(changed_fallback)
-            changed_result = subprocess.run(
-                [str(patcher)], capture_output=True, text=True, env=env
-            )
-
-            self.assertEqual(0, changed_result.returncode, changed_result.stderr)
-            self.assertIn("r.return(502, alistRes);", script.read_text())
-
-            script.write_text(fixture)
-            fake_nginx.write_text("#!/bin/sh\nexit 1\n")
-            failed = subprocess.run(
-                [str(patcher)], capture_output=True, text=True, env=env
-            )
-            self.assertNotEqual(0, failed.returncode)
-            self.assertEqual(original, script.read_bytes())
-
     def test_proxy_is_selected_by_resolved_115_host_instead_of_folder_name(self):
         locations = (DEPLOY_ROOT / "emby-115-locations.conf").read_text()
         access = (DEPLOY_ROOT / "emby-115-access.lua").read_text()
@@ -756,8 +368,8 @@ async function redirect2Pan(r) {
         upstream_ensurer = (
             DEPLOY_ROOT / "ensure-emby-docker-upstream.sh"
         ).read_text()
-        direct_link_ensurer = (
-            DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh"
+        room_agnostic_router = (
+            DEPLOY_ROOT / "ensure-emby-room-agnostic-routing.sh"
         ).read_text()
         runtime_installer = (
             DEPLOY_ROOT / "install-emby-115-runtime.sh"
@@ -785,13 +397,13 @@ async function redirect2Pan(r) {
         self.assertIn("emby-web-cache-buster.conf", installer)
         self.assertIn("ensure-emby-web-cache-buster.sh", installer)
         self.assertIn('"$data_dir/ensure-emby-web-cache-buster.sh"', installer)
-        self.assertIn("ensure-emby-direct-link-fallback.sh", installer)
-        self.assertIn('"$data_dir/ensure-emby-direct-link-fallback.sh"', installer)
+        self.assertIn("ensure-emby-room-agnostic-routing.sh", installer)
+        self.assertIn('"$data_dir/ensure-emby-room-agnostic-routing.sh"', installer)
         self.assertIn("ensure-emby-docker-upstream.sh", installer)
         self.assertIn('"$data_dir/ensure-emby-docker-upstream.sh"', installer)
         self.assertIn('cp -p "$njs_script" "$njs_script_backup"', installer)
         self.assertIn('cp -p "$njs_script_backup" "$njs_script"', installer)
-        self.assertIn("fetchXYApi", direct_link_ensurer)
+        self.assertIn("isActiveWatchPartyItem", room_agnostic_router)
         self.assertIn("http://emby:6908", upstream_ensurer)
         self.assertIn("data-appversion=\"4.9.0.42\"", web_cache_buster)
         self.assertIn("data-appversion=\"4.9.0.42-wp5\"", web_cache_buster)
@@ -815,7 +427,7 @@ async function redirect2Pan(r) {
         self.assertIn("ensure-emby-docker-upstream.sh", runtime_installer)
         self.assertNotIn("/etc/crontabs/root", runtime_installer)
         self.assertNotIn("/updateall", runtime_installer)
-        self.assertIn("ensure-emby-direct-link-fallback", runtime_installer)
+        self.assertIn("ensure-emby-room-agnostic-routing", runtime_installer)
         self.assertNotIn("ensure-emby-websocket-timeout", runtime_installer)
 
     def test_post_update_install_waits_for_fresh_services_then_installs_once(self):
@@ -932,7 +544,7 @@ async function redirect2Pan(r) {
                 "emby-web-cache-buster.conf",
                 "ensure-emby-web-cache-buster.sh",
                 "ensure-emby-docker-upstream.sh",
-                "ensure-emby-direct-link-fallback.sh",
+                "ensure-emby-room-agnostic-routing.sh",
                 "ensure-emby-openlist-resolver.sh",
                 "ensure-emby-manifest-backend.sh",
                 "emby-nginx-rlimit.conf",
@@ -948,7 +560,7 @@ async function redirect2Pan(r) {
                 "ensure-emby-websocket-timeout.sh",
                 "ensure-emby-web-cache-buster.sh",
                 "ensure-emby-docker-upstream.sh",
-                "ensure-emby-direct-link-fallback.sh",
+                "ensure-emby-room-agnostic-routing.sh",
                 "ensure-emby-openlist-resolver.sh",
                 "ensure-emby-manifest-backend.sh",
                 "ensure-emby-nginx-rlimit.sh",
@@ -1161,6 +773,186 @@ async function redirect2Pan(r) {
             ],
             check=True,
         )
+
+
+class RoomAgnosticRoutingTests(unittest.TestCase):
+    """Routing follows what the client asked for, never who is watching.
+
+    An earlier revision asked WatchParty/List on every playback request and kept
+    an active room's media behind Emby's backend "so the guard can protect the
+    read" - which created the very server-side read it then protected, on the
+    wrong premise that the provider caps concurrent connections. It caps reads
+    that start together instead, and the party fan-out is where a burst is
+    created, so that is where it is spaced out.
+    """
+
+    ROOM_AWARE = """async function getCachedXYUrl(url, ua, itemId, cookie, r) {
+    return await fetchXYApi(url, ua, cookie);
+}
+
+var watchPartyItemCache = { key: null, expiresAt: 0, active: false };
+async function isActiveWatchPartyItem(itemId, apiKey) {
+    var active = false;
+    try {
+        var partyUri = EMBY_HOST + "/emby/WatchParty/List?api_key=" + apiKey;
+        var response = await ngx.fetch(partyUri, { max_response_body_size: 65535 });
+        if (response.ok) {
+            active = true;
+        }
+    } catch (e) {}
+    watchPartyItemCache = { key: itemId, expiresAt: 0, active: active };
+    return active;
+}
+
+async function getPlaybackPath(itemId, userId, apiKey, r) {
+    var isWatchPartyMedia = await isActiveWatchPartyItem(itemId, apiKey);
+    if (!isWatchPartyMedia) {
+    try {
+        var strmUri = EMBY_HOST + '/emby/Videos/' + itemId + '/stream.strm?api_key=' + apiKey;
+        var res = await ngx.fetch(strmUri, { max_response_body_size: 65535 });
+        if (res.ok) {
+            var url = (await res.text()).trim();
+            if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+                return url;
+            }
+        }
+    } catch (e) {}
+    }
+
+    return null;
+}
+
+async function redirect2Pan(r) {
+    var api_key = r.args.api_key || 'fixture-token';
+    var isWatchPartyMedia = await isActiveWatchPartyItem(itemId, api_key);
+
+    (async function() {
+        if (!getFromCache(cacheKey, r)) {
+        if (!isWatchPartyMedia) {
+            await getCachedXYUrl(alistNextPath, ua, nextItemId, cookie, r);
+        }
+        }
+    })();
+
+    var doesNotContainHttp = !embyRes.includes("http");
+    var doesNotContainDOCKER = !embyRes.includes("DOCKER_ADDRESS");
+    var contain115helper = embyRes.includes("P115StrmHelper");
+    // codex-emby-watchparty-routing-v4
+    var isLocalMediaPath =
+        doesNotContainHttp && doesNotContainDOCKER;
+    var isXiaoyaMediaPath =
+        embyRes.includes("DOCKER_ADDRESS") ||
+        embyRes.indexOf("http://127.0.0.1:80/d/") === 0;
+    var isGuardedWatchPartyPath = isWatchPartyMedia && isXiaoyaMediaPath;
+    if (isLocalMediaPath || isGuardedWatchPartyPath ||
+        (isWatchPartyMedia && contain115helper)) {
+        r.internalRedirect("@backend");
+        return;
+    }
+
+    if (doesNotContainHttp && doesNotContainDOCKER) {
+        r.internalRedirect("@backend");
+        return;
+    }
+
+    var alistFilePath = embyRes + '?sign=';
+    var alistRes = await getCachedXYUrl(alistFilePath, ua, itemId, cookie, r);
+    r.return(302, alistRes);
+}
+"""
+
+    def _run(self, script, nginx):
+        return subprocess.run(
+            [str(ROOM_AGNOSTIC_ROUTER)],
+            capture_output=True,
+            text=True,
+            env=_resolver_env(script, nginx),
+        )
+
+    def test_room_membership_is_removed_from_the_routing_decision(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(self.ROOM_AWARE)
+            nginx = _write_fake_nginx(root / "nginx")
+
+            first = self._run(script, nginx)
+            patched = script.read_text()
+            second = self._run(script, nginx)
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual("patched", first.stdout.strip())
+            self.assertEqual("already-present", second.stdout.strip())
+            self.assertEqual(patched, script.read_text())
+
+            for removed in (
+                "isActiveWatchPartyItem",
+                "isWatchPartyMedia",
+                "isGuardedWatchPartyPath",
+                "watchPartyItemCache",
+                "/emby/WatchParty/List",
+                "codex-emby-watchparty-routing-v4",
+            ):
+                self.assertNotIn(removed, patched)
+
+            # Xiaoya's own resolution survives intact.
+            self.assertIn("/stream.strm", patched)
+            self.assertIn("getCachedXYUrl(alistFilePath", patched)
+            self.assertIn("getCachedXYUrl(alistNextPath", patched)
+            self.assertIn("doesNotContainHttp && doesNotContainDOCKER", patched)
+            self.assertIn('r.internalRedirect("@backend")', patched)
+
+    def test_the_unwrapped_bodies_stay_balanced(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(self.ROOM_AWARE)
+            nginx = _write_fake_nginx(root / "nginx")
+            self.assertEqual(0, self._run(script, nginx).returncode)
+            patched = script.read_text()
+
+            self.assertEqual(
+                patched.count("{") - patched.count("}"),
+                self.ROOM_AWARE.count("{") - self.ROOM_AWARE.count("}"),
+            )
+            # A URL inside a string literal must not be mistaken for a comment.
+            self.assertIn("url.startsWith('http://')", patched)
+
+            module = root / "emby.mjs"
+            module.write_text(patched)
+            parsed = subprocess.run(
+                ["node", "--check", str(module)], capture_output=True, text=True
+            )
+            self.assertEqual(0, parsed.returncode, parsed.stderr)
+
+    def test_a_stock_script_is_accepted_unchanged(self):
+        stock = self.ROOM_AWARE
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            nginx = _write_fake_nginx(root / "nginx")
+            patched_once = root / "once.js"
+            patched_once.write_text(stock)
+            self.assertEqual(0, self._run(patched_once, nginx).returncode)
+
+            fresh = root / "fresh.js"
+            fresh.write_text(patched_once.read_text())
+            result = self._run(fresh, nginx)
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("already-present", result.stdout.strip())
+            self.assertEqual(patched_once.read_text(), fresh.read_text())
+
+    def test_restores_the_script_when_nginx_rejects_the_removal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(self.ROOM_AWARE)
+            nginx = _write_fake_nginx(root / "nginx", exit_code=1)
+
+            rejected = self._run(script, nginx)
+
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertEqual(self.ROOM_AWARE, script.read_text())
 
 
 class OpenListDirectLinkResolutionTests(unittest.TestCase):
@@ -1491,21 +1283,6 @@ class RepairStepDeploymentTests(unittest.TestCase):
                 self.assertIn(
                     '"$data_dir/%s"\n' % step, installer, installer_name
                 )
-
-    def test_the_routing_patch_keeps_every_xiaoya_host_rewrite(self):
-        # A media path reported as `http://xiaoya.host:5678/d/...` must be
-        # rewritten onto the resolution origin; dropping the rewrite sends the
-        # resolution back through the guarded location.
-        patcher = (DEPLOY_ROOT / "ensure-emby-direct-link-fallback.sh").read_text()
-        emitted = [
-            line
-            for line in patcher.splitlines()
-            if "var alistFilePath = embyRes.replace(" in line
-        ]
-        self.assertEqual(1, len(emitted))
-        for host in ("DOCKER_ADDRESS", "172.19.0.1:5678", "xiaoya.host:5678"):
-            self.assertIn(host, emitted[0])
-
 
 if __name__ == "__main__":
     unittest.main()

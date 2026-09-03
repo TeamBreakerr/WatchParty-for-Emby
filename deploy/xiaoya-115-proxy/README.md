@@ -86,14 +86,29 @@ as an Nginx idle timeout even though upgraded tunnels retain HTTP status 101.
 The log deliberately excludes addresses, request paths, query strings,
 headers, cookies, user agents and tokens.
 
-The installer also applies a room-scoped compatibility patch to Xiaoya's
-generated `emby.js`. It asks the authenticated `WatchParty/List` endpoint
-whether the requested item is the root/current episode of an active room. Only
-that media skips Xiaoya's early `stream.strm` and next-item probes and stays on
-Emby's `@backend`, where the dynamic 115 guard can protect the actual read.
-Ordinary playback retains Xiaoya's native probe, cached direct-link resolution,
-helper handling, next-item preload, and 302 response. Local media remains on the
-native Emby backend, and no MP4 or other output container is guessed.
+Routing follows what the client asked for, never who is watching. An earlier
+revision asked the authenticated `WatchParty/List` endpoint on every playback
+request and kept an active room's media on Emby's `@backend` "so the 115 guard
+can protect the read", which created the very server-side read it then
+protected. It also rested on a wrong premise. Measured against the provider, the
+limit is not on concurrent connections: reads spaced a few hundred milliseconds
+apart all succeed and several slow readers can hold one file open at once, while
+a third read that *starts together* with two others is rejected. Two
+participants therefore direct-play the same file perfectly, and a larger party
+is kept inside that burst by spacing the server-issued commands rather than by
+moving the bytes through Emby.
+
+`ensure-emby-room-agnostic-routing.sh` removes the room-aware patch and
+validates that nothing reintroduces it: no `WatchParty/List` lookup, no
+membership test, and Xiaoya's own `stream.strm` probe, cached direct-link
+resolution, helper handling and next-item preload all intact. Local media stays
+on the native Emby backend, and no MP4 or other output container is guessed. The
+plugin's `ProviderBurstPacer` owns the other half: participant commands that make
+a client open a new provider read (`PlayNow`, `Resume`, `Seek`) are released two
+per 400 ms window per party, so a party of two never waits while a third
+participant is delayed by one window instead of receiving a 403 that a
+direct-playing client cannot retry. `Pause` and `Stop` end a read rather than
+starting one and are never delayed.
 
 Both `emby.js` and `emby.conf` now use Docker DNS (`emby:6908`) for the Emby
 upstream. A literal container address becomes stale when Emby is recreated: the
@@ -182,9 +197,9 @@ recreated. Persistence is therefore provided at two levels:
    `install-emby-115-runtime.sh` installer immediately after `update_xiaoya`.
 
 The post-update installer restores the 115 route, its loopback guard, the
-Docker-DNS Emby upstream, the room-routing njs patch, the OpenList direct-link
-resolution and the worker descriptor limit in the regenerated runtime files,
-and the Nginx reload. It does not install a periodic cron, wrap
+Docker-DNS Emby upstream, the room-agnostic njs routing, the OpenList
+direct-link resolution, the manifest routing and the worker descriptor limit in
+the regenerated runtime files, and the Nginx reload. It does not install a periodic cron, wrap
 `/updateall`, or touch the WebSocket configuration.
 
 The installer also retains the existing in-container lightweight checks for the
