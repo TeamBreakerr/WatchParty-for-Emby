@@ -13,6 +13,7 @@ UPSTREAM_FIXER = DEPLOY_ROOT / "ensure-emby-docker-upstream.sh"
 OPENLIST_RESOLVER = DEPLOY_ROOT / "ensure-emby-openlist-resolver.sh"
 RLIMIT_INSTALLER = DEPLOY_ROOT / "ensure-emby-nginx-rlimit.sh"
 RLIMIT_CONFIG = DEPLOY_ROOT / "emby-nginx-rlimit.conf"
+MANIFEST_ROUTER = DEPLOY_ROOT / "ensure-emby-manifest-backend.sh"
 
 # Xiaoya's generated emby.js rewrites an Emby media path onto its own
 # listener before asking OpenList for the signed direct link.  The dynamic
@@ -933,6 +934,7 @@ async function redirect2Pan(r) {
                 "ensure-emby-docker-upstream.sh",
                 "ensure-emby-direct-link-fallback.sh",
                 "ensure-emby-openlist-resolver.sh",
+                "ensure-emby-manifest-backend.sh",
                 "emby-nginx-rlimit.conf",
                 "ensure-emby-nginx-rlimit.sh",
                 "updateall-emby-115-wrapper.sh",
@@ -948,6 +950,7 @@ async function redirect2Pan(r) {
                 "ensure-emby-docker-upstream.sh",
                 "ensure-emby-direct-link-fallback.sh",
                 "ensure-emby-openlist-resolver.sh",
+                "ensure-emby-manifest-backend.sh",
                 "ensure-emby-nginx-rlimit.sh",
             }
             for name in required_files:
@@ -1284,6 +1287,105 @@ class OpenListDirectLinkResolutionTests(unittest.TestCase):
             )
 
 
+class ServerRenderedManifestRoutingTests(unittest.TestCase):
+    """A manifest request asks the server to produce a stream.
+
+    Xiaoya routes `/videos/*/master` and `/videos/*/live` through njs next to
+    `/videos/*/original`, and answers all of them with a direct-link 302.  A
+    redirect to the original file on the provider's CDN cannot satisfy an
+    `.m3u8` request, so Emby Web's player fails and retries whenever it has to
+    transcode.
+    """
+
+    FIXTURE = """async function redirect2Pan(r) {
+    var api_key = r.args.api_key || 'fixture-token';
+
+    if (r.uri.indexOf("Subtitles") !== -1) {
+        r.internalRedirect("@backend");
+        return;
+    }
+
+    r.return(302, 'https://cdn.invalid/original.mp4');
+}
+"""
+
+    def _run(self, script, nginx):
+        return subprocess.run(
+            [str(MANIFEST_ROUTER)],
+            capture_output=True,
+            text=True,
+            env=_resolver_env(script, nginx),
+        )
+
+    def test_manifest_requests_stay_on_the_emby_backend(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(self.FIXTURE)
+            nginx = _write_fake_nginx(root / "nginx")
+
+            first = self._run(script, nginx)
+            patched = script.read_text()
+            second = self._run(script, nginx)
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual("patched", first.stdout.strip())
+            self.assertEqual("already-present", second.stdout.strip())
+            self.assertEqual(patched, script.read_text())
+
+            observed = subprocess.run(
+                [
+                    "node",
+                    "-e",
+                    patched
+                    + "function drive(uri){var actions=[];var r={uri:uri,"
+                    "args:{api_key:'token'},"
+                    "internalRedirect:function(v){actions.push(v)},"
+                    "return:function(status){actions.push(status)}};"
+                    "return redirect2Pan(r).then(function(){return actions})}"
+                    "Promise.all(["
+                    "drive('/emby/videos/1/master.m3u8'),"
+                    "drive('/emby/videos/1/live.m3u8'),"
+                    "drive('/emby/videos/1/original.mp4'),"
+                    "drive('/emby/videos/1/stream.mp4')"
+                    "]).then(function(v){process.stdout.write(JSON.stringify(v))})",
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(0, observed.returncode, observed.stderr)
+            self.assertEqual(
+                '[["@backend"],["@backend"],[302],[302]]', observed.stdout
+            )
+
+    def test_incomplete_patch_is_reported_instead_of_reapplied(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(
+                "    // codex-emby-manifest-backend-v1\n" + self.FIXTURE
+            )
+            nginx = _write_fake_nginx(root / "nginx")
+
+            result = self._run(script, nginx)
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("incomplete", result.stderr)
+
+    def test_missing_anchor_fails_without_touching_the_script(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text("var unrelated = 1;\n")
+            nginx = _write_fake_nginx(root / "nginx")
+
+            result = self._run(script, nginx)
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual("var unrelated = 1;\n", script.read_text())
+
+
 class NginxWorkerDescriptorLimitTests(unittest.TestCase):
     """A 1 MiB slice cache exhausts the stock 1024 descriptor soft limit.
 
@@ -1372,6 +1474,7 @@ class RepairStepDeploymentTests(unittest.TestCase):
     def test_both_installers_deploy_and_run_the_new_repair_steps(self):
         steps = (
             "ensure-emby-openlist-resolver.sh",
+            "ensure-emby-manifest-backend.sh",
             "ensure-emby-nginx-rlimit.sh",
         )
         for installer_name in (

@@ -125,6 +125,20 @@ resolution addresses the guarded location. Link resolution therefore stays
 metadata-only, and the guard keeps protecting the reads that Emby itself
 performs for active room media.
 
+Room membership is not the only boundary. Xiaoya routes `/videos/*/master` and
+`/videos/*/live` through njs next to `/videos/*/original` and
+`/videos/*/stream`, and answers all of them with a direct-link 302. Those two
+locations carry `.m3u8` manifests: the client is asking the server to produce a
+stream, and a redirect to the original file on the provider's CDN can never
+satisfy it. Emby Web requests `master.m3u8` whenever it has to transcode - HEVC
+it cannot decode, or an ASS subtitle it needs burned in - so a redirected
+manifest makes its player fail and retry, which is how one page can leave
+several transcode sessions behind. `ensure-emby-manifest-backend.sh` keeps
+every manifest on Emby's backend, in or out of a room, and leaves requests for
+the original file on Xiaoya's native direct-link path. The rule is the request
+class, not the room: ask for the original file and the client gets a direct
+link; ask the server to render a stream and Emby renders it.
+
 Nginx's worker descriptor limit is raised for the same slice cache. Each slice
 needs its own cache and temporary descriptor, so one multi-gigabyte playback
 exhausts Xiaoya's stock soft `RLIMIT_NOFILE` of 1024, logs
