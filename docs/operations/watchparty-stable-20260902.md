@@ -515,6 +515,8 @@ client: Emby for iOS
 | 只看状态码/`readyState` 判定"能播" | 转码首片可以 200 且完全解不出画面 | 看 `videoBuffered` 是否覆盖起播点 + 已解码帧数 |
 | 分层验证（路由 / 首片耗时 / 并发）就宣布房间可用 | 这三层全绿时藤本树仍然黑屏卡死 | 每个房间用真实播放器起播一次 |
 | 续播转码任由 Emby 拷贝音频流 | `-ss` 精确 seek 视频、拷贝音频只能从 Matroska cluster 起，首片音频超前最多数秒；hls.js 的 `maxBufferHole=0.1s` 拒绝跨越，永久黑屏且不报错 | njs 对带非零 `StartTimeTicks` 的清单注入 `AllowAudioStreamCopy=false` |
+| 相信外挂字幕的扩展名 | Emby 按扩展名判 `Codec`，Emby Web 只对 `ass`/`ssa` 启用 libass（SubtitlesOctopus）。`.ass` 里装 SRT → libass `Failed to start a track` → worker 抛错 → 被当成 `mediadecodeerror` → 反复重启流 → "当前没有兼容的流" | 按内容首行判定真实格式并改正扩展名；库里 37187 个 `.ass` 有 10041 个其实是 SRT |
+| 用裸 hls.js 探针代替 Emby Web 验证播放 | 裸播放器没有 `changeStream` 重启、没有 SubtitlesOctopus，整类失败都测不到；hls.js 版本也必须用 Emby 自带的那份（1.6.0-beta.2），否则 HEVC 支持不同会得出假结论 | 结构性失败只能由真实 Emby Web 复现；探针只用于验证流本身 |
 
 ## 8. 部署、持久化与更新行为
 
