@@ -1699,6 +1699,24 @@ class ServerRenderedManifestRoutingTests(unittest.TestCase):
 }
 """
 
+    LEGACY_BLOCK = """    // codex-emby-manifest-backend-v1
+    var isServerRenderedStream = r.uri.indexOf(".m3u8") !== -1;
+    if (isServerRenderedStream) {
+        r.internalRedirect("@backend");
+        return;
+    }
+
+"""
+
+    DRIVER = (
+        "function drive(uri,args){var actions=[];var r={uri:uri,"
+        "args:{api_key:'token'},variables:{args:args},"
+        "internalRedirect:function(v){actions.push(v)},"
+        "return:function(status){actions.push(status)}};"
+        "return redirect2Pan(r).then(function(){"
+        "return [actions,r.variables.args]})}"
+    )
+
     def _run(self, script, nginx):
         return subprocess.run(
             [str(MANIFEST_ROUTER)],
@@ -1706,6 +1724,20 @@ class ServerRenderedManifestRoutingTests(unittest.TestCase):
             text=True,
             env=_resolver_env(script, nginx),
         )
+
+    def _drive(self, patched, calls):
+        program = (
+            patched
+            + self.DRIVER
+            + "Promise.all(["
+            + ",".join("drive(%s,%s)" % (json.dumps(uri), json.dumps(args)) for uri, args in calls)
+            + "]).then(function(v){process.stdout.write(JSON.stringify(v))})"
+        )
+        observed = subprocess.run(
+            ["node", "-e", program], capture_output=True, text=True
+        )
+        self.assertEqual(0, observed.returncode, observed.stderr)
+        return json.loads(observed.stdout)
 
     def test_manifest_requests_stay_on_the_emby_backend(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1723,30 +1755,100 @@ class ServerRenderedManifestRoutingTests(unittest.TestCase):
             self.assertEqual("already-present", second.stdout.strip())
             self.assertEqual(patched, script.read_text())
 
-            observed = subprocess.run(
+            routes = self._drive(
+                patched,
                 [
-                    "node",
-                    "-e",
-                    patched
-                    + "function drive(uri){var actions=[];var r={uri:uri,"
-                    "args:{api_key:'token'},"
-                    "internalRedirect:function(v){actions.push(v)},"
-                    "return:function(status){actions.push(status)}};"
-                    "return redirect2Pan(r).then(function(){return actions})}"
-                    "Promise.all(["
-                    "drive('/emby/videos/1/master.m3u8'),"
-                    "drive('/emby/videos/1/live.m3u8'),"
-                    "drive('/emby/videos/1/original.mp4'),"
-                    "drive('/emby/videos/1/stream.mp4')"
-                    "]).then(function(v){process.stdout.write(JSON.stringify(v))})",
+                    ("/emby/videos/1/master.m3u8", ""),
+                    ("/emby/videos/1/live.m3u8", ""),
+                    ("/emby/videos/1/original.mp4", ""),
+                    ("/emby/videos/1/stream.mp4", ""),
                 ],
-                capture_output=True,
-                text=True,
             )
 
-            self.assertEqual(0, observed.returncode, observed.stderr)
             self.assertEqual(
-                '[["@backend"],["@backend"],[302],[302]]', observed.stdout
+                [["@backend"], ["@backend"], [302], [302]],
+                [route[0] for route in routes],
+            )
+
+    def test_a_resumed_manifest_refuses_audio_stream_copy(self):
+        """Emby seeks video accurately but emits copied audio from the
+        enclosing Matroska cluster, so the first segment carries audio ahead of
+        video and the player never reaches the position it seeks to."""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(self.FIXTURE)
+            nginx = _write_fake_nginx(root / "nginx")
+
+            self._run(script, nginx)
+            patched = script.read_text()
+
+            resumed, from_start, absent, decided, lowercase, original = self._drive(
+                patched,
+                [
+                    ("/emby/videos/1/main.m3u8", "StartTimeTicks=30001329&PlaySessionId=x"),
+                    ("/emby/videos/1/main.m3u8", "StartTimeTicks=0&PlaySessionId=x"),
+                    ("/emby/videos/1/main.m3u8", "PlaySessionId=x"),
+                    (
+                        "/emby/videos/1/main.m3u8",
+                        "StartTimeTicks=30001329&AllowAudioStreamCopy=true",
+                    ),
+                    ("/emby/videos/1/main.m3u8", "starttimeticks=30001329"),
+                    ("/emby/videos/1/original.mkv", "StartTimeTicks=30001329"),
+                ],
+            )
+
+            self.assertEqual(
+                "StartTimeTicks=30001329&PlaySessionId=x&AllowAudioStreamCopy=false",
+                resumed[1],
+            )
+            self.assertEqual(
+                "starttimeticks=30001329&AllowAudioStreamCopy=false", lowercase[1]
+            )
+
+            # Starting at zero produces an aligned first segment, and a caller
+            # that already decided owns the decision.
+            self.assertEqual("StartTimeTicks=0&PlaySessionId=x", from_start[1])
+            self.assertEqual("PlaySessionId=x", absent[1])
+            self.assertEqual(
+                "StartTimeTicks=30001329&AllowAudioStreamCopy=true", decided[1]
+            )
+
+            # A direct-link request is answered by Xiaoya, never by Emby, so it
+            # has no transcode to constrain.
+            self.assertEqual([302], original[0])
+            self.assertEqual("StartTimeTicks=30001329", original[1])
+
+    def test_a_legacy_routing_block_is_migrated_in_place(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            anchor = '    if (r.uri.indexOf("Subtitles") !== -1) {'
+            script.write_text(
+                self.FIXTURE.replace(anchor, self.LEGACY_BLOCK + anchor, 1)
+            )
+            nginx = _write_fake_nginx(root / "nginx")
+
+            migrated = self._run(script, nginx)
+            patched = script.read_text()
+
+            self.assertEqual(0, migrated.returncode, migrated.stderr)
+            self.assertEqual("patched", migrated.stdout.strip())
+            self.assertNotIn("codex-emby-manifest-backend-v1", patched)
+            self.assertEqual(1, patched.count("codex-emby-manifest-backend-v2"))
+            self.assertEqual(1, patched.count("var isServerRenderedStream"))
+            self.assertEqual(
+                "already-present", self._run(script, nginx).stdout.strip()
+            )
+
+            resumed, = self._drive(
+                patched,
+                [("/emby/videos/1/main.m3u8", "StartTimeTicks=30001329")],
+            )
+            self.assertEqual(["@backend"], resumed[0])
+            self.assertEqual(
+                "StartTimeTicks=30001329&AllowAudioStreamCopy=false", resumed[1]
             )
 
     def test_incomplete_patch_is_reported_instead_of_reapplied(self):
@@ -1754,7 +1856,7 @@ class ServerRenderedManifestRoutingTests(unittest.TestCase):
             root = Path(temp_dir)
             script = root / "emby.js"
             script.write_text(
-                "    // codex-emby-manifest-backend-v1\n" + self.FIXTURE
+                "    // codex-emby-manifest-backend-v2\n" + self.FIXTURE
             )
             nginx = _write_fake_nginx(root / "nginx")
 

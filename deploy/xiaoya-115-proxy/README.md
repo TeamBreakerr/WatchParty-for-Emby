@@ -218,6 +218,24 @@ the original file on Xiaoya's native direct-link path. The rule is the request
 class, not the room: ask for the original file and the client gets a direct
 link; ask the server to render a stream and Emby renders it.
 
+The same script adds `AllowAudioStreamCopy=false` to a manifest that resumes at
+a non-zero position. Emby seeks such a session with `-ss` in front of `-i`, so
+the video - decoded, and filtered when an ASS subtitle is burned in - lands
+exactly on the requested position, while a `-c:a copy` audio stream can only be
+emitted from the enclosing Matroska cluster, up to several seconds earlier. The
+first segment then carries audio ahead of video; hls.js anchors the fragment on
+that earliest sample, so the video buffer starts *after* the position the player
+seeks to, and its `maxBufferHole` of 0.1s makes it refuse to skip the gap.
+`readyState` never passes `HAVE_METADATA`, no frame is decoded, and playback
+hangs on a black screen while reporting no error at all. Measured on `藤本树
+S01E01` resuming at 3s: audio began 3.003s before video, the video buffer began
+at 6.003s while the player sat at 3s, and zero frames decoded; forcing the audio
+re-encode brought the two to 0.075s apart and playback started normally. The
+rule keys off the resume position alone because the request does not reveal
+Emby's copy decision, so a session that would have remuxed audio re-encodes it
+instead - a fraction of a core next to the video work it is already doing, and
+what every FLAC title on this server already does.
+
 A placeholder resolution is a failure, not media. When Xiaoya cannot produce a
 real link - an expired share, a failed `AliyundriveShare2Pan115` transfer,
 provider rate limiting - its `/d/` handler answers `302` to

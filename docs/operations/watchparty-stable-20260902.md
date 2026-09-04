@@ -512,6 +512,9 @@ client: Emby for iOS
 | 用宿主机重型 systemd 看门狗守 Xiaoya | 更新机制重复、维护面扩大 | `/data` + XiaoyaKeeper 钩子 + 容器内轻量检查 |
 | HLS 失败就重新请求 PlaybackInfo | 会创建新 PlaySession，与 WatchParty generation 竞争 | 同 `streamInfo` 一次性重试 |
 | 重试时丢弃 `AbortSignal` | 返回/换集后会复活旧播放器 | 复用 signal，明确跳过 AbortError |
+| 只看状态码/`readyState` 判定"能播" | 转码首片可以 200 且完全解不出画面 | 看 `videoBuffered` 是否覆盖起播点 + 已解码帧数 |
+| 分层验证（路由 / 首片耗时 / 并发）就宣布房间可用 | 这三层全绿时藤本树仍然黑屏卡死 | 每个房间用真实播放器起播一次 |
+| 续播转码任由 Emby 拷贝音频流 | `-ss` 精确 seek 视频、拷贝音频只能从 Matroska cluster 起，首片音频超前最多数秒；hls.js 的 `maxBufferHole=0.1s` 拒绝跨越，永久黑屏且不报错 | njs 对带非零 `StartTimeTicks` 的清单注入 `AllowAudioStreamCopy=false` |
 
 ## 8. 部署、持久化与更新行为
 

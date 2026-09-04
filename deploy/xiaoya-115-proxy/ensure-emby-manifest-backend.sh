@@ -13,10 +13,31 @@ set -eu
 #
 # A manifest therefore always stays on Emby's backend, in or out of a room.
 # Requests for the original file keep Xiaoya's native direct-link behavior.
+#
+# A manifest that resumes at a non-zero position additionally refuses audio
+# stream copy.  Emby seeks such a session with `-ss` in front of `-i`: the video
+# is decoded (and filtered, when an ASS subtitle is burned in) and therefore
+# lands exactly on the requested position, while a `-c:a copy` audio stream can
+# only be emitted from the enclosing Matroska cluster - up to several seconds
+# earlier.  The first segment then carries audio ahead of video, hls.js anchors
+# the fragment on that earliest sample, and the video buffer ends up starting
+# after the position the player seeks to.  Its `maxBufferHole` is 0.1s, so it
+# refuses to skip the gap: `readyState` never passes HAVE_METADATA, no frame is
+# ever decoded, and playback hangs on a black screen without reporting an error.
+# Measured on `藤本树 S01E01` resuming at 3s: audio started 3.003s before video,
+# the video buffer began at 6.003s while the player sat at 3s, and zero frames
+# decoded until `AllowAudioStreamCopy=false` realigned them to 0.026s apart.
+#
+# The rule keys off the resume position alone, not off Emby's copy decision,
+# which the request does not reveal.  A session that would have remuxed audio
+# therefore re-encodes it; that costs a fraction of a core next to the video
+# work such a session is already doing, and it is what every FLAC title on this
+# server already does.
 
 njs_script=${EMBY_NJS_SCRIPT:-/etc/nginx/http.d/emby.js}
 nginx_bin=${NGINX_BIN:-nginx}
-marker=codex-emby-manifest-backend-v1
+marker=codex-emby-manifest-backend-v2
+legacy_marker=codex-emby-manifest-backend-v1
 anchor='if (r.uri.indexOf("Subtitles") !== -1) {'
 reload=0
 
@@ -43,8 +64,11 @@ count_lines() {
 validate_manifest_route() {
     file=$1
     [ "$(count_lines "$file" "$marker")" -eq 1 ] \
+        && [ "$(count_lines "$file" "$legacy_marker")" -eq 0 ] \
         && grep -Fq 'var isServerRenderedStream = r.uri.indexOf(".m3u8") !== -1;' "$file" \
         && grep -Fq 'if (isServerRenderedStream) {' "$file" \
+        && grep -Fq 'if (resumesMidStream && !decidesAudioCopy) {' "$file" \
+        && grep -Fq 'r.variables.args = manifestArgs + "&AllowAudioStreamCopy=false";' "$file" \
         && [ "$(count_lines "$file" "$anchor")" -eq 1 ]
 }
 
@@ -95,13 +119,53 @@ trap 'exit 1' HUP INT TERM
 cp -p "$njs_script" "$backup_script"
 restore_needed=1
 
-if ! awk -v marker="$marker" -v anchor="$anchor" '
+# A v1 block is this script's own output, so it is removed by shape: from its
+# marker through the closing brace at the same indent, plus the blank line the
+# insertion added after it.  Anything else keeps the marker and fails the
+# validation below, which rolls the file back untouched.
+if ! awk -v marker="$marker" -v legacy="$legacy_marker" -v anchor="$anchor" '
+    index($0, legacy) > 0 && dropping == 0 && dropped == 0 {
+        dropping = 1
+        dropped_indent = $0
+        sub(/[^[:space:]].*$/, "", dropped_indent)
+        next
+    }
+
+    dropping == 1 {
+        if ($0 == dropped_indent "}") {
+            dropping = 2
+            dropped = 1
+        }
+        next
+    }
+
+    dropping == 2 {
+        dropping = 0
+        if ($0 == "") { next }
+    }
+
     index($0, anchor) > 0 && !added {
         indent = $0
         sub(/[^[:space:]].*$/, "", indent)
         print indent "// " marker
         print indent "var isServerRenderedStream = r.uri.indexOf(\".m3u8\") !== -1;"
         print indent "if (isServerRenderedStream) {"
+        print indent "    var manifestArgs = r.variables.args || \"\";"
+        print indent "    var manifestFields = manifestArgs.split(\"&\");"
+        print indent "    var resumesMidStream = false;"
+        print indent "    var decidesAudioCopy = false;"
+        print indent "    for (var i = 0; i < manifestFields.length; i++) {"
+        print indent "        var manifestField = manifestFields[i].split(\"=\");"
+        print indent "        var manifestKey = manifestField[0].toLowerCase();"
+        print indent "        if (manifestKey === \"starttimeticks\") {"
+        print indent "            resumesMidStream = Number(manifestField[1]) > 0;"
+        print indent "        } else if (manifestKey === \"allowaudiostreamcopy\") {"
+        print indent "            decidesAudioCopy = true;"
+        print indent "        }"
+        print indent "    }"
+        print indent "    if (resumesMidStream && !decidesAudioCopy) {"
+        print indent "        r.variables.args = manifestArgs + \"&AllowAudioStreamCopy=false\";"
+        print indent "    }"
         print indent "    r.internalRedirect(\"@backend\");"
         print indent "    return;"
         print indent "}"
