@@ -72,6 +72,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "EMBY_NJS_SCRIPT": str(emby_js),
                 "EMBY_NGINX_CONFIG": str(emby_conf),
                 "NGINX_BIN": str(fake_nginx),
+                "EMBY_RESOLVER_ADDRESS": "127.0.0.11",
             }
 
             first = subprocess.run(
@@ -131,6 +132,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "EMBY_NJS_SCRIPT": str(emby_js),
                 "EMBY_NGINX_CONFIG": str(emby_conf),
                 "NGINX_BIN": str(fake_nginx),
+                "EMBY_RESOLVER_ADDRESS": "127.0.0.11",
             }
 
             first = subprocess.run(
@@ -180,6 +182,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "EMBY_NJS_SCRIPT": str(emby_js),
                 "EMBY_NGINX_CONFIG": str(emby_conf),
                 "NGINX_BIN": str(fake_nginx),
+                "EMBY_RESOLVER_ADDRESS": "127.0.0.11",
             }
 
             first = subprocess.run(
@@ -228,6 +231,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                     "EMBY_NJS_SCRIPT": str(emby_js),
                     "EMBY_NGINX_CONFIG": str(emby_conf),
                     "NGINX_BIN": str(fake_nginx),
+                    "EMBY_RESOLVER_ADDRESS": "127.0.0.11",
                 },
             )
             patched = emby_conf.read_text()
@@ -236,6 +240,83 @@ class Xiaoya115ProxyTests(unittest.TestCase):
             self.assertIn("set $emby http://emby:6908;", patched)
             self.assertNotIn("10.250.0.99", patched)
             self.assertEqual(1, patched.count("resolver 127.0.0.11"))
+
+    def test_the_resolver_address_comes_from_the_container(self):
+        # Docker's embedded resolver has been 127.0.0.11 for as long as
+        # libnetwork has existed, but it is absent under host networking and
+        # need not be that address on another runtime. Use whatever this
+        # container was actually handed.
+        generated = (
+            "server{\n"
+            "    listen 2345;\n"
+            "    set $emby http://emby:6908;\n"
+            "    location @backend {\n"
+            "        proxy_pass $emby;\n"
+            "    }\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            emby_js = root / "emby.js"
+            emby_conf = root / "emby.conf"
+            resolv = root / "resolv.conf"
+            fake_nginx = root / "nginx"
+            emby_js.write_text("var EMBY_HOST = 'http://emby:6908';\n")
+            emby_conf.write_text(generated)
+            resolv.write_text("search .\nnameserver 10.0.2.3\nnameserver 8.8.8.8\n")
+            fake_nginx.write_text("#!/bin/sh\nexit 0\n")
+            fake_nginx.chmod(0o755)
+
+            result = subprocess.run(
+                [str(UPSTREAM_FIXER)],
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "EMBY_NJS_SCRIPT": str(emby_js),
+                    "EMBY_NGINX_CONFIG": str(emby_conf),
+                    "NGINX_BIN": str(fake_nginx),
+                    "EMBY_RESOLV_CONF": str(resolv),
+                },
+            )
+            patched = emby_conf.read_text()
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("resolver 10.0.2.3 valid=10s", patched)
+            self.assertNotIn("127.0.0.11", patched)
+
+    def test_a_missing_resolv_conf_falls_back_to_the_docker_resolver(self):
+        generated = (
+            "server{\n"
+            "    listen 2345;\n"
+            "    set $emby http://emby:6908;\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            emby_js = root / "emby.js"
+            emby_conf = root / "emby.conf"
+            fake_nginx = root / "nginx"
+            emby_js.write_text("var EMBY_HOST = 'http://emby:6908';\n")
+            emby_conf.write_text(generated)
+            fake_nginx.write_text("#!/bin/sh\nexit 0\n")
+            fake_nginx.chmod(0o755)
+
+            result = subprocess.run(
+                [str(UPSTREAM_FIXER)],
+                capture_output=True,
+                text=True,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "EMBY_NJS_SCRIPT": str(emby_js),
+                    "EMBY_NGINX_CONFIG": str(emby_conf),
+                    "NGINX_BIN": str(fake_nginx),
+                    "EMBY_RESOLV_CONF": str(root / "absent"),
+                },
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("resolver 127.0.0.11 valid=10s", emby_conf.read_text())
 
     def test_an_existing_server_resolver_is_never_duplicated(self):
         existing = (
@@ -265,6 +346,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                     "EMBY_NJS_SCRIPT": str(emby_js),
                     "EMBY_NGINX_CONFIG": str(emby_conf),
                     "NGINX_BIN": str(fake_nginx),
+                    "EMBY_RESOLVER_ADDRESS": "127.0.0.11",
                 },
             )
             patched = emby_conf.read_text()
@@ -295,6 +377,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "EMBY_NJS_SCRIPT": str(emby_js),
                 "EMBY_NGINX_CONFIG": str(emby_conf),
                 "NGINX_BIN": str(fake_nginx),
+                "EMBY_RESOLVER_ADDRESS": "127.0.0.11",
             }
 
             result = subprocess.run(

@@ -18,7 +18,19 @@ njs_script=${EMBY_NJS_SCRIPT:-/etc/nginx/http.d/emby.js}
 emby_config=${EMBY_NGINX_CONFIG:-/etc/nginx/http.d/emby.conf}
 nginx_bin=${NGINX_BIN:-nginx}
 resolver_marker='# watchparty-emby-docker-dns'
-resolver_line="resolver 127.0.0.11 valid=10s ipv6=off; $resolver_marker"
+resolv_conf=${EMBY_RESOLV_CONF:-/etc/resolv.conf}
+upstream_host=${EMBY_UPSTREAM_HOST:-emby}
+# Docker writes its embedded resolver into every container's resolv.conf, and it
+# has been 127.0.0.11 for as long as libnetwork has existed - but it is absent
+# under host networking and need not be that address on another runtime. Take
+# whatever this container was actually given, and only fall back to the
+# well-known address when resolv.conf names none.
+resolver_address=${EMBY_RESOLVER_ADDRESS:-}
+if [ -z "$resolver_address" ] && [ -r "$resolv_conf" ]; then
+    resolver_address=$(awk '$1 == "nameserver" { print $2; exit }' "$resolv_conf")
+fi
+resolver_address=${resolver_address:-127.0.0.11}
+resolver_line="resolver $resolver_address valid=10s ipv6=off; $resolver_marker"
 reload=0
 
 case "${1:-}" in
@@ -87,6 +99,15 @@ validate_upstream() {
         && server_blocks_resolve_docker_dns "$emby_config"
 }
 
+# Advisory only: without any resolver a variable proxy_pass fails too, so a
+# name that does not resolve is worth reporting but not worth refusing over.
+warn_if_upstream_unresolvable() {
+    command -v getent >/dev/null 2>&1 || return 0
+    getent hosts "$upstream_host" >/dev/null 2>&1 && return 0
+    echo "warning: $upstream_host does not resolve from this container;" \
+        "the Docker DNS resolver may not be able to answer for it" >&2
+}
+
 reload_nginx() {
     if [ "$reload" -eq 1 ] && [ -s /run/nginx/nginx.pid ]; then
         "$nginx_bin" -s reload
@@ -128,6 +149,8 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+
+warn_if_upstream_unresolvable
 
 cp -p "$njs_script" "$backup_njs"
 cp -p "$emby_config" "$backup_config"
