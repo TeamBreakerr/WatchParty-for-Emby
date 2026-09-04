@@ -2784,12 +2784,8 @@ namespace WatchPartyForEmby
         {
             var candidates = _sessionManager.Sessions
                 .Where(session => session != null
-                    && string.Equals(session.UserId, userId, StringComparison.OrdinalIgnoreCase)
-                    && (string.IsNullOrEmpty(itemId)
-                        || string.Equals(
-                            session.NowPlayingItem?.Id,
-                            itemId,
-                            StringComparison.OrdinalIgnoreCase)))
+                    && EmbyIdentifier.Matches(session.UserId, userId)
+                    && SessionPlaysItem(session, itemId))
                 .ToList();
 
             if (!string.IsNullOrEmpty(deviceId))
@@ -2825,6 +2821,35 @@ namespace WatchPartyForEmby
             return candidates.Count == 1 ? candidates[0] : null;
         }
 
+        /// <summary>
+        /// The browser reports the item id it built its playback URL from, which is not
+        /// the shape the session carries. Resolve both through the library so either
+        /// shape identifies the same item, and keep an absent id permissive: the device
+        /// match and the master-session check below are what actually authorize a seek.
+        /// </summary>
+        private bool SessionPlaysItem(SessionInfo session, string itemId)
+        {
+            if (string.IsNullOrEmpty(itemId))
+            {
+                return true;
+            }
+
+            var playing = session?.NowPlayingItem;
+            if (playing == null)
+            {
+                return false;
+            }
+
+            if (EmbyIdentifier.Matches(playing.Id, itemId))
+            {
+                return true;
+            }
+
+            var requested = _libraryManager.GetItemById(itemId);
+            var current = _libraryManager.GetItemById(playing.Id);
+            return requested != null && current != null && requested.Id == current.Id;
+        }
+
         private async Task<bool> HandleExplicitMasterSeekCoreAsync(
             string sessionId,
             string userId,
@@ -2838,14 +2863,10 @@ namespace WatchPartyForEmby
             var session = _sessionManager.Sessions.FirstOrDefault(candidate =>
                 string.Equals(candidate?.Id, sessionId, StringComparison.Ordinal));
             if (session == null
-                || !string.Equals(session.UserId, userId, StringComparison.OrdinalIgnoreCase)
+                || !EmbyIdentifier.Matches(session.UserId, userId)
                 || (!string.IsNullOrEmpty(deviceId)
                     && !string.Equals(session.DeviceId, deviceId, StringComparison.Ordinal))
-                || (!string.IsNullOrEmpty(itemId)
-                    && !string.Equals(
-                        session.NowPlayingItem?.Id,
-                        itemId,
-                        StringComparison.OrdinalIgnoreCase)))
+                || !SessionPlaysItem(session, itemId))
             {
                 return false;
             }
