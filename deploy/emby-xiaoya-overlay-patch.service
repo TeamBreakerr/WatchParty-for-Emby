@@ -1,0 +1,10 @@
+[Unit]
+Description=Reapply the Xiaoya Emby proxy overlays
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec xiaoya /data/install-emby-115-runtime.sh --reload
+Nice=10
+IOSchedulingClass=idle

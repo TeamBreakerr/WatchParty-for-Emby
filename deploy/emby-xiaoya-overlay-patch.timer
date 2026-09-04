@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep the Xiaoya Emby proxy overlays applied
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=20s
+Persistent=true
+Unit=emby-xiaoya-overlay-patch.service
+
+[Install]
+WantedBy=timers.target

@@ -95,13 +95,23 @@ if [ -e "$runtime_config" ]; then
     cp -p "$runtime_config" "$runtime_backup"
 fi
 
+# A reload is only safe to do when something actually changed: Nginx keeps the
+# previous workers alive until their connections finish, and the WebSocket
+# timeout is 24 hours, so reloading on every scheduled run would pile up worker
+# generations holding idle tunnels.
+changed=0
 if ! grep -Fq '/data/emby-115-locations.conf' "$default_config"; then
     sed -i "/^[[:space:]]*location \/d\/ {/i\\$server_include" "$default_config"
+    changed=1
 fi
 if ! grep -Fq '/data/emby-115-access.conf' "$default_config"; then
     sed -i "/^[[:space:]]*location \/d\/ {/a\\$access_include" "$default_config"
+    changed=1
 fi
-cp -p "$data_dir/emby-115-throttle.conf" "$runtime_config"
+if ! cmp -s "$data_dir/emby-115-throttle.conf" "$runtime_config"; then
+    cp -p "$data_dir/emby-115-throttle.conf" "$runtime_config"
+    changed=1
+fi
 
 # Each repair validates its own result and restores its file on failure, so one
 # incompatibility must not stop the rest: this installer runs unattended from
@@ -118,7 +128,16 @@ for repair in \
     ensure-emby-placeholder-guard.sh \
     ensure-emby-manifest-backend.sh \
     ensure-emby-nginx-rlimit.sh; do
-    if ! "$data_dir/$repair"; then
+    if repair_output=$("$data_dir/$repair"); then
+        printf '%s\n' "$repair_output"
+        # Some repairs stay silent when there is nothing to do; only an
+        # explicit message means the on-disk configuration changed.
+        case $repair_output in
+            ''|already-present) ;;
+            *) changed=1 ;;
+        esac
+    else
+        printf '%s\n' "$repair_output"
         echo "repair failed: $repair" >&2
         failed_repairs="$failed_repairs $repair"
     fi
@@ -142,7 +161,7 @@ for marker in \
 done
 
 install_committed=1
-if [ "${1:-}" = "--reload" ]; then
+if [ "${1:-}" = "--reload" ] && [ "$changed" -eq 1 ]; then
     "$nginx_bin" -s reload
 fi
 

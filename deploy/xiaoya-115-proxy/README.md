@@ -206,6 +206,18 @@ The outer Nginx Proxy Manager has a native persistent override point:
 location in NPM's database-backed Advanced configuration. Both live under
 NPM's `/data` mount and are independent of Xiaoya container updates.
 
+Recovery cannot depend on anything Xiaoya owns. Both mechanisms that used to
+restore the overlays live inside the container and are replaced when it is
+recreated - `/etc/crontabs/root` for the periodic check, and XiaoyaKeeper's
+`mycmd.txt` hook, which XiaoyaKeeper itself rewrites. A restart was observed
+that regenerated the configuration with neither of them firing, leaving every
+overlay off and playback answering 500 for hours. `emby-xiaoya-overlay-patch.timer`
+on the host therefore reapplies `install-emby-115-runtime.sh` on a schedule,
+the same pattern that reliably restores the Emby Web patch. The installer
+reloads Nginx only when a repair actually changed something, because a reload
+keeps the previous workers alive until their connections end and the WebSocket
+timeout is 24 hours.
+
 Xiaoya's image does not automatically include an Nginx file from `/data`.
 `/etc/nginx/http.d` belongs to the image and is replaced when the container is
 recreated. Persistence is therefore provided at two levels:

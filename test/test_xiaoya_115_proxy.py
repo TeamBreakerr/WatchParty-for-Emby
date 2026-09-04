@@ -910,10 +910,31 @@ class PostUpdateRepairCoverageTests(unittest.TestCase):
             "the next Xiaoya restart",
         )
 
+    def test_a_scheduled_run_reloads_only_after_a_real_change(self):
+        # Nginx keeps the previous workers until their connections end, and the
+        # WebSocket timeout is 24 hours, so an unconditional reload every five
+        # minutes would pile up worker generations holding idle tunnels.
+        runtime = (DEPLOY_ROOT / "install-emby-115-runtime.sh").read_text()
+        self.assertIn('[ "$changed" -eq 1 ]', runtime)
+        self.assertIn("changed=0", runtime)
+        # Silence also means "nothing changed": two repairs print nothing
+        # when they are already applied.
+        self.assertIn("''|already-present) ;;", runtime)
+
+    def test_the_host_timer_owns_recovery(self):
+        # Both in-container mechanisms are replaced when Xiaoya is recreated:
+        # /etc/crontabs/root and XiaoyaKeeper's mycmd.txt hook.
+        unit = (REPO_ROOT / "deploy" / "emby-xiaoya-overlay-patch.service").read_text()
+        timer = (REPO_ROOT / "deploy" / "emby-xiaoya-overlay-patch.timer").read_text()
+        self.assertIn("install-emby-115-runtime.sh --reload", unit)
+        self.assertIn("docker exec xiaoya", unit)
+        self.assertIn("OnUnitActiveSec=", timer)
+        self.assertIn("Persistent=true", timer)
+
     def test_one_failed_repair_does_not_stop_the_others(self):
         runtime = (DEPLOY_ROOT / "install-emby-115-runtime.sh").read_text()
         self.assertIn("failed_repairs", runtime)
-        self.assertIn('if ! "$data_dir/$repair"; then', runtime)
+        self.assertIn('repair_output=$("$data_dir/$repair")', runtime)
         self.assertIn("incomplete runtime installation", runtime)
 
 
