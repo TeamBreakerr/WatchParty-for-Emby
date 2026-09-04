@@ -59,6 +59,43 @@ namespace WatchPartyForEmby.Tests
         }
 
         [Fact]
+        public void ARisingLatencyIsTrackedFasterThanAFallingOne()
+        {
+            // Within one sitting the measurements climb - 1441, 1025, 3247, 3732 ms
+            // were measured on one device in fourteen minutes - and a symmetric
+            // average is structurally half a step behind a signal that climbs. That
+            // lag is the residual the viewer actually feels on resume.
+            var estimator = CreateEstimator(
+                smoothingFactor: 0.25,
+                risingSmoothingFactor: 0.75);
+
+            var first = ObserveResume(
+                estimator, RoomA, "ios", Origin, TimeSpan.FromSeconds(1));
+            var risen = ObserveResume(
+                estimator,
+                RoomA,
+                "ios",
+                Origin + TimeSpan.FromMinutes(1),
+                TimeSpan.FromSeconds(3));
+            var fallen = ObserveResume(
+                estimator,
+                RoomA,
+                "ios",
+                Origin + TimeSpan.FromMinutes(2),
+                TimeSpan.FromMilliseconds(500));
+
+            Assert.Equal(TimeSpan.FromSeconds(1), first);
+
+            // Most of a slower measurement is adopted at once: the client got slower
+            // and tends to stay that way.
+            Assert.Equal(TimeSpan.FromSeconds(2.5), risen);
+
+            // One lucky fast resume must not discard the knowledge that this client
+            // can be slow, so it is only taken a quarter of the way.
+            Assert.Equal(TimeSpan.FromSeconds(2), fallen);
+        }
+
+        [Fact]
         public void RoomsLearnIndependently()
         {
             // Resume latency is dominated by what the client must do to produce the
@@ -264,14 +301,16 @@ namespace WatchPartyForEmby.Tests
         }
 
         private static ParticipantResumeLatencyEstimator CreateEstimator(
-            double smoothingFactor)
+            double smoothingFactor,
+            double? risingSmoothingFactor = null)
         {
             return new ParticipantResumeLatencyEstimator(
                 initialEstimate: TimeSpan.Zero,
                 minimumEstimate: TimeSpan.Zero,
                 maximumEstimate: TimeSpan.FromSeconds(6),
                 sampleTimeout: TimeSpan.FromSeconds(30),
-                smoothingFactor: smoothingFactor);
+                smoothingFactor: smoothingFactor,
+                risingSmoothingFactor: risingSmoothingFactor);
         }
     }
 }

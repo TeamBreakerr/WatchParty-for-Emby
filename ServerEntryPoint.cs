@@ -64,7 +64,8 @@ namespace WatchPartyForEmby
                 minimumEstimate: TimeSpan.Zero,
                 maximumEstimate: TimeSpan.FromSeconds(6),
                 sampleTimeout: TimeSpan.FromSeconds(30),
-                smoothingFactor: 0.5);
+                smoothingFactor: 0.25,
+                risingSmoothingFactor: 0.75);
         private readonly AcknowledgedPlaybackStateCommandRetrier _playbackStateCommandRetrier =
             new AcknowledgedPlaybackStateCommandRetrier(
                 PauseCommandMaxAttempts,

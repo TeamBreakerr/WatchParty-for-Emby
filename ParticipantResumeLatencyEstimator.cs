@@ -47,13 +47,27 @@ namespace WatchPartyForEmby
         private readonly TimeSpan _maximumEstimate;
         private readonly TimeSpan _sampleTimeout;
         private readonly double _smoothingFactor;
+        private readonly double _risingSmoothingFactor;
 
+        /// <param name="smoothingFactor">
+        /// How much of an observation *below* the current estimate is adopted.
+        /// </param>
+        /// <param name="risingSmoothingFactor">
+        /// How much of an observation *above* it is adopted; defaults to the same
+        /// value. Resume latency within one sitting is not stationary - measured
+        /// 1441, 1025, 3247 then 3732 ms - and a symmetric average is structurally
+        /// half a step behind a signal that climbs, which is exactly the residual a
+        /// viewer feels. A resume that took longer than expected says the client got
+        /// slower and tends to stay that way, while one lucky fast resume should not
+        /// immediately discard the knowledge that it can be slow.
+        /// </param>
         public ParticipantResumeLatencyEstimator(
             TimeSpan initialEstimate,
             TimeSpan minimumEstimate,
             TimeSpan maximumEstimate,
             TimeSpan sampleTimeout,
-            double smoothingFactor)
+            double smoothingFactor,
+            double? risingSmoothingFactor = null)
         {
             if (minimumEstimate < TimeSpan.Zero)
             {
@@ -71,7 +85,13 @@ namespace WatchPartyForEmby
             {
                 throw new ArgumentOutOfRangeException(nameof(smoothingFactor));
             }
+            var rising = risingSmoothingFactor ?? smoothingFactor;
+            if (rising <= 0 || rising > 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(risingSmoothingFactor));
+            }
 
+            _risingSmoothingFactor = rising;
             _minimumEstimate = minimumEstimate;
             _maximumEstimate = maximumEstimate;
             _initialEstimate = Clamp(initialEstimate, minimumEstimate, maximumEstimate);
@@ -292,9 +312,11 @@ namespace WatchPartyForEmby
             }
             else
             {
+                var factor = observedLatency > learned.Value
+                    ? _risingSmoothingFactor
+                    : _smoothingFactor;
                 var estimatedTicks = learned.Value.Ticks
-                    + ((observedLatency.Ticks - learned.Value.Ticks)
-                        * _smoothingFactor);
+                    + ((observedLatency.Ticks - learned.Value.Ticks) * factor);
                 learned.Value = TimeSpan.FromTicks(
                     (long)Math.Round(estimatedTicks, MidpointRounding.AwayFromZero));
             }
