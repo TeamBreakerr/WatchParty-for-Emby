@@ -28,6 +28,15 @@ const (
 	upstreamLeaseWait      = 5 * time.Second
 	upstreamCloseGrace     = 250 * time.Millisecond
 	upstreamRequestTimeout = 60 * time.Second
+	// The provider refuses reads that *start* together, not reads that are in
+	// flight together: six sustained readers of one file spaced 300ms apart are
+	// all served, while a third started in the same instant as two others is
+	// refused. So space the starts out and let as many reads run concurrently
+	// as the readers actually need.
+	upstreamStartGap = 300 * time.Millisecond
+	// A resource bound only, far above what any legitimate reader needs. It is
+	// not a provider limit; exceeding it means something is looping.
+	maxConcurrentPerKey = 8
 )
 
 var keyPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -50,17 +59,27 @@ type leaseManager struct {
 	maxPerKey  int
 	waitTime   time.Duration
 	closeGrace time.Duration
+	startGap   time.Duration
+	now        func() time.Time
+	sleep      func(context.Context, time.Duration) error
 }
 
 type leaseGroup struct {
 	leases  []*streamLease
 	waiters []*leaseWaiter
+	// The earliest instant the next upstream request may begin. A caller
+	// reserves its turn by moving this forward under the lock, so callers that
+	// arrive together leave with distinct, evenly spaced starts instead of a
+	// burst the provider would reject.
+	nextStartAt time.Time
 }
 
 type leaseWaiter struct {
 	lease   *streamLease
 	ready   chan struct{}
 	granted bool
+	// How long the waiter must still pace itself once a slot frees up.
+	startDelay time.Duration
 }
 
 func newLeaseManager(maxPerKey int, waitTime, closeGrace time.Duration) *leaseManager {
@@ -69,7 +88,42 @@ func newLeaseManager(maxPerKey int, waitTime, closeGrace time.Duration) *leaseMa
 		maxPerKey:  maxPerKey,
 		waitTime:   waitTime,
 		closeGrace: closeGrace,
+		startGap:   upstreamStartGap,
+		now:        time.Now,
+		sleep:      sleepFor,
 	}
+}
+
+// sleepFor waits for d unless the caller goes away first.
+func sleepFor(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// reserveStartLocked claims this caller's turn on the provider and reports how
+// long it must wait before using it.
+//
+// Only a caller that overlaps another read of the same media is paced. A lone
+// sequential reader - which is what a transcode is - never starts a request
+// simultaneously with anything, so delaying it would cost throughput and buy
+// no protection.
+func (m *leaseManager) reserveStartLocked(group *leaseGroup) time.Duration {
+	now := m.now()
+	startAt := now
+	if len(group.leases) > 0 && group.nextStartAt.After(now) {
+		startAt = group.nextStartAt
+	}
+	group.nextStartAt = startAt.Add(m.startGap)
+	return startAt.Sub(now)
 }
 
 func (m *leaseManager) acquire(parent context.Context, key string) (context.Context, *streamLease, bool, error) {
@@ -86,9 +140,21 @@ func (m *leaseManager) acquire(parent context.Context, key string) (context.Cont
 		m.byKey[key] = group
 	}
 	if len(group.leases) < m.maxPerKey && len(group.waiters) == 0 {
+		delay := m.reserveStartLocked(group)
+		if delay > m.waitTime {
+			// Undo the reservation: this caller will not be using it.
+			group.nextStartAt = group.nextStartAt.Add(-m.startGap)
+			m.mu.Unlock()
+			cancel()
+			return nil, nil, true, errSlotWaitTimeout
+		}
 		group.leases = append(group.leases, lease)
 		m.mu.Unlock()
-		return ctx, lease, false, nil
+		if err := m.sleep(parent, delay); err != nil {
+			m.release(key, lease)
+			return nil, nil, true, err
+		}
+		return ctx, lease, delay > 0, nil
 	}
 	waiter := &leaseWaiter{
 		lease: lease,
@@ -105,6 +171,10 @@ func (m *leaseManager) acquire(parent context.Context, key string) (context.Cont
 			m.release(key, lease)
 			return nil, nil, true, err
 		}
+		if err := m.sleep(parent, m.grantedDelay(waiter)); err != nil {
+			m.release(key, lease)
+			return nil, nil, true, err
+		}
 		return ctx, lease, true, nil
 	case <-timer.C:
 		if m.removeWaiter(key, waiter) {
@@ -114,6 +184,10 @@ func (m *leaseManager) acquire(parent context.Context, key string) (context.Cont
 		// A release granted this waiter while the timer was firing. Preserve
 		// that FIFO grant instead of returning a spurious 503.
 		if err := m.waitForCloseGrace(parent); err != nil {
+			m.release(key, lease)
+			return nil, nil, true, err
+		}
+		if err := m.sleep(parent, m.grantedDelay(waiter)); err != nil {
 			m.release(key, lease)
 			return nil, nil, true, err
 		}
@@ -195,9 +269,17 @@ func (m *leaseManager) grantWaitingLocked(group *leaseGroup) {
 		waiter := group.waiters[0]
 		group.waiters = group.waiters[1:]
 		waiter.granted = true
+		waiter.startDelay = m.reserveStartLocked(group)
 		group.leases = append(group.leases, waiter.lease)
 		close(waiter.ready)
 	}
+}
+
+// grantedDelay reads the pacing delay a grant reserved for this waiter.
+func (m *leaseManager) grantedDelay(waiter *leaseWaiter) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return waiter.startDelay
 }
 
 type streamGuard struct {
@@ -218,7 +300,8 @@ func newStreamGuard(client *http.Client, parse targetParser, logger *log.Logger)
 	return &streamGuard{
 		client: client,
 		parse:  parse,
-		leases: newLeaseManager(2, upstreamLeaseWait, upstreamCloseGrace),
+		leases: newLeaseManager(
+			maxConcurrentPerKey, upstreamLeaseWait, upstreamCloseGrace),
 		logger: logger,
 		active: make(map[string]int),
 	}
@@ -261,9 +344,9 @@ func (g *streamGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer g.leases.release(key, lease)
-	// A full key waits for a natural release. It never cancels an existing
-	// stream, because doing so truncates a healthy HLS/Range response and causes
-	// the media server to restart the whole playback pipeline.
+	// The guard never cancels an existing stream to make room: doing so
+	// truncates a healthy HLS/Range response and makes the media server restart
+	// the whole playback pipeline.
 	if err := leaseContext.Err(); err != nil {
 		return
 	}
@@ -458,10 +541,10 @@ func newUpstreamClient() *http.Client {
 		KeepAlive: 15 * time.Second,
 	}
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           dialer.DialContext,
-		ForceAttemptHTTP2:     true,
-		DisableCompression:    true,
+		Proxy:              http.ProxyFromEnvironment,
+		DialContext:        dialer.DialContext,
+		ForceAttemptHTTP2:  true,
+		DisableCompression: true,
 		// Every slice of one playback goes to the same CDN host, one after the
 		// other. Closing the connection each time made each slice pay a fresh
 		// TCP and TLS handshake, which capped a protected read far below the

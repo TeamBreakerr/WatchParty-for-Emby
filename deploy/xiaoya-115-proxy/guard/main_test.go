@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/tls"
 	"errors"
@@ -46,6 +47,65 @@ func (b *delayedCloseBody) Close() error {
 		b.active.Add(-1)
 	})
 	return nil
+}
+
+// testClock drives pacing without real time, so the tests assert the schedule
+// the manager computes rather than how long a machine happened to sleep.
+type testClock struct {
+	mu      sync.Mutex
+	current time.Time
+	slept   []time.Duration
+}
+
+func newTestClock() *testClock {
+	return &testClock{current: time.Unix(0, 0)}
+}
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.current
+}
+
+// sleep records the delay without advancing the clock, so a test can model
+// callers that all arrive at the same instant.
+func (c *testClock) sleep(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.slept = append(c.slept, d)
+	return nil
+}
+
+// sleptFor returns the most recent delay, or zero when nothing slept.
+func (c *testClock) sleptFor() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.slept) == 0 {
+		return 0
+	}
+	return c.slept[len(c.slept)-1]
+}
+
+func newPacedLeaseManager(clock *testClock, gap, waitTime time.Duration) *leaseManager {
+	manager := newLeaseManager(maxConcurrentPerKey, waitTime, 0)
+	manager.startGap = gap
+	manager.now = clock.now
+	manager.sleep = clock.sleep
+	return manager
+}
+
+// reservedGap reports how far ahead of now the next turn has been reserved.
+func (m *leaseManager) reservedGap(key string) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	group := m.byKey[key]
+	if group == nil {
+		return 0
+	}
+	return group.nextStartAt.Sub(m.now())
 }
 
 func TestParse115Target(t *testing.T) {
@@ -118,11 +178,19 @@ func TestGuardUsesStableUserAgentForSignedDownload(t *testing.T) {
 	}
 }
 
-func TestThirdStreamWaitsForNaturalReleaseWithoutEviction(t *testing.T) {
+func TestConcurrentStreamsStartSpacedWithoutEviction(t *testing.T) {
+	// The provider refuses reads that begin together, so the invariant is the
+	// gap between starts - not a ceiling on how many run at once. A third
+	// reader must therefore be served while the first two are still streaming.
 	var active atomic.Int32
 	var maximum atomic.Int32
+	var startMu sync.Mutex
+	var startedAt []time.Time
 
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startMu.Lock()
+		startedAt = append(startedAt, time.Now())
+		startMu.Unlock()
 		current := active.Add(1)
 		defer active.Add(-1)
 		for {
@@ -130,10 +198,6 @@ func TestThirdStreamWaitsForNaturalReleaseWithoutEviction(t *testing.T) {
 			if current <= observed || maximum.CompareAndSwap(observed, current) {
 				break
 			}
-		}
-		if current > 2 {
-			http.Error(w, "too many streams", http.StatusForbidden)
-			return
 		}
 
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -180,9 +244,10 @@ func TestThirdStreamWaitsForNaturalReleaseWithoutEviction(t *testing.T) {
 	upstreamClient.Transport.(*http.Transport).TLSClientConfig = &tls.Config{ //nolint:gosec
 		InsecureSkipVerify: true,
 	}
-	upstreamClient.Transport.(*http.Transport).DisableKeepAlives = true
 
 	guard := newStreamGuard(upstreamClient, parser, log.New(io.Discard, "", 0))
+	const gap = 80 * time.Millisecond
+	guard.leases.startGap = gap
 	guardServer := httptest.NewServer(guard)
 	defer guardServer.Close()
 
@@ -192,7 +257,7 @@ func TestThirdStreamWaitsForNaturalReleaseWithoutEviction(t *testing.T) {
 	second := openGuardStream(t, guardServer.URL, upstream.URL+"/video", key, "bytes=100-")
 	defer second.Body.Close()
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for active.Load() != 2 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -200,124 +265,93 @@ func TestThirdStreamWaitsForNaturalReleaseWithoutEviction(t *testing.T) {
 		t.Fatalf("expected two active upstreams, got %d", active.Load())
 	}
 
-	thirdResult := make(chan *http.Response, 1)
-	thirdErrors := make(chan error, 1)
-	go func() {
-		request, requestErr := http.NewRequest(
-			http.MethodGet, guardServer.URL+"/stream", nil)
-		if requestErr != nil {
-			thirdErrors <- requestErr
-			return
-		}
-		request.Header.Set(targetHeader, upstream.URL+"/video")
-		request.Header.Set(keyHeader, key)
-		request.Header.Set("Range", "bytes=200-299")
-		response, responseErr := http.DefaultClient.Do(request)
-		if responseErr != nil {
-			thirdErrors <- responseErr
-			return
-		}
-		thirdResult <- response
-	}()
-
-	select {
-	case <-thirdResult:
-		t.Fatal("third stream connected before a natural lease release")
-	case err := <-thirdErrors:
-		t.Fatal(err)
-	case <-time.After(50 * time.Millisecond):
-	}
-	if guard.evictions.Load() != 0 {
-		t.Fatalf("third stream caused an eviction while waiting: %d", guard.evictions.Load())
-	}
-
-	first.Body.Close()
-	var third *http.Response
-	select {
-	case err := <-thirdErrors:
-		t.Fatal(err)
-	case third = <-thirdResult:
-	case <-time.After(time.Second):
-		t.Fatal("third stream did not proceed after the first lease released")
-	}
+	// The third reader proceeds on its own turn, with both others still open.
+	third := openGuardStream(
+		t, guardServer.URL, upstream.URL+"/video", key, "bytes=200-299")
 	thirdBody, err := io.ReadAll(third.Body)
 	third.Body.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if third.StatusCode != http.StatusPartialContent || len(thirdBody) != 100 {
-		t.Fatalf("unexpected third response: status=%d bytes=%d", third.StatusCode, len(thirdBody))
+		t.Fatalf("unexpected third response: status=%d bytes=%d",
+			third.StatusCode, len(thirdBody))
+	}
+	if active.Load() < 2 {
+		t.Fatal("the third read was only served after an earlier one ended")
+	}
+	if maximum.Load() < 3 {
+		t.Fatalf("three concurrent upstreams were expected, peaked at %d",
+			maximum.Load())
+	}
+
+	startMu.Lock()
+	observed := append([]time.Time(nil), startedAt...)
+	startMu.Unlock()
+	if len(observed) < 3 {
+		t.Fatalf("expected three upstream starts, got %d", len(observed))
+	}
+	for i := 1; i < len(observed); i++ {
+		if elapsed := observed[i].Sub(observed[i-1]); elapsed < gap/2 {
+			t.Fatalf("starts %d and %d were only %s apart, want at least %s",
+				i-1, i, elapsed, gap/2)
+		}
 	}
 	if guard.evictions.Load() != 0 {
 		t.Fatalf("expected no forced evictions, got %d", guard.evictions.Load())
-	}
-	if maximum.Load() > 2 {
-		t.Fatalf("opened %d concurrent upstreams", maximum.Load())
 	}
 
 	first.Body.Close()
 	second.Body.Close()
 }
 
-func TestConcurrentWaitersShareOneBoundedAcquisitionDeadline(t *testing.T) {
-	manager := newLeaseManager(2, 200*time.Millisecond, 0)
+func TestSimultaneousAcquisitionsAreSpacedAndBounded(t *testing.T) {
+	// Callers that arrive together must leave with evenly spaced starts, and a
+	// caller whose turn falls beyond the wait window must be refused rather
+	// than held indefinitely.
+	clock := newTestClock()
+	manager := newPacedLeaseManager(clock, 50*time.Millisecond, 120*time.Millisecond)
 	key := "0123456789abcdef0123456789abcdef"
 
-	_, first, _, err := manager.acquire(t.Context(), key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, second, _, err := manager.acquire(t.Context(), key)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	type acquisition struct {
-		lease *streamLease
-		err   error
-	}
-	results := make(chan acquisition, 3)
-	startedAt := time.Now()
+	var delays []time.Duration
 	for range 3 {
-		go func() {
-			_, lease, _, acquireErr := manager.acquire(t.Context(), key)
-			results <- acquisition{lease: lease, err: acquireErr}
-		}()
-	}
-
-	time.Sleep(50 * time.Millisecond)
-	manager.release(key, first)
-	firstWinner := <-results
-	if firstWinner.err != nil || firstWinner.lease == nil {
-		t.Fatalf("first released slot was not acquired: %v", firstWinner.err)
-	}
-
-	time.Sleep(50 * time.Millisecond)
-	manager.release(key, second)
-	secondWinner := <-results
-	if secondWinner.err != nil || secondWinner.lease == nil {
-		t.Fatalf("second released slot was not acquired: %v", secondWinner.err)
-	}
-
-	select {
-	case final := <-results:
-		if !errors.Is(final.err, errSlotWaitTimeout) || final.lease != nil {
-			t.Fatalf("expected the remaining waiter to time out, got lease=%v err=%v",
-				final.lease, final.err)
+		_, lease, waited, err := manager.acquire(t.Context(), key)
+		if err != nil {
+			t.Fatalf("acquisition was refused inside the wait window: %v", err)
 		}
-	case <-time.After(150 * time.Millisecond):
-		t.Fatal("remaining waiter exceeded the original acquisition deadline")
-	}
-	if elapsed := time.Since(startedAt); elapsed > 250*time.Millisecond {
-		t.Fatalf("bounded acquisition took %s", elapsed)
+		if lease == nil {
+			t.Fatal("no lease returned")
+		}
+		delays = append(delays, clock.sleptFor())
+		if (delays[len(delays)-1] > 0) != waited {
+			t.Fatalf("waited flag %v disagrees with delay %s",
+				waited, delays[len(delays)-1])
+		}
 	}
 
-	manager.release(key, firstWinner.lease)
-	manager.release(key, secondWinner.lease)
+	want := []time.Duration{0, 50 * time.Millisecond, 100 * time.Millisecond}
+	for i, delay := range delays {
+		if delay != want[i] {
+			t.Fatalf("start %d paced by %s, want %s", i, delay, want[i])
+		}
+	}
+
+	// The fourth turn lands past the wait window.
+	_, lease, _, err := manager.acquire(t.Context(), key)
+	if !errors.Is(err, errSlotWaitTimeout) || lease != nil {
+		t.Fatalf("expected a bounded refusal, got lease=%v err=%v", lease, err)
+	}
+	// A refusal must not consume a turn, or every later caller pays for it.
+	if reserved := manager.reservedGap(key); reserved != 150*time.Millisecond {
+		t.Fatalf("refused caller consumed a turn: reservation at %s", reserved)
+	}
 }
 
 func TestLeaseManagerGrantsWaitersInFIFOOrder(t *testing.T) {
+	// The resource bound is the only thing that queues callers now. When it
+	// frees up, the queue must still be served in arrival order.
 	manager := newLeaseManager(2, time.Second, 0)
+	manager.startGap = 0
 	key := "0123456789abcdef0123456789abcdef"
 
 	_, first, _, err := manager.acquire(t.Context(), key)
@@ -377,6 +411,70 @@ func TestLeaseManagerGrantsWaitersInFIFOOrder(t *testing.T) {
 	manager.release(key, secondResult.lease)
 }
 
+func TestGrantedWaiterIsPacedOnlyWhileAReadOverlaps(t *testing.T) {
+	// A grant only says the resource bound has room. If another read of the
+	// same media is still running, the new one would start alongside it and
+	// must be spaced; if the queue drained because everything finished, there
+	// is nothing to collide with and it starts at once.
+	clock := newTestClock()
+	manager := newPacedLeaseManager(clock, 40*time.Millisecond, time.Second)
+	manager.maxPerKey = 2
+	key := "0123456789abcdef0123456789abcdef"
+
+	_, first, _, err := manager.acquire(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, second, _, err := manager.acquire(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type grant struct {
+		lease *streamLease
+		delay time.Duration
+	}
+	granted := make(chan grant, 1)
+	go func() {
+		_, lease, _, acquireErr := manager.acquire(t.Context(), key)
+		if acquireErr != nil {
+			granted <- grant{delay: -1}
+			return
+		}
+		granted <- grant{lease: lease, delay: clock.sleptFor()}
+	}()
+	waitForQueuedWaiters(t, manager, key, 1)
+
+	// `second` keeps running, so the granted waiter overlaps it and must be
+	// spaced. The clock is frozen, so all three callers share one arrival
+	// instant and are scheduled at 0, one gap and two gaps.
+	manager.release(key, first)
+	var promoted *streamLease
+	select {
+	case result := <-granted:
+		if result.delay != 80*time.Millisecond {
+			t.Fatalf("waiter overlapping a live read started after %s, "+
+				"want the third slot on the shared schedule", result.delay)
+		}
+		promoted = result.lease
+	case <-time.After(time.Second):
+		t.Fatal("granted waiter never started")
+	}
+
+	manager.release(key, second)
+	manager.release(key, promoted)
+
+	// Nothing is in flight now, so the next reader must not be delayed.
+	_, lone, waited, err := manager.acquire(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited {
+		t.Fatal("a lone reader was paced against nothing")
+	}
+	manager.release(key, lone)
+}
+
 func waitForQueuedWaiters(t *testing.T, manager *leaseManager, key string, count int) {
 	t.Helper()
 	deadline := time.Now().Add(250 * time.Millisecond)
@@ -396,27 +494,24 @@ func waitForQueuedWaiters(t *testing.T, manager *leaseManager, key string, count
 	t.Fatalf("expected %d queued waiter(s)", count)
 }
 
-func TestThirdStreamTimesOutWithoutOpeningUpstreamWhenNoSlotIsReleased(t *testing.T) {
+func TestTurnBeyondTheWaitWindowIsRefusedWithoutOpeningUpstream(t *testing.T) {
+	// A caller whose paced turn falls outside the wait window is told to retry
+	// rather than held. It must not reach the provider, and it must never
+	// disturb a read that is already running.
 	var calls atomic.Int32
 	var active atomic.Int32
 	releaseClose := make(chan struct{})
 	var releaseOnce sync.Once
-	firstCloseStarted := make(chan struct{})
-	secondCloseStarted := make(chan struct{})
+	var closeMu sync.Mutex
+	closeStarted := make(map[int32]chan struct{})
 
 	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		callNumber := calls.Add(1)
-		current := active.Add(1)
-		if current > 2 {
-			active.Add(-1)
-			return &http.Response{
-				StatusCode: http.StatusForbidden,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader("too many upstreams")),
-				Request:    request,
-			}, nil
-		}
-
+		active.Add(1)
+		closeMu.Lock()
+		started := make(chan struct{})
+		closeStarted[callNumber] = started
+		closeMu.Unlock()
 		return &http.Response{
 			StatusCode: http.StatusPartialContent,
 			Header: http.Header{
@@ -424,13 +519,8 @@ func TestThirdStreamTimesOutWithoutOpeningUpstreamWhenNoSlotIsReleased(t *testin
 				"Content-Range": []string{"bytes 0-1023/4096"},
 			},
 			Body: &delayedCloseBody{
-				active: &active,
-				closeStarted: func() chan struct{} {
-					if callNumber == 1 {
-						return firstCloseStarted
-					}
-					return secondCloseStarted
-				}(),
+				active:       &active,
+				closeStarted: started,
 				releaseClose: releaseClose,
 			},
 			Request: request,
@@ -445,73 +535,119 @@ func TestThirdStreamTimesOutWithoutOpeningUpstreamWhenNoSlotIsReleased(t *testin
 		&http.Client{Transport: transport},
 		func(string) (*url.URL, error) { return target, nil },
 		log.New(io.Discard, "", 0))
-	guard.leases.waitTime = 20 * time.Millisecond
+	// Four callers arriving together are scheduled 0, 60, 120 and 180ms out;
+	// only the first two fall inside the window.
+	guard.leases.startGap = 60 * time.Millisecond
+	guard.leases.waitTime = 100 * time.Millisecond
 	guardServer := httptest.NewServer(guard)
 	defer guardServer.Close()
+	defer func() { releaseOnce.Do(func() { close(releaseClose) }) }()
 
 	key := fmt.Sprintf("%x", md5.Sum([]byte("/media/video.mkv")))
-	first := openGuardStream(t, guardServer.URL, target.String(), key, "bytes=0-")
-	second := openGuardStream(t, guardServer.URL, target.String(), key, "bytes=100-")
+	type outcome struct {
+		status int
+		retry  string
+	}
+	results := make(chan outcome, 4)
+	var bodyMu sync.Mutex
+	var bodies []io.ReadCloser
 	defer func() {
-		releaseOnce.Do(func() { close(releaseClose) })
-		first.Body.Close()
-		second.Body.Close()
+		bodyMu.Lock()
+		defer bodyMu.Unlock()
+		for _, body := range bodies {
+			body.Close()
+		}
 	}()
+	var launch sync.WaitGroup
+	launch.Add(1)
+	var finished sync.WaitGroup
+	for range 4 {
+		finished.Add(1)
+		go func() {
+			defer finished.Done()
+			request, requestErr := http.NewRequest(
+				http.MethodGet, guardServer.URL+"/stream", nil)
+			if requestErr != nil {
+				results <- outcome{status: -1}
+				return
+			}
+			request.Header.Set(targetHeader, target.String())
+			request.Header.Set(keyHeader, key)
+			request.Header.Set("Range", "bytes=0-")
+			launch.Wait()
+			response, responseErr := http.DefaultClient.Do(request)
+			if responseErr != nil {
+				results <- outcome{status: -1}
+				return
+			}
+			// Leave a served body open: closing it would signal the upstream
+			// close path, and the assertions below have to observe that no
+			// healthy read was disturbed. The deferred release closes them.
+			bodyMu.Lock()
+			bodies = append(bodies, response.Body)
+			bodyMu.Unlock()
+			results <- outcome{
+				status: response.StatusCode,
+				retry:  response.Header.Get("Retry-After"),
+			}
+		}()
+	}
+	launch.Done()
 
-	request, err := http.NewRequest(http.MethodGet, guardServer.URL+"/stream", nil)
-	if err != nil {
-		t.Fatal(err)
+	served, refused := 0, 0
+	collected := make([]outcome, 0, 4)
+	for range 4 {
+		collected = append(collected, <-results)
 	}
-	request.Header.Set(targetHeader, target.String())
-	request.Header.Set(keyHeader, key)
-	request.Header.Set("Range", "bytes=200-")
-	third, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	thirdBody, readErr := io.ReadAll(third.Body)
-	third.Body.Close()
-	if readErr != nil {
-		t.Fatal(readErr)
+	finished.Wait()
+	close(results)
+
+	for _, result := range collected {
+		switch result.status {
+		case http.StatusPartialContent:
+			served++
+		case http.StatusServiceUnavailable:
+			refused++
+			if result.retry != "1" {
+				t.Fatalf("expected a bounded retry hint, got %q", result.retry)
+			}
+		default:
+			t.Fatalf("unexpected status %d", result.status)
+		}
 	}
 
-	if third.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 while both upstream slots are still open, got %d: %s",
-			third.StatusCode, bytes.TrimSpace(thirdBody))
+	if refused == 0 {
+		t.Fatal("no caller was refused, so the wait window is not bounded")
 	}
-	if third.Header.Get("Retry-After") != "1" {
-		t.Fatalf("expected a bounded retry hint, got %q", third.Header.Get("Retry-After"))
+	if served == 0 {
+		t.Fatal("every caller was refused")
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("expected no third upstream attempt, got %d attempts", calls.Load())
+	// A refusal must cost the provider nothing.
+	if int(calls.Load()) != served {
+		t.Fatalf("%d upstream attempts for %d served callers", calls.Load(), served)
 	}
-	select {
-	case <-firstCloseStarted:
-		t.Fatal("third stream forcibly closed the first healthy upstream")
-	default:
+	// Refusing must never disturb a read that is already running.
+	closeMu.Lock()
+	for number, started := range closeStarted {
+		select {
+		case <-started:
+			t.Fatalf("a refused caller closed healthy upstream %d", number)
+		default:
+		}
 	}
-	select {
-	case <-secondCloseStarted:
-		t.Fatal("third stream forcibly closed the second healthy upstream")
-	default:
+	closeMu.Unlock()
+	if guard.breaches.Load() != 0 {
+		t.Fatalf("unexpected connection-limit breach: %d", guard.breaches.Load())
 	}
-	if guard.timeouts.Load() != 1 || guard.breaches.Load() != 0 {
-		t.Fatalf("unexpected guard counters: timeouts=%d breaches=%d",
-			guard.timeouts.Load(), guard.breaches.Load())
-	}
-	if guard.slotWaits.Load() != 1 {
-		t.Fatalf("expected one slot wait, got %d", guard.slotWaits.Load())
+	if int(guard.timeouts.Load()) != refused {
+		t.Fatalf("timeouts=%d for %d refusals", guard.timeouts.Load(), refused)
 	}
 	metrics := httptest.NewRecorder()
 	guard.writeMetrics(metrics)
-	if !strings.Contains(metrics.Body.String(), "emby_115_guard_slot_wait_timeouts_total 1\n") {
-		t.Fatalf("slot wait timeout metric is missing: %s", metrics.Body.String())
+	if !strings.Contains(metrics.Body.String(),
+		fmt.Sprintf("emby_115_guard_slot_wait_timeouts_total %d\n", refused)) {
+		t.Fatalf("slot wait timeout metric missing: %s", metrics.Body.String())
 	}
-	if !strings.Contains(metrics.Body.String(), "emby_115_guard_upstream_requests_total 2\n") {
-		t.Fatalf("upstream request metric is missing: %s", metrics.Body.String())
-	}
-
-	releaseOnce.Do(func() { close(releaseClose) })
 }
 
 func TestUpstreamFailureLogsDoNotContainSignedTargetURL(t *testing.T) {

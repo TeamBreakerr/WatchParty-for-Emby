@@ -408,7 +408,12 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         locations = (DEPLOY_ROOT / "emby-115-locations.conf").read_text()
         throttle = (DEPLOY_ROOT / "emby-115-throttle.conf").read_text()
 
-        self.assertIn("newLeaseManager(2", guard)
+        # The provider limits reads that start together, not reads in flight,
+        # so the guard paces starts and keeps only a resource ceiling.
+        self.assertIn("upstreamStartGap", guard)
+        self.assertIn("reserveStartLocked", guard)
+        self.assertIn("newLeaseManager(\n\t\t\tmaxConcurrentPerKey", guard)
+        self.assertNotIn("newLeaseManager(2", guard)
         self.assertIn("waiters", guard)
         self.assertIn("grantWaitingLocked", guard)
         self.assertNotIn("evicted.cancel()", guard)

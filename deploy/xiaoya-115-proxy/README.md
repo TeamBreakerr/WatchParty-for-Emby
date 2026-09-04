@@ -61,14 +61,24 @@ burst pattern. So the guard earns its place on the server path by absorbing
 bursts, not by rationing connections, and it costs nothing measurable to keep
 there.
 
-The loopback `emby-115-guard` process still permits at most two upstream
-requests per media path, but now leases represent short slices instead of
-whole playback streams. Additional slices wait in FIFO order for a natural
-release. The guard never cancels a healthy request: doing so truncates an HLS
-input and can make Emby restart FFmpeg, creating a retry storm. If no slice
-slot is released within the bounded wait window, the guard returns 503 without
-opening another upstream; Nginx performs one delayed, refreshed retry for that
-condition or a transient 115 403. Physical local files never enter this path.
+The loopback `emby-115-guard` process spaces out the *starts* of upstream
+requests for one media path rather than capping how many run at once, because
+that is the shape of the provider's limit: six sustained readers of one file
+spaced 300 ms apart are all served, while a third started in the same instant
+as two others is refused. A caller reserves its turn under a lock, so callers
+arriving together leave with distinct, evenly spaced starts. A caller that
+overlaps nothing - a lone sequential reader, which is what a transcode is - is
+never delayed, since it cannot collide with anything and pacing it would only
+cost throughput.
+
+A per-media ceiling of eight concurrent reads remains, purely as a resource
+bound; it is not a provider limit, and reaching it means something is looping.
+Callers past it wait in FIFO order. The guard never cancels a healthy request:
+doing so truncates an HLS input and can make Emby restart FFmpeg, creating a
+retry storm. If a caller's turn falls beyond the bounded wait window, the guard
+returns 503 without opening another upstream; Nginx performs one delayed,
+refreshed retry for that condition or a transient 115 403. Physical local files
+never enter this path.
 
 The guard exposes loopback-only Prometheus counters at
 `http://127.0.0.1:15678/metrics`. The integration test keeps two slow
