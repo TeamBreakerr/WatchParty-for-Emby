@@ -734,6 +734,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "emby-websocket-diagnostic.conf",
                 "emby-websocket-timeout.conf",
                 "ensure-emby-websocket-timeout.sh",
+                "ensure-emby-proxy-timeout.sh",
                 "emby-web-cache-buster.conf",
                 "ensure-emby-web-cache-buster.sh",
                 "ensure-emby-docker-upstream.sh",
@@ -752,6 +753,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "install-emby-115-runtime.sh",
                 "install-emby-115-proxy-after-start.sh",
                 "ensure-emby-websocket-timeout.sh",
+                "ensure-emby-proxy-timeout.sh",
                 "ensure-emby-web-cache-buster.sh",
                 "ensure-emby-docker-upstream.sh",
                 "ensure-emby-room-agnostic-routing.sh",
@@ -968,6 +970,102 @@ class Xiaoya115ProxyTests(unittest.TestCase):
             ],
             check=True,
         )
+
+
+class EmbyProxyTimeoutTests(unittest.TestCase):
+    """20 seconds is not long enough for Emby to answer every request.
+
+    A recursive collection query over a multi-gigabyte library.db exceeded it
+    and Nginx dropped the connection with "upstream timed out while reading
+    response header from upstream", which the client sees as a failed load.
+    """
+
+    INSTALLER = DEPLOY_ROOT / "ensure-emby-proxy-timeout.sh"
+    STOCK = (
+        "server{\n"
+        "    listen 2345;\n"
+        "    client_header_timeout 20s;\n"
+        "    client_body_timeout 20s;\n"
+        "    send_timeout 20s;\n"
+        "    proxy_read_timeout 20s;\n"
+        "    proxy_connect_timeout 20s;\n"
+        "    proxy_send_timeout 20s;\n"
+        "    location ~ /(socket|embywebsocket) {\n"
+        "        proxy_read_timeout 86400s;\n"
+        "    }\n"
+        "}\n"
+    )
+
+    def _run(self, root, config, nginx_exit=0):
+        nginx = _write_fake_nginx(root / "nginx", exit_code=nginx_exit)
+        return subprocess.run(
+            [str(self.INSTALLER)],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "EMBY_NGINX_CONFIG": str(config),
+                "NGINX_BIN": str(nginx),
+            },
+        )
+
+    def test_only_the_response_timeouts_are_raised(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = root / "emby.conf"
+            config.write_text(self.STOCK)
+
+            first = self._run(root, config)
+            patched = config.read_text()
+            second = self._run(root, config)
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual("patched", first.stdout.strip())
+            self.assertEqual("already-present", second.stdout.strip())
+            self.assertEqual(patched, config.read_text())
+
+            for directive in ("send_timeout", "proxy_read_timeout",
+                              "proxy_send_timeout"):
+                self.assertIn("    %s 300s;" % directive, patched)
+            # Connecting to Emby should still fail fast, and the client-side
+            # limits are a different concern.
+            for directive in ("proxy_connect_timeout", "client_header_timeout",
+                              "client_body_timeout"):
+                self.assertIn("    %s 20s;" % directive, patched)
+
+    def test_a_location_keeps_its_own_timeout(self):
+        # The WebSocket locations bound an idle tunnel, not a slow answer, and
+        # must keep their own much longer value.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = root / "emby.conf"
+            config.write_text(self.STOCK)
+
+            self.assertEqual(0, self._run(root, config).returncode)
+
+            self.assertIn("        proxy_read_timeout 86400s;", config.read_text())
+
+    def test_a_config_without_the_timeouts_is_reported(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = root / "emby.conf"
+            config.write_text("server{\n    listen 2345;\n}\n")
+
+            result = self._run(root, config)
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual("server{\n    listen 2345;\n}\n", config.read_text())
+
+    def test_the_config_is_restored_when_nginx_rejects_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = root / "emby.conf"
+            config.write_text(self.STOCK)
+
+            result = self._run(root, config, nginx_exit=1)
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual(self.STOCK, config.read_text())
 
 
 class WebCacheBusterVersionTests(unittest.TestCase):

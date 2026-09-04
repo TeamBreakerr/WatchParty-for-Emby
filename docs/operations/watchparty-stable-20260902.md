@@ -334,6 +334,38 @@ ffmpeg 自身没有重试，403 即致命；而 Emby 的转码恢复机制（10 
 
 守卫留在服务端路径上的正当理由已经从"限制并发"换成了"吸收突发"，且有实测支撑。
 
+#### 20 秒超时：先证伪再修（2026-09-04 五）
+
+`emby.conf` 的 server 级 `proxy_read_timeout 20s` 被所有代理到 Emby 的 location 继承（WebSocket 除外，它有自己的 include）。
+
+**先证伪了我自己的假设。** 原本怀疑"暂停播放 20 秒后连接被掐断"，实测：
+
+| 场景 | 结果 |
+|---|---|
+| `@backend` 读取，停止读取 30 秒 | 连接存活 |
+| 同上，停止读取 90 秒 | 连接存活 |
+
+`send_timeout` 并不会掐断暂停的播放器，这个方向是错的。
+
+**改查历史证据**，找到一次真实发生：
+
+```
+2026/09/04 00:27:50 upstream timed out (110) while reading response header from upstream
+request: GET /emby/Users/{id}/Items?Recursive=true&IncludeItemTypes=BoxSet
+client: Emby for iOS
+```
+
+对 4.4 GB 的 `library.db` 做递归合集查询超过 20 秒，nginx 在等**响应头**时超时。这是 API 问题不是媒体流问题，表现为 iOS 端浏览媒体库加载失败。
+
+修法（`ensure-emby-proxy-timeout.sh`）只提高约束 Emby 响应的三个：
+
+- `proxy_read_timeout` / `proxy_send_timeout` / `send_timeout` → 300s
+- `proxy_connect_timeout` 保持 20s（Emby 不可达时应快速失败）
+- 客户端侧 `client_header_timeout` / `client_body_timeout` 不动
+- location 级自有设置不覆盖，WebSocket 的 24 小时保持不变
+
+`send_timeout` 是为与另外两个对称才提高的，**不是因为观测到失败** —— 这一点记录下来，避免以后误以为它修过什么。
+
 #### 更正（2026-09-04 四）：守卫改为错开发起，不再限制在途数量
 
 守卫最初的 `maxPerKey = 2` 限制的是**在途数量**，后来者必须等前面自然释放。这是"限制并发连接"错误前提的最后一处残留，已改正。

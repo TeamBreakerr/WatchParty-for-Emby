@@ -126,6 +126,7 @@ install-emby-115-proxy-after-start.sh
 emby-websocket-diagnostic.conf
 emby-websocket-timeout.conf
 ensure-emby-websocket-timeout.sh
+ensure-emby-proxy-timeout.sh
 emby-web-cache-buster.conf
 ensure-emby-web-cache-buster.sh
 ensure-emby-docker-upstream.sh
@@ -149,6 +150,7 @@ if [ ! -x "$data_dir/emby-115-guard" ] \
     || [ ! -x "$data_dir/install-emby-115-runtime.sh" ] \
     || [ ! -x "$data_dir/install-emby-115-proxy-after-start.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-websocket-timeout.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-proxy-timeout.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-web-cache-buster.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-docker-upstream.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-room-agnostic-routing.sh" ] \
@@ -211,6 +213,7 @@ if ! grep -Fq '/data/ensure-emby-websocket-timeout.sh' "$cron_file"; then
 fi
 "$data_dir/ensure-emby-115-guard.sh"
 "$data_dir/ensure-emby-websocket-timeout.sh"
+"$data_dir/ensure-emby-proxy-timeout.sh"
 "$data_dir/ensure-emby-web-cache-buster.sh"
 "$data_dir/ensure-emby-docker-upstream.sh"
 "$data_dir/ensure-emby-room-agnostic-routing.sh"

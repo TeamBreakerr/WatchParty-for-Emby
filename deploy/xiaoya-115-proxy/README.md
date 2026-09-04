@@ -109,6 +109,23 @@ and the effective `nginx -T` route set; if the guard is healthy but the `/d/`
 access hook or named stream/retry locations are missing, it reruns the complete
 installer. No host systemd timer is required.
 
+Xiaoya also gives that server block a 20 second `proxy_read_timeout`, which
+every location proxying to Emby inherits. That is not long enough for this
+library: a recursive collection query over a 4.4 GB `library.db` exceeded it and
+Nginx dropped the request with `upstream timed out while reading response header
+from upstream`, which an iOS client sees as a failed load.
+`ensure-emby-proxy-timeout.sh` raises only the three timeouts that bound Emby's
+own answer - `proxy_read_timeout`, `proxy_send_timeout` and `send_timeout` - to
+300 seconds. `proxy_connect_timeout` still fails fast when Emby is unreachable,
+the client-side header and body limits are untouched, and a location that sets
+its own value keeps it, so the WebSocket tunnels retain their separate 24-hour
+timeout. Those are different concerns: an idle tunnel rather than a slow answer.
+
+Note that a paused player does not need this. A 90 second pause on a
+backend-served read was measured and the connection stayed open, so
+`send_timeout` was raised for symmetry with the other two rather than to fix an
+observed failure.
+
 The same installer also repairs Xiaoya's inner `/etc/nginx/http.d/emby.conf`.
 Its stock `listen 2345` server sets `proxy_read_timeout 20s`, and the stock
 `/socket`/`/embywebsocket` locations inherit that value. The persistent
