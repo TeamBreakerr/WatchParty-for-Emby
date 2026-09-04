@@ -965,6 +965,102 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         )
 
 
+class WebCacheBusterVersionTests(unittest.TestCase):
+    """Pinning Emby's version makes the rewrite fail silently on an upgrade.
+
+    The sub_filter has to name the version Emby actually serves. If Emby moves
+    and the filter does not, it simply stops matching: the dashboard keeps
+    advertising the stock version string, browsers keep the cached unpatched
+    playbackmanager.js, and nothing reports an error.
+    """
+
+    INSTALLER = DEPLOY_ROOT / "ensure-emby-web-cache-buster.sh"
+
+    def _run(self, root, include, served_version):
+        emby_conf = root / "emby.conf"
+        emby_conf.write_text(
+            "server{\n"
+            "    location ~* /web/index.html {\n"
+            "        proxy_pass $emby;\n"
+            "        include %s;\n"
+            "    }\n"
+            "}\n" % include
+        )
+        nginx = _write_fake_nginx(root / "nginx")
+        bin_dir = root / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        curl = bin_dir / "curl"
+        curl.write_text(
+            '#!/bin/sh\necho \'<html data-appversion="%s"></html>\'\n'
+            % served_version
+        )
+        curl.chmod(0o755)
+        return subprocess.run(
+            [str(self.INSTALLER)],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": "%s:/usr/bin:/bin" % bin_dir,
+                "EMBY_NGINX_CONFIG": str(emby_conf),
+                "EMBY_WEB_CACHE_INCLUDE": str(include),
+                "NGINX_BIN": str(nginx),
+            },
+        )
+
+    @staticmethod
+    def _versions(include):
+        return re.findall(r'data-appversion="([^"]*)"', include.read_text())
+
+    def test_the_filter_follows_an_upgraded_emby(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            include = root / "inc.conf"
+            include.write_text(
+                "sub_filter 'data-appversion=\"4.9.0.42\"' "
+                "'data-appversion=\"4.9.0.42-wp8\"';\nexpires -1;\n"
+            )
+
+            result = self._run(root, include, "4.9.1.0")
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            # The suffix identifies the patched bundle and must survive.
+            self.assertEqual(
+                ["4.9.1.0", "4.9.1.0-wp8"], self._versions(include)
+            )
+
+    def test_an_unchanged_version_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            include = root / "inc.conf"
+            original = (
+                "sub_filter 'data-appversion=\"4.9.0.42\"' "
+                "'data-appversion=\"4.9.0.42-wp8\"';\nexpires -1;\n"
+            )
+            include.write_text(original)
+
+            result = self._run(root, include, "4.9.0.42")
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(original, include.read_text())
+
+    def test_an_already_rewritten_page_does_not_retarget(self):
+        # Nginx serves the rewritten string back; taking that as the new
+        # upstream version would append a second suffix on every run.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            include = root / "inc.conf"
+            original = (
+                "sub_filter 'data-appversion=\"4.9.0.42\"' "
+                "'data-appversion=\"4.9.0.42-wp8\"';\nexpires -1;\n"
+            )
+            include.write_text(original)
+
+            result = self._run(root, include, "4.9.0.42-wp8")
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(original, include.read_text())
+
+
 class PostUpdateRepairCoverageTests(unittest.TestCase):
     """Whatever the post-update path skips reverts on every Xiaoya restart.
 

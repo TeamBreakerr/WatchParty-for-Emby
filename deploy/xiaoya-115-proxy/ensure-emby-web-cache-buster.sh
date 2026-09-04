@@ -24,6 +24,40 @@ if [ ! -s "$include_file" ]; then
     exit 1
 fi
 
+# The rewrite has to name the version Emby actually serves. Pinning it means an
+# Emby upgrade silently stops the rewrite from matching, browsers keep the
+# cached unpatched playbackmanager.js, and nothing reports a problem. Read the
+# live version and rewrite the include when it has moved.
+emby_origin=${EMBY_ORIGIN:-http://emby:6908}
+live_version=$(curl -sS -m 10 "$emby_origin/web/index.html" 2>/dev/null \
+    | sed -n 's/.*data-appversion="\([^"]*\)".*/\1/p' | head -n 1)
+case $live_version in
+    ''|*-wp*) ;;
+    *)
+        pinned=$(sed -n "s/.*sub_filter 'data-appversion=\"\([^\"]*\)\"'.*/\1/p" \
+            "$include_file" | head -n 1)
+        if [ -n "$pinned" ] && [ "$pinned" != "$live_version" ]; then
+            suffix=$(sed -n "s/.*'data-appversion=\"[^\"]*-\(wp[0-9]*\)\"';.*/\1/p" \
+                "$include_file" | head -n 1)
+            suffix=${suffix:-wp1}
+            echo "Emby version moved from $pinned to $live_version; retargeting" \
+                "the Web cache buster" >&2
+            retarget=$(mktemp)
+            if awk -v v="$live_version" -v s="$suffix" '
+                /sub_filter .data-appversion=/ {
+                    print "sub_filter '\''data-appversion=\"" v "\"'\'' " \
+                        "'\''data-appversion=\"" v "-" s "\"'\'';"
+                    next
+                }
+                { print }
+            ' "$include_file" >"$retarget" && [ -s "$retarget" ]; then
+                cat "$retarget" >"$include_file"
+            fi
+            rm -f "$retarget"
+        fi
+        ;;
+esac
+
 location_token='/web/index.html'
 include_token=$include_file
 include_line="        include $include_file;"
