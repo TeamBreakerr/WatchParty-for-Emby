@@ -236,6 +236,21 @@ Emby's copy decision, so a session that would have remuxed audio re-encodes it
 instead - a fraction of a core next to the video work it is already doing, and
 what every FLAC title on this server already does.
 
+A direct link is useless to a client that will CORS-check it. Emby Web sets
+`crossOrigin` on its video element whenever a subtitle stream is selected at
+playback start, which makes the media load a CORS request - and CORS survives
+redirects. 115's CDN answers `206` with no `Access-Control-Allow-Origin`, so
+the browser blocks the redirected load outright (`net::ERR_FAILED`,
+`playback error type: medianotsupported`) and Emby Web falls back to a
+transcode, wasting the round trip and filing a spurious `DirectPlayError` in
+the logs. `ensure-emby-cors-safe-routing.sh` keeps such a request on Emby's
+backend. It keys off `Sec-Fetch-Mode: cors`, which is that condition stated by
+the client: measured against a same-origin echo server, a video element sends
+`no-cors` without `crossOrigin` and `cors` with it, while `Origin` is absent in
+both cases. Fetch metadata is browser-only, so Emby for iOS, Filmly and every
+ffmpeg-based client keep their direct link, and so does a browser playing
+without subtitles.
+
 A placeholder resolution is a failure, not media. When Xiaoya cannot produce a
 real link - an expired share, a failed `AliyundriveShare2Pan115` transfer,
 provider rate limiting - its `/d/` handler answers `302` to

@@ -17,6 +17,7 @@ RLIMIT_CONFIG = DEPLOY_ROOT / "emby-nginx-rlimit.conf"
 PLACEHOLDER_GUARD = DEPLOY_ROOT / "ensure-emby-placeholder-guard.sh"
 ROOM_AGNOSTIC_ROUTER = DEPLOY_ROOT / "ensure-emby-room-agnostic-routing.sh"
 MANIFEST_ROUTER = DEPLOY_ROOT / "ensure-emby-manifest-backend.sh"
+CORS_ROUTER = DEPLOY_ROOT / "ensure-emby-cors-safe-routing.sh"
 
 # Xiaoya's generated emby.js rewrites an Emby media path onto its own
 # listener before asking OpenList for the signed direct link.  The dynamic
@@ -742,6 +743,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "ensure-emby-openlist-resolver.sh",
                 "ensure-emby-placeholder-guard.sh",
                 "ensure-emby-manifest-backend.sh",
+                "ensure-emby-cors-safe-routing.sh",
                 "emby-nginx-rlimit.conf",
                 "ensure-emby-nginx-rlimit.sh",
                 "updateall-emby-115-wrapper.sh",
@@ -760,6 +762,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "ensure-emby-openlist-resolver.sh",
                 "ensure-emby-placeholder-guard.sh",
                 "ensure-emby-manifest-backend.sh",
+                "ensure-emby-cors-safe-routing.sh",
                 "ensure-emby-nginx-rlimit.sh",
             }
             for name in required_files:
@@ -1878,6 +1881,132 @@ class ServerRenderedManifestRoutingTests(unittest.TestCase):
             self.assertEqual("var unrelated = 1;\n", script.read_text())
 
 
+class CorsCheckedMediaRoutingTests(unittest.TestCase):
+    """A direct link is useless to a client that will CORS-check it.
+
+    Emby Web sets `crossOrigin` on its video element whenever a subtitle is
+    selected, which makes the media load a CORS request; CORS survives
+    redirects, and 115's CDN sends no `Access-Control-Allow-Origin`, so the
+    browser blocks the redirected load outright.  `Sec-Fetch-Mode` states that
+    condition, and native players never send fetch metadata at all.
+    """
+
+    FIXTURE = ServerRenderedManifestRoutingTests.FIXTURE
+
+    DRIVER = (
+        "function drive(uri,fetchMode){var actions=[];var r={uri:uri,"
+        "args:{api_key:'token'},variables:{args:''},"
+        "headersIn:fetchMode?{'Sec-Fetch-Mode':fetchMode}:{},"
+        "internalRedirect:function(v){actions.push(v)},"
+        "return:function(status){actions.push(status)}};"
+        "return redirect2Pan(r).then(function(){return actions})}"
+    )
+
+    def _run(self, script, nginx):
+        return subprocess.run(
+            [str(CORS_ROUTER)],
+            capture_output=True,
+            text=True,
+            env=_resolver_env(script, nginx),
+        )
+
+    def _drive(self, patched, calls):
+        program = (
+            patched
+            + self.DRIVER
+            + "Promise.all(["
+            + ",".join(
+                "drive(%s,%s)" % (json.dumps(uri), json.dumps(mode)) for uri, mode in calls
+            )
+            + "]).then(function(v){process.stdout.write(JSON.stringify(v))})"
+        )
+        observed = subprocess.run(
+            ["node", "-e", program], capture_output=True, text=True
+        )
+        self.assertEqual(0, observed.returncode, observed.stderr)
+        return json.loads(observed.stdout)
+
+    def test_a_cors_checked_media_request_stays_on_the_emby_backend(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(self.FIXTURE)
+            nginx = _write_fake_nginx(root / "nginx")
+
+            first = self._run(script, nginx)
+            patched = script.read_text()
+            second = self._run(script, nginx)
+
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertEqual("patched", first.stdout.strip())
+            self.assertEqual("already-present", second.stdout.strip())
+            self.assertEqual(patched, script.read_text())
+
+            cors, upper, no_cors, absent = self._drive(
+                patched,
+                [
+                    ("/emby/videos/1/original.mkv", "cors"),
+                    ("/emby/videos/1/original.mkv", "CORS"),
+                    ("/emby/videos/1/original.mkv", "no-cors"),
+                    ("/emby/videos/1/original.mkv", None),
+                ],
+            )
+
+            # Emby Web with a subtitle selected: the redirect it would follow
+            # is CORS-checked, and the provider sends no allow-origin header.
+            self.assertEqual(["@backend"], cors)
+            self.assertEqual(["@backend"], upper)
+
+            # A browser playing without subtitles, and every native player,
+            # keep Xiaoya's direct link.
+            self.assertEqual([302], no_cors)
+            self.assertEqual([302], absent)
+
+    def test_missing_anchor_fails_without_touching_the_script(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text("var unrelated = 1;\n")
+            nginx = _write_fake_nginx(root / "nginx")
+
+            result = self._run(script, nginx)
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual("var unrelated = 1;\n", script.read_text())
+
+    def test_it_coexists_with_the_manifest_router(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script = root / "emby.js"
+            script.write_text(self.FIXTURE)
+            nginx = _write_fake_nginx(root / "nginx")
+
+            for router in (MANIFEST_ROUTER, CORS_ROUTER):
+                done = subprocess.run(
+                    [str(router)],
+                    capture_output=True,
+                    text=True,
+                    env=_resolver_env(script, nginx),
+                )
+                self.assertEqual(0, done.returncode, done.stderr)
+
+            patched = script.read_text()
+            self.assertEqual(1, patched.count("codex-emby-manifest-backend-v2"))
+            self.assertEqual(1, patched.count("codex-emby-cors-safe-routing-v1"))
+
+            manifest, cors, direct = self._drive(
+                patched,
+                [
+                    ("/emby/videos/1/master.m3u8", None),
+                    ("/emby/videos/1/original.mkv", "cors"),
+                    ("/emby/videos/1/original.mkv", "no-cors"),
+                ],
+            )
+            self.assertEqual(["@backend"], manifest)
+            self.assertEqual(["@backend"], cors)
+            self.assertEqual([302], direct)
+
+
 class NginxWorkerDescriptorLimitTests(unittest.TestCase):
     """A 1 MiB slice cache exhausts the stock 1024 descriptor soft limit.
 
@@ -1968,6 +2097,7 @@ class RepairStepDeploymentTests(unittest.TestCase):
             "ensure-emby-openlist-resolver.sh",
             "ensure-emby-placeholder-guard.sh",
             "ensure-emby-manifest-backend.sh",
+            "ensure-emby-cors-safe-routing.sh",
             "ensure-emby-nginx-rlimit.sh",
         )
         for installer_name in (

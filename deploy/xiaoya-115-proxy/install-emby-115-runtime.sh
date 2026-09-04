@@ -57,6 +57,7 @@ for required_file in \
     ensure-emby-openlist-resolver.sh \
     ensure-emby-placeholder-guard.sh \
     ensure-emby-manifest-backend.sh \
+    ensure-emby-cors-safe-routing.sh \
     emby-nginx-rlimit.conf \
     ensure-emby-nginx-rlimit.sh \
     ensure-emby-115-guard.sh; do
@@ -75,6 +76,7 @@ if [ ! -x "$data_dir/emby-115-guard" ] \
     || [ ! -x "$data_dir/ensure-emby-openlist-resolver.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-placeholder-guard.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-manifest-backend.sh" ] \
+    || [ ! -x "$data_dir/ensure-emby-cors-safe-routing.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-nginx-rlimit.sh" ] \
     || [ ! -x "$data_dir/ensure-emby-115-guard.sh" ]; then
     echo "115 guard executables are not executable" >&2
@@ -130,6 +132,7 @@ for repair in \
     ensure-emby-openlist-resolver.sh \
     ensure-emby-placeholder-guard.sh \
     ensure-emby-manifest-backend.sh \
+    ensure-emby-cors-safe-routing.sh \
     ensure-emby-nginx-rlimit.sh; do
     if repair_output=$("$data_dir/$repair"); then
         printf '%s\n' "$repair_output"
