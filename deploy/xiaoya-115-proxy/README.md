@@ -44,6 +44,23 @@ the per-slice cache lock for 70 seconds, leaving an explicit margin so a slow
 fill finishes or is cancelled before another request for that slice can reach
 the upstream.
 
+Only Emby's own reads still pass through this layer; every client direct-plays
+straight from the CDN and never touches it. That split was re-tested once the
+throughput problem was fixed, because the obvious question is why the server
+read should not go direct as well. Bypassing the guard entirely makes the same
+seek take 4s, 4s and 2s against 3s, 2s and 3s through it - no longer a
+difference. What it does change is what happens to a burst. Four reads of one
+file started together answer:
+
+  direct        2 x 206, 2 x 403
+  via the guard 4 x 206
+
+A 403 is fatal to ffmpeg, which has no retry of its own, and Emby's transcode
+recovery - kill at ten seconds, restart immediately - manufactures exactly that
+burst pattern. So the guard earns its place on the server path by absorbing
+bursts, not by rationing connections, and it costs nothing measurable to keep
+there.
+
 The loopback `emby-115-guard` process still permits at most two upstream
 requests per media path, but now leases represent short slices instead of
 whole playback streams. Additional slices wait in FIFO order for a natural
