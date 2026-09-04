@@ -13,7 +13,7 @@ proxy_routes_present() {
         '/data/emby-115-locations.conf' \
         'keys_zone=emby_115_slices:16m' \
         'proxy_cache emby_115_slices;' \
-        'slice 1m;' \
+        'slice ' \
         'location @emby_115_stream' \
         'location @emby_115_retry' \
         '/data/emby-115-access.conf' \

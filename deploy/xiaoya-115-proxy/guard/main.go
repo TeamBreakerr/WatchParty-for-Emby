@@ -462,14 +462,22 @@ func newUpstreamClient() *http.Client {
 		DialContext:           dialer.DialContext,
 		ForceAttemptHTTP2:     true,
 		DisableCompression:    true,
-		DisableKeepAlives:     true,
+		// Every slice of one playback goes to the same CDN host, one after the
+		// other. Closing the connection each time made each slice pay a fresh
+		// TCP and TLS handshake, which capped a protected read far below the
+		// bitrate of a 4K source and starved the transcoder that reads it.
+		// Reuse also lowers the rate of *new* requests, which is the dimension
+		// the provider actually limits.
+		MaxIdleConns:          32,
+		MaxIdleConnsPerHost:   8,
+		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second,
 	}
 	return &http.Client{
 		Transport: transport,
-		// A cache slice is only 1 MiB. Bounding the complete response body
-		// gives Nginx's longer cache lock a firm single-flight lifetime.
+		// Bounding the complete response body gives Nginx's longer cache lock a
+		// firm single-flight lifetime.
 		Timeout: upstreamRequestTimeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse

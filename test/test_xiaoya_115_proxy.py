@@ -422,7 +422,9 @@ class Xiaoya115ProxyTests(unittest.TestCase):
         self.assertIn("proxy_pass http://127.0.0.1:15678;", locations)
         self.assertIn("proxy_cache_path", throttle)
         self.assertIn("keys_zone=emby_115_slices", throttle)
-        self.assertEqual(2, locations.count("slice 1m;"))
+        # The size is tuned against measured throughput; assert the slicing
+        # is configured, not the particular value.
+        self.assertEqual(2, len(re.findall(r"slice \d+[km];", locations)))
         self.assertEqual(2, locations.count("proxy_cache emby_115_slices;"))
         self.assertEqual(2, locations.count("proxy_cache_lock on;"))
         self.assertEqual(2, locations.count("proxy_cache_lock_timeout 70s;"))
@@ -774,7 +776,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "    echo '# configuration file /data/emby-115-locations.conf:'\n"
                 "    echo 'keys_zone=emby_115_slices:16m'\n"
                 "    echo 'proxy_cache emby_115_slices;'\n"
-                "    echo 'slice 1m;'\n"
+                "    echo 'slice 8m;'\n"
                 "    echo 'location @emby_115_stream {'\n"
                 "    echo 'location @emby_115_retry {'\n"
                 "    echo '# configuration file /data/emby-115-access.conf:'\n"
@@ -869,7 +871,7 @@ class Xiaoya115ProxyTests(unittest.TestCase):
                 "  echo '# configuration file /data/emby-115-locations.conf:'\n"
                 "  echo 'keys_zone=emby_115_slices:16m'\n"
                 "  echo 'proxy_cache emby_115_slices;'\n"
-                "  echo 'slice 1m;'\n"
+                "  echo 'slice 8m;'\n"
                 "  echo 'location @emby_115_stream {'\n"
                 "  echo 'location @emby_115_retry {'\n"
                 "  echo '# configuration file /data/emby-115-access.conf:'\n"

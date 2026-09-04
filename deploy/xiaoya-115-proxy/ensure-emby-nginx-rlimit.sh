@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Install the main-context worker descriptor limit used by the 1 MiB slice
+# Install the main-context worker descriptor limit used by the slice
 # cache.  Xiaoya's `nginx.conf` already includes `/etc/nginx/conf.d/*.conf`
 # before its `events` block, so the directive can be added without editing an
 # image-owned file.  A reload is enough: Nginx applies `worker_rlimit_nofile`

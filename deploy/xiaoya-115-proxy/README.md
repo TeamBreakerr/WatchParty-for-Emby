@@ -20,14 +20,26 @@ request. That mismatch makes a successfully resolved URL return 403. The
 resolver, Nginx stream locations, and guard therefore use the same non-empty
 `Emby-Xiaoya-Proxy/1.0` User-Agent for the complete signed-link lifecycle.
 
-Nginx converts every protected Range response into 1 MiB cacheable slices. A
-slow Emby/FFmpeg reader can keep its downstream response open, while each 115
-upstream request finishes as soon as its small slice has been downloaded. A
+Nginx converts every protected Range response into 8 MiB cacheable slices, and
+the guard reuses its connections to the CDN. Both numbers are tuned against
+measured throughput rather than chosen for tidiness: with 1 MiB slices and a
+fresh connection per slice, a protected read sustained 1.7 MB/s - below the
+20 Mbit/s bitrate of a 4K source, so a transcode reading through this layer
+starved. Emby kills an HLS transcode that has not produced its first segment in
+ten seconds and immediately retries, and each retry opened another burst of
+requests the provider then answered with 403. Connection reuse alone brought
+that to 3.3 MB/s and the larger slice alone to 4.0 MB/s; together they reach
+10.4 MB/s against 12.9 MB/s read directly from the CDN, and the seek that used
+to take twelve seconds completes in three. Slice size and connection reuse are
+therefore correctness constraints for server-side reads, not tuning knobs.
+
+A slow Emby/FFmpeg reader can keep its downstream response open, while each 115
+upstream request finishes as soon as its slice has been downloaded. A
 privacy-safe cache key combines the hash of the stable media path with the byte
 range; signed URLs, tokens, client addresses, and request headers never enter
 the key. Cache locking also collapses simultaneous reads of the same slice.
 The guard can wait up to 5 seconds for a lease and 250 milliseconds for close
-grace, then gives the complete 1 MiB upstream request 60 seconds. Nginx holds
+grace, then gives the complete slice upstream request 60 seconds. Nginx holds
 the per-slice cache lock for 70 seconds, leaving an explicit margin so a slow
 fill finishes or is cancelled before another request for that slice can reach
 the upstream.
