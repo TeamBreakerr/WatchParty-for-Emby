@@ -1,12 +1,27 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace WatchPartyForEmby
 {
     /// <summary>
-    /// Learns end-to-end resume latency independently for each Emby SessionId. A sample
-    /// is accepted only after an unpaused client reports real forward media progress;
-    /// a synthetic Unpause or Seek echo by itself is never treated as playback.
+    /// Learns how long a participant takes to actually resume after it is told to,
+    /// so the resume target can be offset by that much and both ends start together.
+    ///
+    /// The estimate is remembered per room, not per session alone. Resume latency is
+    /// dominated by what the client has to do to produce the first frame, and that is
+    /// a property of the media: a title the client direct-plays resumes in about half
+    /// a second, while one that restarts a transcode takes two or three. Measured on
+    /// one iPhone in one evening, the samples were 530, 653, 991, 1351, 1446, 1709,
+    /// 1990 and 2630 ms - two clusters, not one population, and no single scalar fits
+    /// both. A room is bound to its content, so keying the estimate by room separates
+    /// those clusters without having to classify play methods.
+    ///
+    /// The memory also survives a participant leaving. It used to be discarded with
+    /// the participant, so every room switch dropped back to a zero estimate and the
+    /// first resume in the new room was not compensated at all - which is most of the
+    /// error a viewer actually notices, because switching rooms is exactly when people
+    /// press play.
     /// </summary>
     public sealed class ParticipantResumeLatencyEstimator
     {
@@ -15,9 +30,18 @@ namespace WatchPartyForEmby
         private static readonly long TargetEligibilityToleranceTicks =
             TimeSpan.FromSeconds(1.5).Ticks;
 
+        /// <summary>
+        /// Rooms remembered per estimator. Well above any realistic room count; the
+        /// bound only exists so a long-lived server cannot accumulate entries for
+        /// sessions that never come back.
+        /// </summary>
+        private const int MaximumRememberedRooms = 256;
+
         private readonly object _syncRoot = new object();
-        private readonly Dictionary<string, SessionLatencyState> _sessions =
-            new Dictionary<string, SessionLatencyState>(StringComparer.Ordinal);
+        private readonly Dictionary<string, PendingResume> _pending =
+            new Dictionary<string, PendingResume>(StringComparer.Ordinal);
+        private readonly Dictionary<string, LearnedLatency> _learned =
+            new Dictionary<string, LearnedLatency>(StringComparer.Ordinal);
         private readonly TimeSpan _initialEstimate;
         private readonly TimeSpan _minimumEstimate;
         private readonly TimeSpan _maximumEstimate;
@@ -55,7 +79,12 @@ namespace WatchPartyForEmby
             _smoothingFactor = smoothingFactor;
         }
 
-        public TimeSpan GetEstimatedLatency(string sessionId)
+        /// <summary>
+        /// The compensation to apply for this session in this room. A room with no
+        /// measurement of its own borrows what the same session learned elsewhere,
+        /// which is a far better opening guess than assuming an instant resume.
+        /// </summary>
+        public TimeSpan GetEstimatedLatency(string partyId, string sessionId)
         {
             if (string.IsNullOrEmpty(sessionId))
             {
@@ -64,13 +93,12 @@ namespace WatchPartyForEmby
 
             lock (_syncRoot)
             {
-                return _sessions.TryGetValue(sessionId, out var state)
-                    ? state.EstimatedLatency
-                    : _initialEstimate;
+                return CurrentEstimateLocked(partyId, sessionId);
             }
         }
 
         public void RecordResumeSeek(
+            string partyId,
             string sessionId,
             long targetPositionTicks,
             DateTime sentAtUtc)
@@ -82,10 +110,13 @@ namespace WatchPartyForEmby
 
             lock (_syncRoot)
             {
-                var state = GetOrCreateState(sessionId);
-                state.PendingTargetPositionTicks = targetPositionTicks;
-                state.PendingSeekSentAtUtc = sentAtUtc;
-                state.BaselinePositionTicks = null;
+                _pending[sessionId] = new PendingResume
+                {
+                    PartyId = partyId,
+                    TargetPositionTicks = targetPositionTicks,
+                    SeekSentAtUtc = sentAtUtc,
+                    BaselinePositionTicks = null
+                };
             }
         }
 
@@ -106,32 +137,28 @@ namespace WatchPartyForEmby
 
             lock (_syncRoot)
             {
-                if (!_sessions.TryGetValue(sessionId, out var state)
-                    || !state.PendingSeekSentAtUtc.HasValue
-                    || !state.PendingTargetPositionTicks.HasValue)
+                if (!_pending.TryGetValue(sessionId, out var pending))
                 {
-                    updatedEstimate = state?.EstimatedLatency ?? _initialEstimate;
                     return false;
                 }
 
-                var elapsed = reportedAtUtc - state.PendingSeekSentAtUtc.Value;
+                updatedEstimate = CurrentEstimateLocked(pending.PartyId, sessionId);
+
+                var elapsed = reportedAtUtc - pending.SeekSentAtUtc;
                 if (elapsed < TimeSpan.Zero)
                 {
-                    updatedEstimate = state.EstimatedLatency;
                     return false;
                 }
                 if (elapsed > _sampleTimeout)
                 {
-                    ClearPendingObservation(state);
-                    updatedEstimate = state.EstimatedLatency;
+                    _pending.Remove(sessionId);
                     return false;
                 }
 
-                var targetPositionTicks = state.PendingTargetPositionTicks.Value;
+                var targetPositionTicks = pending.TargetPositionTicks;
                 if (positionTicks
                     < targetPositionTicks - TargetEligibilityToleranceTicks)
                 {
-                    updatedEstimate = state.EstimatedLatency;
                     return false;
                 }
                 var maximumPlausiblePositionTicks = targetPositionTicks
@@ -139,21 +166,18 @@ namespace WatchPartyForEmby
                     + TargetEligibilityToleranceTicks;
                 if (positionTicks > maximumPlausiblePositionTicks)
                 {
-                    updatedEstimate = state.EstimatedLatency;
                     return false;
                 }
 
-                if (!state.BaselinePositionTicks.HasValue)
+                if (!pending.BaselinePositionTicks.HasValue)
                 {
-                    state.BaselinePositionTicks = positionTicks;
-                    updatedEstimate = state.EstimatedLatency;
+                    pending.BaselinePositionTicks = positionTicks;
                     return false;
                 }
 
-                if (positionTicks - state.BaselinePositionTicks.Value
+                if (positionTicks - pending.BaselinePositionTicks.Value
                     < MinimumForwardProgressTicks)
                 {
-                    updatedEstimate = state.EstimatedLatency;
                     return false;
                 }
 
@@ -164,15 +188,13 @@ namespace WatchPartyForEmby
                     elapsed - TimeSpan.FromTicks(mediaAdvanceTicks),
                     _minimumEstimate,
                     _maximumEstimate);
-                var estimatedTicks = state.EstimatedLatency.Ticks
-                    + ((observedLatency.Ticks - state.EstimatedLatency.Ticks)
-                        * _smoothingFactor);
-                state.EstimatedLatency = TimeSpan.FromTicks(
-                    (long)Math.Round(
-                        estimatedTicks,
-                        MidpointRounding.AwayFromZero));
-                updatedEstimate = state.EstimatedLatency;
-                ClearPendingObservation(state);
+
+                updatedEstimate = ApplyObservationLocked(
+                    pending.PartyId,
+                    sessionId,
+                    observedLatency,
+                    reportedAtUtc);
+                _pending.Remove(sessionId);
                 return true;
             }
         }
@@ -186,46 +208,115 @@ namespace WatchPartyForEmby
 
             lock (_syncRoot)
             {
-                if (_sessions.TryGetValue(sessionId, out var state))
-                {
-                    ClearPendingObservation(state);
-                }
+                _pending.Remove(sessionId);
             }
         }
 
+        /// <summary>
+        /// Drops the in-flight observation for a session that is leaving. What the
+        /// session has already learned is deliberately kept: the same device rejoining
+        /// the same room resumes exactly as slowly as it did before, and re-measuring
+        /// that from scratch costs the viewer one uncompensated resume every time.
+        /// </summary>
         public void ClearSession(string sessionId)
         {
-            if (string.IsNullOrEmpty(sessionId))
-            {
-                return;
-            }
-
-            lock (_syncRoot)
-            {
-                _sessions.Remove(sessionId);
-            }
+            CancelPendingResume(sessionId);
         }
 
         public void Clear()
         {
             lock (_syncRoot)
             {
-                _sessions.Clear();
+                _pending.Clear();
+                _learned.Clear();
             }
         }
 
-        private SessionLatencyState GetOrCreateState(string sessionId)
+        private TimeSpan CurrentEstimateLocked(string partyId, string sessionId)
         {
-            if (!_sessions.TryGetValue(sessionId, out var state))
+            if (_learned.TryGetValue(RoomKey(partyId, sessionId), out var learned)
+                && learned.HasSample)
             {
-                state = new SessionLatencyState
-                {
-                    EstimatedLatency = _initialEstimate
-                };
-                _sessions[sessionId] = state;
+                return learned.Value;
             }
 
-            return state;
+            return SeedForSessionLocked(sessionId);
+        }
+
+        /// <summary>
+        /// A room with no history of its own starts from the mean of what this session
+        /// measured in the rooms it has played, rather than from zero.
+        /// </summary>
+        private TimeSpan SeedForSessionLocked(string sessionId)
+        {
+            var samples = _learned.Values
+                .Where(entry => entry.HasSample
+                    && string.Equals(entry.SessionId, sessionId, StringComparison.Ordinal))
+                .Select(entry => entry.Value.Ticks)
+                .ToList();
+
+            if (samples.Count == 0)
+            {
+                return _initialEstimate;
+            }
+
+            return Clamp(
+                TimeSpan.FromTicks((long)Math.Round(samples.Average())),
+                _minimumEstimate,
+                _maximumEstimate);
+        }
+
+        private TimeSpan ApplyObservationLocked(
+            string partyId,
+            string sessionId,
+            TimeSpan observedLatency,
+            DateTime observedAtUtc)
+        {
+            var key = RoomKey(partyId, sessionId);
+            if (!_learned.TryGetValue(key, out var learned))
+            {
+                learned = new LearnedLatency { SessionId = sessionId };
+                _learned[key] = learned;
+                EvictSurplusRoomsLocked();
+            }
+
+            if (!learned.HasSample)
+            {
+                // With no measurement for this room yet, the measurement is the best
+                // estimate there is. Blending it into a borrowed or zero prior only
+                // guarantees the next resume is compensated by a fraction of what it
+                // needs, which is how the first two resumes in every room used to be
+                // systematically short.
+                learned.Value = observedLatency;
+                learned.HasSample = true;
+            }
+            else
+            {
+                var estimatedTicks = learned.Value.Ticks
+                    + ((observedLatency.Ticks - learned.Value.Ticks)
+                        * _smoothingFactor);
+                learned.Value = TimeSpan.FromTicks(
+                    (long)Math.Round(estimatedTicks, MidpointRounding.AwayFromZero));
+            }
+
+            learned.UpdatedAtUtc = observedAtUtc;
+            return learned.Value;
+        }
+
+        private void EvictSurplusRoomsLocked()
+        {
+            while (_learned.Count > MaximumRememberedRooms)
+            {
+                var oldest = _learned
+                    .OrderBy(entry => entry.Value.UpdatedAtUtc)
+                    .First();
+                _learned.Remove(oldest.Key);
+            }
+        }
+
+        private static string RoomKey(string partyId, string sessionId)
+        {
+            return (partyId ?? string.Empty) + "\n" + sessionId;
         }
 
         private static TimeSpan Clamp(
@@ -244,19 +335,20 @@ namespace WatchPartyForEmby
             return value;
         }
 
-        private static void ClearPendingObservation(SessionLatencyState state)
+        private sealed class PendingResume
         {
-            state.PendingTargetPositionTicks = null;
-            state.PendingSeekSentAtUtc = null;
-            state.BaselinePositionTicks = null;
+            public string PartyId { get; set; }
+            public long TargetPositionTicks { get; set; }
+            public DateTime SeekSentAtUtc { get; set; }
+            public long? BaselinePositionTicks { get; set; }
         }
 
-        private sealed class SessionLatencyState
+        private sealed class LearnedLatency
         {
-            public TimeSpan EstimatedLatency { get; set; }
-            public long? PendingTargetPositionTicks { get; set; }
-            public DateTime? PendingSeekSentAtUtc { get; set; }
-            public long? BaselinePositionTicks { get; set; }
+            public string SessionId { get; set; }
+            public TimeSpan Value { get; set; }
+            public bool HasSample { get; set; }
+            public DateTime UpdatedAtUtc { get; set; }
         }
     }
 }

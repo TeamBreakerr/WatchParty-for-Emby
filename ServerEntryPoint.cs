@@ -1742,6 +1742,7 @@ namespace WatchPartyForEmby
                             nowUtc);
                     var learnedLatency =
                         _participantResumeLatencies.GetEstimatedLatency(
+                            party.Id,
                             participantSession.Id);
                     var targetPosition = Math.Max(
                         0,
@@ -1805,6 +1806,7 @@ namespace WatchPartyForEmby
                                     cancellationToken: confirmationToken,
                                     onDispatching: dispatchedAtUtc =>
                                         _participantResumeLatencies.RecordResumeSeek(
+                                            party.Id,
                                             participantSession.Id,
                                             confirmedTargetPosition,
                                             dispatchedAtUtc))

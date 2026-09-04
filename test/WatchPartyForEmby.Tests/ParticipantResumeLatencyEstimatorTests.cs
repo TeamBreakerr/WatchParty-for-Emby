@@ -5,210 +5,262 @@ namespace WatchPartyForEmby.Tests
 {
     public sealed class ParticipantResumeLatencyEstimatorTests
     {
+        private const string RoomA = "party-berserk";
+        private const string RoomB = "party-mushoku";
+        private static readonly DateTime Origin =
+            new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
+        private static readonly long Target = TimeSpan.FromMinutes(10).Ticks;
+
         [Fact]
-        public void SlowSessionSampleDoesNotChangeFastSessionEstimate()
+        public void TheFirstSampleInARoomIsAdoptedAtFaceValue()
         {
+            // With no measurement for a room yet there is nothing to smooth towards.
+            // Blending the first observation into a zero prior compensated the next
+            // resume by half of what it needed, which is why the first resumes after
+            // a room switch were visibly short.
             var estimator = CreateEstimator(smoothingFactor: 0.5);
-            var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
-            var target = TimeSpan.FromMinutes(10).Ticks;
 
-            estimator.RecordResumeSeek("slow-ios", target, sentAt);
+            var estimate = ObserveResume(
+                estimator, RoomA, "ios", Origin, TimeSpan.FromSeconds(4));
 
-            Assert.False(estimator.TryRecordPlaybackProgress(
-                "slow-ios",
-                target,
-                isPaused: false,
-                sentAt + TimeSpan.FromSeconds(4),
-                out _,
-                out _));
-            Assert.True(estimator.TryRecordPlaybackProgress(
-                "slow-ios",
-                target + TimeSpan.FromSeconds(1).Ticks,
-                isPaused: false,
-                sentAt + TimeSpan.FromSeconds(5),
-                out var observedLatency,
-                out var updatedEstimate));
-            Assert.Equal(TimeSpan.FromSeconds(4), observedLatency);
-            Assert.Equal(TimeSpan.FromSeconds(2), updatedEstimate);
-            Assert.Equal(TimeSpan.Zero, estimator.GetEstimatedLatency("fast-ios"));
+            Assert.Equal(TimeSpan.FromSeconds(4), estimate);
+            Assert.Equal(
+                TimeSpan.FromSeconds(4),
+                estimator.GetEstimatedLatency(RoomA, "ios"));
         }
 
         [Fact]
-        public void EwmaSmoothsRepeatedSamplesAndClampsOutliers()
+        public void LaterSamplesInTheSameRoomAreSmoothedAndClamped()
         {
             var estimator = CreateEstimator(smoothingFactor: 0.5);
-            var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
-            var target = TimeSpan.FromMinutes(10).Ticks;
+            ObserveResume(estimator, RoomA, "ios", Origin, TimeSpan.FromSeconds(4));
 
-            estimator.RecordResumeSeek("ios", target, sentAt);
+            var later = Origin + TimeSpan.FromMinutes(1);
+            estimator.RecordResumeSeek(RoomA, "ios", Target, later);
             Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                target,
+                Target,
                 isPaused: false,
-                sentAt + TimeSpan.FromSeconds(4),
+                later + TimeSpan.FromMilliseconds(100),
                 out _,
                 out _));
             Assert.True(estimator.TryRecordPlaybackProgress(
                 "ios",
-                target + TimeSpan.FromSeconds(1).Ticks,
+                Target + TimeSpan.FromSeconds(1).Ticks,
                 isPaused: false,
-                sentAt + TimeSpan.FromSeconds(5),
-                out _,
-                out var firstEstimate));
+                later + TimeSpan.FromSeconds(1),
+                out var observed,
+                out var estimate));
 
-            estimator.RecordResumeSeek(
+            // An instant resume is a real observation, not an outlier to discard; it
+            // pulls the estimate down by the smoothing factor rather than replacing it.
+            Assert.Equal(TimeSpan.Zero, observed);
+            Assert.Equal(TimeSpan.FromSeconds(2), estimate);
+        }
+
+        [Fact]
+        public void RoomsLearnIndependently()
+        {
+            // Resume latency is dominated by what the client must do to produce the
+            // first frame, and that is a property of the media: a title it direct-plays
+            // resumes in half a second, one that restarts a transcode in two or three.
+            // A room is bound to its content, so one room's measurement must not drag
+            // another's estimate around.
+            var estimator = CreateEstimator(smoothingFactor: 0.5);
+
+            ObserveResume(estimator, RoomA, "ios", Origin, TimeSpan.FromSeconds(4));
+            ObserveResume(
+                estimator,
+                RoomB,
                 "ios",
-                target,
-                sentAt + TimeSpan.FromMinutes(1));
+                Origin + TimeSpan.FromMinutes(5),
+                TimeSpan.FromSeconds(1));
+
+            Assert.Equal(
+                TimeSpan.FromSeconds(4),
+                estimator.GetEstimatedLatency(RoomA, "ios"));
+            Assert.Equal(
+                TimeSpan.FromSeconds(1),
+                estimator.GetEstimatedLatency(RoomB, "ios"));
+        }
+
+        [Fact]
+        public void AnUnmeasuredRoomBorrowsWhatTheSessionLearnedElsewhere()
+        {
+            var estimator = CreateEstimator(smoothingFactor: 0.5);
+            ObserveResume(estimator, RoomA, "ios", Origin, TimeSpan.FromSeconds(4));
+
+            // Better an opening guess from the same device than assuming it resumes
+            // instantly, which is what an unseeded room used to assume.
+            Assert.Equal(
+                TimeSpan.FromSeconds(4),
+                estimator.GetEstimatedLatency(RoomB, "ios"));
+
+            // A device that has never been measured has nothing to borrow.
+            Assert.Equal(
+                TimeSpan.Zero,
+                estimator.GetEstimatedLatency(RoomA, "another-device"));
+        }
+
+        [Fact]
+        public void LeavingARoomDropsThePendingObservationButKeepsWhatItLearned()
+        {
+            // Switching rooms removes the participant. Discarding the measurement with
+            // it meant the first resume in every room was uncompensated - and switching
+            // rooms is exactly when people press play.
+            var estimator = CreateEstimator(smoothingFactor: 0.5);
+            ObserveResume(estimator, RoomA, "ios", Origin, TimeSpan.FromSeconds(4));
+
+            var pendingAt = Origin + TimeSpan.FromMinutes(1);
+            estimator.RecordResumeSeek(RoomA, "ios", Target, pendingAt);
+            estimator.ClearSession("ios");
+
+            Assert.Equal(
+                TimeSpan.FromSeconds(4),
+                estimator.GetEstimatedLatency(RoomA, "ios"));
             Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                target,
+                Target + TimeSpan.FromSeconds(2).Ticks,
                 isPaused: false,
-                sentAt + TimeSpan.FromMinutes(1) + TimeSpan.FromMilliseconds(100),
+                pendingAt + TimeSpan.FromSeconds(4),
                 out _,
                 out _));
-            Assert.True(estimator.TryRecordPlaybackProgress(
-                "ios",
-                target + TimeSpan.FromSeconds(1).Ticks,
-                isPaused: false,
-                sentAt + TimeSpan.FromMinutes(1) + TimeSpan.FromSeconds(1),
-                out var clampedObservation,
-                out var secondEstimate));
+        }
 
-            Assert.Equal(TimeSpan.FromSeconds(2), firstEstimate);
-            Assert.Equal(TimeSpan.Zero, clampedObservation);
-            Assert.Equal(TimeSpan.FromSeconds(1), secondEstimate);
+        [Fact]
+        public void ClearDiscardsEverything()
+        {
+            var estimator = CreateEstimator(smoothingFactor: 0.5);
+            ObserveResume(estimator, RoomA, "ios", Origin, TimeSpan.FromSeconds(4));
+
+            estimator.Clear();
+
+            Assert.Equal(
+                TimeSpan.Zero,
+                estimator.GetEstimatedLatency(RoomA, "ios"));
         }
 
         [Fact]
         public void MissingAndExpiredAcknowledgementsDoNotChangeEstimate()
         {
             var estimator = CreateEstimator(smoothingFactor: 0.5);
-            var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
 
             Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
                 100L,
                 isPaused: false,
-                sentAt,
+                Origin,
                 out _,
                 out _));
 
-            estimator.RecordResumeSeek("ios", 100L, sentAt);
+            estimator.RecordResumeSeek(RoomA, "ios", 100L, Origin);
             Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
                 100L,
                 isPaused: false,
-                sentAt + TimeSpan.FromSeconds(31),
+                Origin + TimeSpan.FromSeconds(31),
                 out _,
                 out _));
-            Assert.Equal(TimeSpan.Zero, estimator.GetEstimatedLatency("ios"));
-        }
-
-        [Fact]
-        public void ClearSessionDropsPendingAndLearnedState()
-        {
-            var estimator = CreateEstimator(smoothingFactor: 1);
-            var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
-            var target = TimeSpan.FromSeconds(10).Ticks;
-
-            estimator.RecordResumeSeek("ios", target, sentAt);
-            Assert.False(estimator.TryRecordPlaybackProgress(
-                "ios",
-                target,
-                isPaused: false,
-                sentAt + TimeSpan.FromSeconds(3),
-                out _,
-                out _));
-            Assert.True(estimator.TryRecordPlaybackProgress(
-                "ios",
-                target + TimeSpan.FromSeconds(1).Ticks,
-                isPaused: false,
-                sentAt + TimeSpan.FromSeconds(4),
-                out _,
-                out _));
-
-            estimator.ClearSession("ios");
-
-            Assert.Equal(TimeSpan.Zero, estimator.GetEstimatedLatency("ios"));
-            Assert.False(estimator.TryRecordPlaybackProgress(
-                "ios",
-                target + TimeSpan.FromSeconds(2).Ticks,
-                isPaused: false,
-                sentAt + TimeSpan.FromSeconds(4),
-                out _,
-                out _));
+            Assert.Equal(TimeSpan.Zero, estimator.GetEstimatedLatency(RoomA, "ios"));
         }
 
         [Fact]
         public void PausedAndStationaryReportsCannotBecomeResumeLatencySamples()
         {
             var estimator = CreateEstimator(smoothingFactor: 1);
-            var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
-            var target = TimeSpan.FromMinutes(10).Ticks;
-            estimator.RecordResumeSeek("ios", target, sentAt);
+            estimator.RecordResumeSeek(RoomA, "ios", Target, Origin);
 
             Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                target,
+                Target,
                 isPaused: true,
-                sentAt + TimeSpan.FromSeconds(2),
+                Origin + TimeSpan.FromSeconds(2),
                 out _,
                 out _));
             Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                target,
+                Target,
                 isPaused: false,
-                sentAt + TimeSpan.FromSeconds(3),
+                Origin + TimeSpan.FromSeconds(3),
                 out _,
                 out _));
             Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                target,
+                Target,
                 isPaused: false,
-                sentAt + TimeSpan.FromSeconds(4),
+                Origin + TimeSpan.FromSeconds(4),
                 out _,
                 out _));
-            Assert.Equal(TimeSpan.Zero, estimator.GetEstimatedLatency("ios"));
+            Assert.Equal(TimeSpan.Zero, estimator.GetEstimatedLatency(RoomA, "ios"));
         }
 
         [Fact]
         public void PositionBehindTheCommandedTargetIsIgnoredAsAStalePlayerReport()
         {
             var estimator = CreateEstimator(smoothingFactor: 1);
-            var sentAt = new DateTime(2026, 8, 21, 10, 0, 0, DateTimeKind.Utc);
-            var target = TimeSpan.FromMinutes(10).Ticks;
-            estimator.RecordResumeSeek("ios", target, sentAt);
+            estimator.RecordResumeSeek(RoomA, "ios", Target, Origin);
 
             Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
                 TimeSpan.FromMinutes(2).Ticks,
                 isPaused: false,
-                sentAt + TimeSpan.FromSeconds(3),
+                Origin + TimeSpan.FromSeconds(3),
                 out _,
                 out _));
             Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
                 TimeSpan.FromMinutes(20).Ticks,
                 isPaused: false,
-                sentAt + TimeSpan.FromSeconds(3),
+                Origin + TimeSpan.FromSeconds(3),
                 out _,
                 out _));
             Assert.False(estimator.TryRecordPlaybackProgress(
                 "ios",
-                target,
+                Target,
                 isPaused: false,
-                sentAt + TimeSpan.FromSeconds(4),
+                Origin + TimeSpan.FromSeconds(4),
                 out _,
                 out _));
             Assert.True(estimator.TryRecordPlaybackProgress(
                 "ios",
-                target + TimeSpan.FromSeconds(1).Ticks,
+                Target + TimeSpan.FromSeconds(1).Ticks,
                 isPaused: false,
-                sentAt + TimeSpan.FromSeconds(5),
+                Origin + TimeSpan.FromSeconds(5),
                 out var observedLatency,
                 out _));
             Assert.Equal(TimeSpan.FromSeconds(4), observedLatency);
+        }
+
+        /// <summary>
+        /// Drives one complete resume observation and returns the resulting estimate.
+        /// The player reports the commanded position first - which only establishes a
+        /// baseline - and then a position one second further on, so the elapsed time
+        /// minus the media it advanced is the latency being measured.
+        /// </summary>
+        private static TimeSpan ObserveResume(
+            ParticipantResumeLatencyEstimator estimator,
+            string partyId,
+            string sessionId,
+            DateTime sentAtUtc,
+            TimeSpan latency)
+        {
+            estimator.RecordResumeSeek(partyId, sessionId, Target, sentAtUtc);
+            Assert.False(estimator.TryRecordPlaybackProgress(
+                sessionId,
+                Target,
+                isPaused: false,
+                sentAtUtc + latency,
+                out _,
+                out _));
+            Assert.True(estimator.TryRecordPlaybackProgress(
+                sessionId,
+                Target + TimeSpan.FromSeconds(1).Ticks,
+                isPaused: false,
+                sentAtUtc + latency + TimeSpan.FromSeconds(1),
+                out var observed,
+                out var estimate));
+            Assert.Equal(latency, observed);
+            return estimate;
         }
 
         private static ParticipantResumeLatencyEstimator CreateEstimator(
