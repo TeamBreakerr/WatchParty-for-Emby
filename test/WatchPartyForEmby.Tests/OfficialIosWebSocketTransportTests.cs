@@ -115,6 +115,9 @@ namespace WatchPartyForEmby.Tests
 
         public List<string> Messages { get; } = new List<string>();
 
+        /// <summary>Makes the next write fail the way a dead socket does.</summary>
+        public bool FailsToSend { get; set; }
+
         public ISessionController Controller { get; private set; }
 
         public static TProxy Create<TProxy>(bool isSessionActive)
@@ -140,6 +143,10 @@ namespace WatchPartyForEmby.Tests
                 case "SupportsMessage":
                     return true;
                 case "SendMessage":
+                    if (FailsToSend)
+                    {
+                        throw new InvalidOperationException("socket is gone");
+                    }
                     Messages.Add(args[0].ToString());
                     return Task.CompletedTask;
                 default:

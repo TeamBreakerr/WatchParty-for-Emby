@@ -10,9 +10,13 @@ namespace WatchPartyForEmby
     /// <summary>
     /// Keeps official iOS command traffic on its active WebSocket controller instead
     /// of allowing Emby's session manager to fall back to Firebase push delivery.
-    /// Emby itself sends protocol-level WebSocket pings; this class deliberately does
-    /// not inject an application-level KeepAlive message, which is not part of the
-    /// official iOS command protocol.
+    ///
+    /// This class used to record that Emby sends protocol-level WebSocket pings, and
+    /// concluded from that no keepalive of our own was warranted. Reading the wire
+    /// disproved it: what Emby sends is one unsolicited Pong every 1800 seconds, and
+    /// a Pong obliges the client to answer nothing. The socket therefore goes idle
+    /// for half-hour stretches and dies unnoticed, which is what
+    /// <see cref="ControlChannelKeepAlive"/> now exists to prevent.
     /// </summary>
     public sealed class OfficialIosWebSocketTransport
     {
@@ -100,9 +104,22 @@ namespace WatchPartyForEmby
         public static int CountActiveWebSocketControllers(
             IEnumerable<ISessionController> controllers)
         {
-            return controllers?.Count(controller => controller != null
-                && controller.IsSessionActive
-                && IsWebSocketController(controller)) ?? 0;
+            return SelectActiveWebSocketControllers(controllers).Count;
+        }
+
+        /// <summary>
+        /// The live WebSocket controllers themselves, for callers that need to write
+        /// to the socket rather than merely know that one exists.
+        /// </summary>
+        public static IReadOnlyList<ISessionController> SelectActiveWebSocketControllers(
+            IEnumerable<ISessionController> controllers)
+        {
+            return controllers?
+                .Where(controller => controller != null
+                    && controller.IsSessionActive
+                    && IsWebSocketController(controller))
+                .ToList()
+                ?? (IReadOnlyList<ISessionController>)Array.Empty<ISessionController>();
         }
 
         private static bool IsWebSocketController(ISessionController controller)

@@ -20,6 +20,8 @@ namespace WatchPartyForEmby
         private readonly ILogger _logger;
         private readonly Plugin _plugin;
         private Timer _syncTimer;
+        private Timer _controlChannelKeepAliveTimer;
+        private int _controlChannelKeepAliveRunning;
         private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _partySyncedSessions = new ConcurrentDictionary<string, ConcurrentDictionary<string, byte>>();
         private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, bool>> _partySessionPauseState = new ConcurrentDictionary<string, ConcurrentDictionary<string, bool>>();
         private readonly HashSet<string> _trackedPartyIds = new HashSet<string>();
@@ -81,6 +83,8 @@ namespace WatchPartyForEmby
                     PauseAlignmentConfirmationTimeout);
         private readonly OfficialIosWebSocketTransport _officialIosWebSocketTransport =
             new OfficialIosWebSocketTransport();
+        private readonly ControlChannelKeepAlive _controlChannelKeepAlive =
+            new ControlChannelKeepAlive();
         private readonly PartyManualSynchronizationCoordinator _manualSynchronizationCoordinator =
             new PartyManualSynchronizationCoordinator();
         private readonly PartyPlaybackTransitionCoordinator _partyPlaybackTransitions;
@@ -147,6 +151,14 @@ namespace WatchPartyForEmby
             TimeSpan.FromSeconds(4);
         private static readonly TimeSpan OfficialIosWebSocketRecoveryPollInterval =
             TimeSpan.FromMilliseconds(250);
+        // Emby writes one unsolicited Pong per socket every 1800 seconds and asks the
+        // client for nothing, so a command WebSocket can sit idle for half an hour at
+        // a time. Anything on the path that reaps an idle mapping sooner than that
+        // kills remote control without either end noticing. Two minutes is the
+        // interval ASP.NET Core itself defaults to for WebSocket keepalives and sits
+        // comfortably under the shortest NAT timeouts seen in practice.
+        private static readonly TimeSpan ControlChannelKeepAliveInterval =
+            TimeSpan.FromMinutes(2);
         // When the master drags the timeline, Emby Web emits a position-less "unknown"
         // report, then a real ~1s position while the video element is recreated, then the
         // real target up to ~9s later. Coalesce the burst into a single seek per drag so
@@ -687,6 +699,10 @@ namespace WatchPartyForEmby
             // still requests immediate validation.
             _lastPartyValidationUtc = DateTime.UtcNow;
             _syncTimer = new Timer(CheckAndSyncUsers, null, intervalMs, intervalMs);
+
+            var keepAliveMs = (int)ControlChannelKeepAliveInterval.TotalMilliseconds;
+            _controlChannelKeepAliveTimer = new Timer(
+                KeepControlChannelsAlive, null, keepAliveMs, keepAliveMs);
         }
 
         private void NormalizePartyConfiguration()
@@ -2465,6 +2481,93 @@ namespace WatchPartyForEmby
                 .Distinct(StringComparer.Ordinal)
                 .Where(activeSessions.ContainsKey)
                 .Select(sessionId => activeSessions[sessionId])
+                .ToList();
+        }
+
+        /// <summary>
+        /// Writes a keepalive frame to every party participant's command WebSocket, so
+        /// the path between server and client never sits idle long enough to be reaped.
+        /// See <see cref="ControlChannelKeepAlive"/> for the measurements behind this.
+        /// </summary>
+        private async void KeepControlChannelsAlive(object state)
+        {
+            if (_lifetimeCts.IsCancellationRequested
+                || Interlocked.Exchange(ref _controlChannelKeepAliveRunning, 1) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                var sessions = GetPartySessionsForKeepAlive();
+                if (sessions.Count == 0)
+                {
+                    return;
+                }
+
+                var report = await _controlChannelKeepAlive
+                    .SendAsync(sessions, _lifetimeCts.Token)
+                    .ConfigureAwait(false);
+
+                foreach (var sessionId in report.Lost)
+                {
+                    _logger.Info(
+                        $"[Watch Party] Control channel lost for session {sessionId}; " +
+                        "it cannot be commanded again until the client reconnects");
+                }
+
+                foreach (var sessionId in report.Restored)
+                {
+                    _logger.Info(
+                        $"[Watch Party] Control channel restored for session {sessionId}");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorException(
+                    "[Watch Party] Control channel keepalive pass failed", ex);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _controlChannelKeepAliveRunning, 0);
+            }
+        }
+
+        /// <summary>
+        /// Every live session registered in any room, whether the room is running or
+        /// still waiting: a socket that dies in the waiting room is just as unusable
+        /// once the film starts.
+        /// </summary>
+        private List<SessionInfo> GetPartySessionsForKeepAlive()
+        {
+            List<string> partyIds;
+            lock (_configurationMaintenanceLock)
+            {
+                partyIds = _trackedPartyIds.ToList();
+            }
+
+            var participantSessionIds = new HashSet<string>(
+                partyIds
+                    .SelectMany(partyId => _plugin.PartyParticipants.GetSessions(partyId))
+                    .Where(participant => participant != null
+                        && !string.IsNullOrEmpty(participant.SessionId))
+                    .Select(participant => participant.SessionId),
+                StringComparer.Ordinal);
+
+            if (participantSessionIds.Count == 0)
+            {
+                return new List<SessionInfo>();
+            }
+
+            return _sessionManager.Sessions
+                .Where(session => session != null
+                    && !string.IsNullOrEmpty(session.Id)
+                    && participantSessionIds.Contains(session.Id))
+                .GroupBy(session => session.Id, StringComparer.Ordinal)
+                .Select(group => group.First())
                 .ToList();
         }
 
@@ -6130,6 +6233,7 @@ namespace WatchPartyForEmby
             _lifetimeCts.Cancel();
             _participantDormancies.Dispose();
             _syncTimer?.Dispose();
+            _controlChannelKeepAliveTimer?.Dispose();
             lock (_masterSeekSyncLock)
             {
                 foreach (var pending in _pendingMasterSeeks.Values)
