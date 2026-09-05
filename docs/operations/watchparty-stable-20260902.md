@@ -519,7 +519,8 @@ client: Emby for iOS
 | 只看状态码/`readyState` 判定"能播" | 转码首片可以 200 且完全解不出画面 | 看 `videoBuffered` 是否覆盖起播点 + 已解码帧数 |
 | 分层验证（路由 / 首片耗时 / 并发）就宣布房间可用 | 这三层全绿时藤本树仍然黑屏卡死 | 每个房间用真实播放器起播一次 |
 | 续播转码任由 Emby 拷贝音频流 | `-ss` 精确 seek 视频、拷贝音频只能从 Matroska cluster 起，首片音频超前最多数秒；hls.js 的 `maxBufferHole=0.1s` 拒绝跨越，永久黑屏且不报错 | njs 对带非零 `StartTimeTicks` 的清单注入 `AllowAudioStreamCopy=false` |
-| 相信外挂字幕的扩展名 | Emby 按扩展名判 `Codec`，Emby Web 只对 `ass`/`ssa` 启用 libass（SubtitlesOctopus）。`.ass` 里装 SRT → libass `Failed to start a track` → worker 抛错 → 被当成 `mediadecodeerror` → 反复重启流 → "当前没有兼容的流" | 按内容首行判定真实格式并改正扩展名；库里 37187 个 `.ass` 有 10041 个其实是 SRT |
+| 相信外挂字幕的扩展名 | Emby 按扩展名判 `Codec`，Emby Web 只对 `ass`/`ssa` 启用 libass（SubtitlesOctopus）。`.ass` 里装 SRT → libass `Failed to start a track` → worker 抛错 → 被当成 `mediadecodeerror` → 反复重启流 → 「当前没有兼容的流」 | 按内容判定真实格式并改正扩展名。剑风传奇 13 个已改，回滚映射 `/config/watchparty-backups/subtitle-rename-20260904-214744.map`。**原先此处写的「37187 个 `.ass` 里有 10041 个其实是 SRT」经 2026-09-05 复核无法复现，勿照用**——见下一行 |
+| 用「读固定字节 + 依次试解码」判定字幕编码 | 固定读 8192 字节会把一个 UTF-8 字符截断 → `utf-8` 解码失败 → fallback 到 `utf-16`，而 utf-16 对几乎任何偶数长度字节流都「解码成功」，吐出乱码，于是真 ASS 被判成「未知」。2026-09-05 全库扫 38201 个 `.ass`/`.ssa` 得到 31642 真 ASS / 139 SRT / 6420「未知」，抽样的「未知」全是被这个 bug 弄坏的真 ASS：`卛牣灩⁴湉潦` 按字节交换回来正是 `[Script Info]`。真实 SRT 数量只能界定在 139–6559 之间，与 10041 对不上 | ASS 标记和 SRT 时间码都是纯 ASCII，在 UTF-8/GBK/Big5 里字节不变，直接按 `latin-1` 解码找标记即可；只有 UTF-16 要按 BOM 或 NUL 密度单独识别。重命名前务必先干跑并核对总数 |
 | 把恢复延时当成设备的单一属性 | 实测同一台 iPhone 一晚上的样本是 530/653/991/1351/1446/1709/1990/2630ms —— 两个簇而不是一个总体，取决于该片是直连还是要重启转码。单一标量对哪个簇都不准 | 按**房间**记忆（房间绑定内容，天然分开这两簇） |
 | 参与者离开就丢弃学到的延时 | 换房间必然触发"参与者离开"，于是每进一个新房间第一次恢复的补偿是 `0ms`，完全没补偿 —— 而换房间正是人最常按播放的时刻 | `ClearSession` 只清在途观测，学习结果保留 |
 | 首个样本也和先验做 EWMA 混合 | 从 0 起步的 α=0.5，第一次只补 50%、第二次 75%，每个房间前两次系统性欠补偿 | 房间无历史时首个观测直接采信；新房间用同一会话在其它房间的均值播种 |
