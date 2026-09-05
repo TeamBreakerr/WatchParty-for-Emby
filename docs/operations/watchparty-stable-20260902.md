@@ -506,7 +506,11 @@ client: Emby for iOS
 | 把 Pause 容忍度等同播放容忍度 | 暂停后会留下可见时间差 | Pause 无偏移精确对齐 |
 | 看到在线就认为可控 | Session 存在不代表 Remote Control/WebSocket 可用 | 在线、可控、在房间分开展示 |
 | 服务端“主动连 iOS WebSocket” | NAT/客户端协议不允许服务端凭空反连 | 客户端原生连接 + 代理超时 + 重连 |
-| 添加应用层 KeepAlive | 与 Emby 原生机制重叠，可能制造假活动 | 原生 Ping/重连，代理 24h 超时 |
+| ~~添加应用层 KeepAlive~~（2026-09-05 证伪） | 当时的理由是「与 Emby 原生机制重叠」。裸 socket 实测：35 分钟一个字节不发，只在 t=1800s 收到 `b'\x8a\x00'`，即一个**无人索求的 Pong**。Pong 按 RFC 6455 不需要回复，所以 Emby 没有「原生保活」，只有半小时一次的单向帧 | 插件每 2 分钟直接写 WebSocket controller；DMIT 加 `so_keepalive` |
+| 相信 Emby 有原生 WebSocket 保活 | .NET 的 `WebSocket` API 压根不能发 Ping 帧（只能 Text/Binary/Close），Emby 想发也发不了。30+ 个 dll 里搜不到 `ForceKeepAlive`（那是 Jellyfin 的），下发的 `apiclient.js` 里也没有 `KeepAlive` 消息类型 | 保活必须自己做 |
+| 用家里网络的探测代表外部客户端 | `emby.teambreaker.top` **只有 A 记录**指向 DMIT，没有 AAAA；而家里 split-horizon DNS 把它解析成 `192.168.1.10`。从家里发起的探测走局域网，**从未经过 DMIT，也从未经过任何 NAT**。两次「跑满 70 分钟没事」因此对故障路径零说明力 | 复现外部路径必须绕过内网 DNS：直连 DMIT 的 IP，SNI 仍写域名 |
+| 以为 L4 中转的两段 TCP 会互相传导故障 | DMIT 是 `stream` + `ssl_preread` 的 SNI 透传，盲搬字节、不认识 WebSocket。客户端那段被运营商 NAT 回收后，DMIT 到家里的上游那段**照样 ESTABLISHED**，Emby 什么都看不到 | 两段各自需要保活；DMIT 的 `so_keepalive` 管客户端那段 |
+| 把「控制断了」的时刻当成路径断的时刻 | 实测 47 分钟 = Emby 的 Pong 间隔 30 分钟 + `tcp_retries2=15` 的重传耗尽 15.4 分钟。真正的断链发生在**更早的、看不见的**某一刻，那 15.4 分钟里 DMIT 一直在往死链重传 | 诊断要往前推约 45 分钟找原因，不要在断开时刻附近找 |
 | 重新启用 Firebase | 当前无有效配置，失败回退只会拖慢和混淆 | 完全移除 |
 | 让观众 Stop 触发全员 Stop | 容易把正常 iOS 退出变成全房间中断 | 观众休眠，Master 生命周期单独决策 |
 | 用宿主机重型 systemd 看门狗守 Xiaoya | 更新机制重复、维护面扩大 | `/data` + XiaoyaKeeper 钩子 + 容器内轻量检查 |
@@ -552,6 +556,33 @@ client: Emby for iOS
 - NPM 自定义 HTTP 日志/连接配置保存在其 `/data/nginx/custom/http_top.conf`；
 - Homepage 入口在 `$SERVER_HOME/homepage/config/services.yaml`，只链接 Emby 已认证的 `watchpartyconfig` 页面；
 - 两者都不是插件 DLL 的一部分。
+
+### 8.5 DMIT 中转层（外部客户端的唯一入口）
+
+`emby.teambreaker.top` 公网只有 A 记录，指向 DMIT `179.253.254.192`；没有 AAAA。
+家里 split-horizon DNS 把同一域名解析成 `192.168.1.10`。所以路径按「在不在家里的
+网络」分岔，**不是**按客户端分岔：
+
+```
+家外客户端  ──▶ DMIT:443 ──(IPv6)──▶ mac.teambreaker.top ──▶ NPM ──▶ Xiaoya ──▶ Emby
+家里客户端  ──▶ 192.168.1.10（直达，不经过 DMIT）
+```
+
+- 配置：`/etc/nginx/stream-enabled/sni-passthrough.conf`，`stream` + `ssl_preread`
+  的 **L4 SNI 透传**，DMIT 不持证书、不解密、不认识 HTTP 或 WebSocket；
+- 白名单外的 SNI 一律得到空上游（等价 444）；
+- `proxy_timeout 3600s`：隧道双向静默满 60 分钟才关。Emby 每 1800s 的 Pong 正好
+  把它重置，所以它不是断链主因，但余量只有 2 倍；
+- `so_keepalive=120s:45s:8`（2026-09-05 加）：对**已接受的客户端连接**启用 TCP
+  keepalive。探测由对端内核自动应答，不需要 App 配合，因此既刷新 NAT 映射、又能
+  在约 8 分钟内主动发现死链并给客户端发 FIN，让它自己重连；
+- `proxy_socket_keepalive on`：上游那段的兜底（系统 `tcp_keepalive_time` 为 7200s，
+  这段主要靠插件每 2 分钟的应用层保活覆盖）；
+- `worker_shutdown_timeout` 未配置，因此 `systemctl reload nginx` 不会掐断存量隧道；
+- 备份：同目录 `sni-passthrough.conf.bak-<时间戳>`。
+
+**排查提示**：`ss -tnoH state established '( sport = :443 )'` 可以直接看到外部客户端
+的隧道以及它们的 keepalive 计时器；入站条数为 0 就说明此刻没有任何家外客户端。
 
 ## 9. 当前线上构件清单与校验值
 
